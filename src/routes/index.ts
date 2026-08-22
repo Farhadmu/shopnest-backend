@@ -8,6 +8,7 @@ import wishlistRoutes from "../modules/wishlist/wishlist.routes";
 import orderRoutes from "../modules/orders/order.routes";
 import reviewRoutes from "../modules/reviews/review.routes";
 import couponRoutes from "../modules/coupons/coupon.routes";
+import flashSaleRoutes from "../modules/campaigns/flashSale.routes";
 import trustRoutes from "../modules/trust/trust.routes";
 import securityRoutes from "../modules/security/security.routes";
 import adminRoutes from "../modules/admin/admin.routes";

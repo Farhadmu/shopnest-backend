@@ -1,11 +1,11 @@
 import { NextFunction, Request, Response } from "express";
-import { AnyZodObject, ZodError } from "zod";
+import { ZodError, ZodTypeAny } from "zod";
 import { ApiError } from "../utils/api-error";
 
 interface ValidationTargets {
-  body?: AnyZodObject;
-  params?: AnyZodObject;
-  query?: AnyZodObject;
+  body?: ZodTypeAny;
+  params?: ZodTypeAny;
+  query?: ZodTypeAny;
 }
 
 /** Validates req.body/params/query against zod schemas, replacing them with parsed+coerced values. */

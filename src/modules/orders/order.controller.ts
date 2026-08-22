@@ -8,6 +8,7 @@ import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { flagSuspiciousOrder } from "../security/security.service";
 import { recomputeStoreTrustScore } from "../trust/trust.service";
+import { createNotification } from "../notifications/notification.service";
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const { shippingAddress, paymentMethod, couponCode } = req.body as {
@@ -122,6 +123,18 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   order.statusHistory.push({ status: order.status, at: new Date() });
   if (status === "delivered") order.paymentStatus = "paid";
   await order.save();
+
+  // Notify the customer of the status change (fire-and-forget).
+  const notificationType = status === "shipped" ? "order_shipped" : status === "delivered" ? "order_delivered" : "order_confirmation";
+  const statusLabel = String(status).replace(/_/g, " ");
+  createNotification(
+    order.userId,
+    notificationType,
+    "Order status updated",
+    `Your order #${order.id} is now "${statusLabel}".`,
+    `/orders/${order.id}`,
+    order.id
+  ).catch(() => undefined);
 
   sendSuccess(res, order.toJSON(), "Order status updated");
 });

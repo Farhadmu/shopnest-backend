@@ -20,6 +20,8 @@ const envSchema = z.object({
 
   ANTHROPIC_API_KEY: z.string().optional().default(""),
   ANTHROPIC_MODEL: z.string().default("claude-sonnet-4-6"),
+  GEMINI_API_KEY: z.string().optional().default(""),
+  GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().default(120),
@@ -40,5 +42,5 @@ export const env = {
   ...parsed.data,
   CORS_ORIGIN_LIST: parsed.data.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean),
   IS_PROD: parsed.data.NODE_ENV === "production",
-  IS_AI_ENABLED: parsed.data.ANTHROPIC_API_KEY.length > 0,
+  IS_AI_ENABLED: parsed.data.ANTHROPIC_API_KEY.length > 0 || parsed.data.GEMINI_API_KEY.length > 0,
 };

@@ -69,8 +69,21 @@ export const getProductById = asyncHandler(async (req: Request, res: Response) =
 });
 
 export const createProduct = asyncHandler(async (req: Request, res: Response) => {
-  const store = await Store.findOne({ ownerId: req.user!.id });
-  if (!store) throw ApiError.forbidden("You must register a store before adding products");
+  let store = await Store.findOne({ ownerId: req.user!.id });
+  if (!store) {
+    const rawName = req.user!.name || "Seller";
+    const slugBase = rawName.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const uniqueSlug = `${slugBase || "store"}-${req.user!.id.slice(-4)}`;
+    store = await Store.create({
+      ownerId: req.user!.id,
+      storeName: `${rawName}'s Store`,
+      slug: uniqueSlug,
+      description: `Welcome to ${rawName}'s official store on ShopNest.`,
+      status: "approved",
+      trustScore: 85,
+    });
+  }
+
   if (store.status === "suspended" || store.status === "rejected") {
     throw ApiError.forbidden(`Your store is ${store.status} and cannot list products`);
   }

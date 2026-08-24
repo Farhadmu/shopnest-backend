@@ -10,9 +10,36 @@ async function getOrCreateCart(userId: string) {
   return cart;
 }
 
+async function buildPopulatedCartResponse(cart: any) {
+  const productIds = cart.items.map((i: any) => i.productId);
+  const products = await Product.find({ _id: { $in: productIds } }).lean();
+  const productMap = new Map(products.map((p: any) => [String(p._id), p]));
+
+  const enrichedItems = cart.items.map((i: any) => {
+    const p = productMap.get(String(i.productId));
+    return {
+      productId: i.productId,
+      quantity: i.quantity,
+      price: i.price,
+      title: p?.title ?? `Product #${i.productId}`,
+      images: p?.images ?? [],
+      category: p?.category ?? "General",
+      stock: p?.stock ?? 10,
+    };
+  });
+
+  const subtotal = Math.round(enrichedItems.reduce((s: number, i: any) => s + i.price * i.quantity, 0) * 100) / 100;
+
+  return {
+    items: enrichedItems,
+    subtotal,
+  };
+}
+
 export const getCart = asyncHandler(async (req: Request, res: Response) => {
   const cart = await getOrCreateCart(req.user!.id);
-  res.status(200).json(toCartResponse(cart));
+  const response = await buildPopulatedCartResponse(cart);
+  res.status(200).json(response);
 });
 
 export const addCartItem = asyncHandler(async (req: Request, res: Response) => {
@@ -34,7 +61,8 @@ export const addCartItem = asyncHandler(async (req: Request, res: Response) => {
   }
 
   await cart.save();
-  res.status(200).json(toCartResponse(cart));
+  const response = await buildPopulatedCartResponse(cart);
+  res.status(200).json(response);
 });
 
 export const updateCartItem = asyncHandler(async (req: Request, res: Response) => {
@@ -50,7 +78,8 @@ export const updateCartItem = asyncHandler(async (req: Request, res: Response) =
 
   item.quantity = quantity;
   await cart.save();
-  res.status(200).json(toCartResponse(cart));
+  const response = await buildPopulatedCartResponse(cart);
+  res.status(200).json(response);
 });
 
 export const removeCartItem = asyncHandler(async (req: Request, res: Response) => {
@@ -58,5 +87,6 @@ export const removeCartItem = asyncHandler(async (req: Request, res: Response) =
   const cart = await getOrCreateCart(req.user!.id);
   cart.items = cart.items.filter((i) => i.productId !== productId);
   await cart.save();
-  res.status(200).json(toCartResponse(cart));
+  const response = await buildPopulatedCartResponse(cart);
+  res.status(200).json(response);
 });

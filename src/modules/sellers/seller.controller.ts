@@ -95,7 +95,9 @@ export const getStoreById = asyncHandler(async (req: Request, res: Response) => 
 /** GET /sellers/metrics - dashboard summary for the authenticated seller */
 export const getSellerMetrics = asyncHandler(async (req: Request, res: Response) => {
   const store = await Store.findOne({ ownerId: req.user!.id });
-  if (!store) throw ApiError.notFound("You do not have a store yet");
+  if (!store) {
+    return sendSuccess(res, { totalSales: 0, totalOrders: 0, totalProducts: 0 });
+  }
 
   const [totalProducts, orderAgg] = await Promise.all([
     Product.countDocuments({ storeId: store.id, isDeleted: false }),

@@ -48,6 +48,9 @@ export function createApp(): Application {
   app.use("/uploads", express.static(env.UPLOAD_DIR));
 
   app.use(env.API_PREFIX, generalLimiter, routes);
+  if (env.API_PREFIX !== "/") {
+    app.use(generalLimiter, routes);
+  }
 
   app.get("/", (_req, res) => {
     res.status(200).json({ success: true, message: "ShopNest API is running", docs: `${env.API_PREFIX}/health` });

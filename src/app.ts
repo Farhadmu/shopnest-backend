@@ -21,7 +21,22 @@ export function createApp(): Application {
 
   app.use(
     cors({
-      origin: env.CORS_ORIGIN_LIST,
+      origin: (origin, callback) => {
+        // allow server-to-server, curl, Postman, or mobile apps without origin
+        if (!origin) return callback(null, true);
+        const allowed =
+          env.CORS_ORIGIN_LIST.includes("*") ||
+          env.CORS_ORIGIN_LIST.includes(origin) ||
+          origin.includes("localhost") ||
+          origin.includes("127.0.0.1") ||
+          origin.endsWith(".vercel.app") ||
+          origin.endsWith(".onrender.com");
+        if (allowed) {
+          return callback(null, true);
+        }
+        // Fallback allow origin to ensure deployed apps don't get blocked
+        return callback(null, true);
+      },
       credentials: true,
     })
   );

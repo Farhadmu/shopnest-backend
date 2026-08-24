@@ -12,10 +12,11 @@ import trustRoutes from "../modules/trust/trust.routes";
 import securityRoutes from "../modules/security/security.routes";
 import adminRoutes from "../modules/admin/admin.routes";
 import aiRoutes from "../modules/ai/ai.routes";
+import notificationRoutes from "../modules/notifications/notification.routes";
 
 const router = Router();
 
-router.get("/health", (_req, res) => res.status(200).json({ success: true, message: "OK" }));
+router.get("/health", (_req, res) => res.status(200).json({ success: true, message: "OK", service: "shopnest-api", version: "1.0.0", timestamp: new Date().toISOString() }));
 
 router.use("/users", userRoutes);
 router.use("/categories", categoryRoutes);
@@ -30,5 +31,6 @@ router.use("/trust", trustRoutes);
 router.use("/security", securityRoutes);
 router.use("/admin", adminRoutes);
 router.use("/ai", aiRoutes);
+router.use("/notifications", notificationRoutes);
 
 export default router;

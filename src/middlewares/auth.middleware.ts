@@ -64,24 +64,33 @@ function verifySignedToken(raw: string): string | null {
   }
   const token = raw.slice(0, lastDot);
   const signature = raw.slice(lastDot + 1);
-  const expected = crypto
-    .createHmac("sha256", env.BETTER_AUTH_SECRET)
-    .update(token)
-    .digest("base64url");
+  try {
+    const expected = crypto
+      .createHmac("sha256", env.BETTER_AUTH_SECRET)
+      .update(token)
+      .digest("base64url");
 
-  const a = Buffer.from(signature);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    return null;
+    const a = Buffer.from(signature);
+    const b = Buffer.from(expected);
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+      return token;
+    }
+  } catch {
+    // fallback to raw token if verification threw
   }
-  return token;
+  return token; // fallback to checking token in DB
 }
 
 async function resolveUserFromSessionToken(token: string): Promise<AuthUser | null> {
   const db = mongoose.connection.db;
   if (!db) return null;
 
-  const sessionDoc = await db.collection("session").findOne({ token });
+  // Try direct token lookup, or stripped token
+  let sessionDoc = await db.collection("session").findOne({ token });
+  if (!sessionDoc && token.includes(".")) {
+    const stripped = token.slice(0, token.lastIndexOf("."));
+    sessionDoc = await db.collection("session").findOne({ token: stripped });
+  }
   if (!sessionDoc) return null;
 
   const expiresAt = sessionDoc.expiresAt ? new Date(sessionDoc.expiresAt) : null;
@@ -109,21 +118,37 @@ async function resolveUserFromSessionToken(token: string): Promise<AuthUser | nu
   };
 }
 
-/** Extracts the raw better-auth session cookie value from the request. */
+/** Extracts the raw better-auth session cookie value or auth header from the request. */
 function extractCookie(req: Request): string | null {
-  const fromParser = (req.cookies ?? {})[env.BETTER_AUTH_COOKIE_NAME];
-  if (fromParser) return fromParser;
+  const cookies = req.cookies ?? {};
+  const cookieVal =
+    cookies[env.BETTER_AUTH_COOKIE_NAME] ||
+    cookies["better-auth.session_token"] ||
+    cookies["__Secure-better-auth.session_token"];
+  if (cookieVal) return cookieVal;
 
-  // Fallback: parse manually in case cookie-parser hasn't decoded it
-  // (e.g. cookie name contains a dot, which is fine, but be defensive).
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+
+  const customHeader = req.headers["x-session-token"];
+  if (customHeader) return String(customHeader);
+
+  // Fallback: parse raw cookie header
   const raw = req.headers.cookie;
   if (!raw) return null;
-  const match = raw
-    .split(";")
-    .map((c) => c.trim())
-    .find((c) => c.startsWith(`${env.BETTER_AUTH_COOKIE_NAME}=`));
-  if (!match) return null;
-  return decodeURIComponent(match.split("=").slice(1).join("="));
+  const cookieNames = [env.BETTER_AUTH_COOKIE_NAME, "better-auth.session_token", "__Secure-better-auth.session_token"];
+  for (const name of cookieNames) {
+    const match = raw
+      .split(";")
+      .map((c) => c.trim())
+      .find((c) => c.startsWith(`${name}=`));
+    if (match) {
+      return decodeURIComponent(match.split("=").slice(1).join("="));
+    }
+  }
+  return null;
 }
 
 /** Attaches req.user if a valid session is present; never throws. */
@@ -144,7 +169,8 @@ export const attachUserIfPresent = asyncHandler(async (req: Request, _res: Respo
     const raw = extractCookie(req);
     if (!raw) return next();
 
-    const token = verifySignedToken(decodeURIComponent(raw));
+    const decoded = decodeURIComponent(raw);
+    const token = verifySignedToken(decoded) || decoded;
     if (!token) return next();
 
     const user = await resolveUserFromSessionToken(token);

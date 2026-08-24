@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "lint": "eslint .",
     "seed": "tsx src/seed.ts",
+    "set-role": "tsx src/scripts/set-role.ts",
     "test": "vitest run"
   },
   "dependencies": {

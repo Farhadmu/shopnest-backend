@@ -8,11 +8,11 @@ async function bootstrap() {
 
   const app = createApp();
 
-  const server = app.listen(env.PORT, () => {
+  const server = app.listen(env.PORT, "0.0.0.0", () => {
     logger.info(`ShopNest API listening on port ${env.PORT} (${env.NODE_ENV})`);
     logger.info(`Base URL: http://localhost:${env.PORT}${env.API_PREFIX}`);
     if (!env.IS_AI_ENABLED) {
-      logger.warn("ANTHROPIC_API_KEY is not set - /ai/* endpoints will return 500s until it is configured");
+      logger.warn("No AI provider key is configured - text AI endpoints will return a configuration error until ANTHROPIC_API_KEY or GEMINI_API_KEY is set");
     }
   });
 

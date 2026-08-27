@@ -21,16 +21,29 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   };
 
   const filter: FilterQuery<IProduct> = { isDeleted: false };
+  
   // Public callers only ever see approved products; admins/sellers may filter by status.
   filter.status = req.user?.role === "admin" || req.user?.role === "seller" ? status ?? "approved" : "approved";
-  if (category) filter.category = category;
+  
+  if (category) {
+    filter.category = category;
+  }
+
   if (storeId) filter.storeId = storeId;
+  
   if (minPrice || maxPrice) {
     filter.price = {};
     if (minPrice) filter.price.$gte = minPrice;
     if (maxPrice) filter.price.$lte = maxPrice;
   }
-  if (search) filter.$text = { $search: search };
+
+ 
+  if (search) {
+    filter.$or = [
+      { $text: { $search: search } }, 
+      { category: { $regex: search, $options: "i" } }, 
+    ];
+  }
 
   const sortMap: Record<string, Record<string, 1 | -1>> = {
     newest: { createdAt: -1 },

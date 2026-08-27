@@ -1,11 +1,15 @@
 import { Router } from "express";
 import * as ctrl from "./seller.controller";
+import sellerIntelligenceRoutes from "./seller-intelligence.routes";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { registerStoreSchema, updateStoreSchema } from "../../schemas/seller.schema";
 
 const router = Router();
+
+// Sub-routes for Seller Intelligence & Growth Hub
+router.use("/", sellerIntelligenceRoutes);
 
 router.get("/stores/:storeId", ctrl.getStoreById);
 router.get("/", ctrl.listStores);

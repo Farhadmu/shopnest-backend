@@ -51,4 +51,17 @@ router.post(
 // POST /api/v1/ai/visual-search - public
 router.post("/visual-search", validate({ body: aiVisualSearchSchema }), ctrl.visualSearch);
 
+// 36. AI Commerce Memory
+router.get("/memory", attachUserIfPresent, ctrl.getAiCommerceMemory);
+router.delete("/memory", attachUserIfPresent, ctrl.clearAiCommerceMemory);
+
+// 37. AI Shopping Negotiator
+router.post("/negotiate", attachUserIfPresent, ctrl.negotiateDeal);
+
+// 38. AI Shopping Intent Detector
+router.post("/detect-intent", attachUserIfPresent, ctrl.detectShoppingIntent);
+
+// 39. Multi-Role AI Commerce Copilot
+router.post("/copilot", attachUserIfPresent, ctrl.commerceCopilot);
+
 export default router;

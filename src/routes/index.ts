@@ -13,6 +13,7 @@ import securityRoutes from "../modules/security/security.routes";
 import adminRoutes from "../modules/admin/admin.routes";
 import aiRoutes from "../modules/ai/ai.routes";
 import notificationRoutes from "../modules/notifications/notification.routes";
+import customerRoutes from "../modules/customer/customer.routes";
 
 const router = Router();
 
@@ -32,5 +33,6 @@ router.use("/security", securityRoutes);
 router.use("/admin", adminRoutes);
 router.use("/ai", aiRoutes);
 router.use("/notifications", notificationRoutes);
+router.use("/customer", customerRoutes);
 
 export default router;

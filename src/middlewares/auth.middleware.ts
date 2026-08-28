@@ -151,6 +151,16 @@ function extractCookie(req: Request): string | null {
   return null;
 }
 
+function decodeCookieValue(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    // A malformed cookie must not make the auth middleware fail for every
+    // request. It simply is not a valid Better Auth session.
+    return null;
+  }
+}
+
 /** Attaches req.user if a valid session is present; never throws. */
 export const attachUserIfPresent = asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
   try {
@@ -169,7 +179,9 @@ export const attachUserIfPresent = asyncHandler(async (req: Request, _res: Respo
     const raw = extractCookie(req);
     if (!raw) return next();
 
-    const decoded = decodeURIComponent(raw);
+    const decoded = decodeCookieValue(raw);
+    if (!decoded) return next();
+
     const token = verifySignedToken(decoded) || decoded;
     if (!token) return next();
 

@@ -10,8 +10,9 @@ import { flagSuspiciousOrder } from "../security/security.service";
 import { recomputeStoreTrustScore } from "../trust/trust.service";
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
-  const { shippingAddress, paymentMethod, couponCode } = req.body as {
+  const { shippingAddress, division, paymentMethod, couponCode } = req.body as {
     shippingAddress: string;
+    division: string;
     paymentMethod: string;
     couponCode?: string;
   };
@@ -51,13 +52,16 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     await coupon.save();
   }
 
-  const totalAmount = Math.round((subtotal - discount) * 100) / 100;
+  const deliveryFee = division === "Dhaka" ? 60 : 120;
+  const totalAmount = Math.round((subtotal - discount + deliveryFee) * 100) / 100;
 
   const order = await Order.create({
     userId: req.user!.id,
     items: orderItems,
     subtotal,
     discount,
+    division,
+    deliveryFee,
     couponCode,
     totalAmount,
     shippingAddress,

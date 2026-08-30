@@ -95,3 +95,70 @@ const customerActivitySchema = new Schema<ICustomerActivity>(
 
 applyToJSON(customerActivitySchema);
 export const CustomerActivity = model<ICustomerActivity>("CustomerActivity", customerActivitySchema);
+
+// 4. Saved Customer Addresses
+export interface IAddress {
+  _id: Types.ObjectId;
+  userId: string;
+  title: string;
+  fullName: string;
+  phone: string;
+  division: string;
+  district: string;
+  upazila: string;
+  city: string;
+  streetAddress: string;
+  postalCode: string;
+  addressType: "home" | "office" | "university" | "other";
+  isDefault: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const addressSchema = new Schema<IAddress>(
+  {
+    userId: { type: String, required: true, index: true },
+    title: { type: String, default: "Home" },
+    fullName: { type: String, required: true },
+    phone: { type: String, required: true },
+    division: { type: String, required: true, default: "Dhaka" },
+    district: { type: String, required: true, default: "Dhaka" },
+    upazila: { type: String, default: "" },
+    city: { type: String, default: "" },
+    streetAddress: { type: String, required: true },
+    postalCode: { type: String, default: "" },
+    addressType: { type: String, enum: ["home", "office", "university", "other"], default: "home" },
+    isDefault: { type: Boolean, default: false },
+  },
+  { timestamps: true }
+);
+
+applyToJSON(addressSchema);
+export const Address = model<IAddress>("Address", addressSchema);
+
+// 5. Customer Support Tickets
+export interface ISupportTicket {
+  _id: Types.ObjectId;
+  userId: string;
+  orderId?: string;
+  subject: string;
+  message: string;
+  status: "open" | "in_progress" | "resolved";
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const supportTicketSchema = new Schema<ISupportTicket>(
+  {
+    userId: { type: String, required: true, index: true },
+    orderId: { type: String, index: true },
+    subject: { type: String, required: true, trim: true, maxlength: 180 },
+    message: { type: String, required: true, trim: true, maxlength: 4000 },
+    status: { type: String, enum: ["open", "in_progress", "resolved"], default: "open", index: true },
+  },
+  { timestamps: true }
+);
+
+supportTicketSchema.index({ userId: 1, createdAt: -1 });
+applyToJSON(supportTicketSchema);
+export const SupportTicket = model<ISupportTicket>("SupportTicket", supportTicketSchema);

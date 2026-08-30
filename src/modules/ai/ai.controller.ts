@@ -4,6 +4,7 @@ import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
 import { complete, completeJSON } from "./providers/claude.provider";
+import { logger } from "../../utils/logger";
 import {
   PRODUCT_DESCRIPTION_SYSTEM,
   buildDescriptionPrompt,
@@ -124,18 +125,25 @@ export const pricingSuggestion = asyncHandler(async (req: Request, res: Response
 export const visualSearch = asyncHandler(async (req: Request, res: Response) => {
   const { imageUrl } = req.body as { imageUrl: string };
 
-  const description = await complete([
-    {
-      role: "user",
-      content: [
-        { type: "image", source: { type: "url", url: imageUrl } },
-        {
-          type: "text",
-          text: "In 5-8 words, describe the main product in this image for a marketplace search query (e.g. \"black wireless over-ear headphones\"). Reply with ONLY the phrase, nothing else.",
-        },
-      ],
-    },
-  ]);
+  let description: string;
+  try {
+    description = await complete([
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "url", url: imageUrl } },
+          {
+            type: "text",
+            text: "In 5-8 words, describe the main product in this image for a marketplace search query (e.g. \"black wireless over-ear headphones\"). Reply with ONLY the phrase, nothing else.",
+          },
+        ],
+      },
+    ]);
+  } catch (err) {
+    // Fallback: if AI model doesn't support image input, use category-based search
+    logger.warn("Visual search AI failed, using fallback", { error: err instanceof Error ? err.message : String(err) });
+    description = "popular products";
+  }
 
   const searchTerms = description.replace(/[^a-zA-Z\s]/g, " ").trim();
   const products = await Product.find({
@@ -144,7 +152,17 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
     $text: { $search: searchTerms },
   }).limit(10);
 
-  sendSuccess(res, { detectedQuery: description, count: products.length, products });
+  // Fallback: if no text search results, return popular products
+  const fallbackProducts = products.length === 0
+    ? await Product.find({ isDeleted: false, status: "approved" }).sort({ sold: -1 }).limit(10)
+    : products;
+
+  sendSuccess(res, {
+    detectedQuery: description,
+    count: fallbackProducts.length,
+    products: fallbackProducts,
+    usedFallback: products.length === 0,
+  });
 });
 
 // 36. AI COMMERCE MEMORY

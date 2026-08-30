@@ -123,36 +123,35 @@ export const pricingSuggestion = asyncHandler(async (req: Request, res: Response
 
 /** POST /ai/visual-search */
 export const visualSearch = asyncHandler(async (req: Request, res: Response) => {
-  const { imageUrl } = req.body as { imageUrl: string };
+  const { imageUrl, searchQuery } = req.body as { imageUrl: string; searchQuery?: string };
 
+  // Use provided search query or extract from URL, skip AI image recognition
   let description: string;
-  try {
-    description = await complete([
-      {
-        role: "user",
-        content: [
-          { type: "image", source: { type: "url", url: imageUrl } },
-          {
-            type: "text",
-            text: "In 5-8 words, describe the main product in this image for a marketplace search query (e.g. \"black wireless over-ear headphones\"). Reply with ONLY the phrase, nothing else.",
-          },
-        ],
-      },
-    ]);
-  } catch (err) {
-    // Fallback: if AI model doesn't support image input, use category-based search
-    logger.warn("Visual search AI failed, using fallback", { error: err instanceof Error ? err.message : String(err) });
-    description = "popular products";
+  if (searchQuery && searchQuery.trim()) {
+    description = searchQuery.trim();
+  } else {
+    // Extract search terms from the URL filename or use generic search
+    try {
+      const urlPath = new URL(imageUrl).pathname;
+      const filename = urlPath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
+      description = filename.replace(/[-_]/g, " ").replace(/\d+/g, "").trim() || "popular products";
+    } catch {
+      description = "popular products";
+    }
   }
 
   const searchTerms = description.replace(/[^a-zA-Z\s]/g, " ").trim();
   const products = await Product.find({
     isDeleted: false,
     status: "approved",
-    $text: { $search: searchTerms },
+    $or: [
+      { $text: { $search: searchTerms } },
+      { tags: { $in: searchTerms.split(" ").filter((w) => w.length > 2).map((w) => new RegExp(w, "i")) } },
+      { category: { $regex: searchTerms.split(" ")[0] || "", $options: "i" } },
+    ],
   }).limit(10);
 
-  // Fallback: if no text search results, return popular products
+  // Fallback: if no results, return popular products
   const fallbackProducts = products.length === 0
     ? await Product.find({ isDeleted: false, status: "approved" }).sort({ sold: -1 }).limit(10)
     : products;

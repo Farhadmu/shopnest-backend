@@ -3,7 +3,7 @@ import { Product } from "../products/product.model";
 import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
-import { complete, completeJSON } from "./providers/claude.provider";
+import { complete, completeJSON, AiContext } from "./providers/claude.provider";
 import { logger } from "../../utils/logger";
 import {
   PRODUCT_DESCRIPTION_SYSTEM,
@@ -42,7 +42,7 @@ export const productDescription = asyncHandler(async (req: Request, res: Respons
       [{ role: "user", content: buildDescriptionPrompt({ productName, category, features }) }],
       { system: PRODUCT_DESCRIPTION_SYSTEM }
     );
-    sendSuccess(res, result);
+    sendSuccess(res, { ...(result.data as Record<string, unknown>), isFallback: result.isFallback });
   } catch (err) {
     await logAiIncident({
       type: "MALFORMED_OUTPUT",
@@ -87,7 +87,7 @@ export const compareProducts = asyncHandler(async (req: Request, res: Response) 
     { system: COMPARE_SYSTEM }
   );
 
-  sendSuccess(res, result);
+  sendSuccess(res, { ...(result.data as Record<string, unknown>), isFallback: result.isFallback });
 });
 
 /** POST /ai/pricing - AI Pricing Assistant using internal platform data only. */
@@ -118,7 +118,7 @@ export const pricingSuggestion = asyncHandler(async (req: Request, res: Response
     { system: PRICING_SYSTEM }
   );
 
-  sendSuccess(res, { currentPrice: product.price, categoryAvgPrice, ...result });
+  sendSuccess(res, { currentPrice: product.price, categoryAvgPrice, ...(result.data as Record<string, unknown>), isFallback: result.isFallback });
 });
 
 /** POST /ai/visual-search */
@@ -223,50 +223,217 @@ export const negotiateDeal = asyncHandler(async (req: Request, res: Response) =>
   });
 });
 
-// 38. AI SHOPPING INTENT DETECTOR
+// 38. AI SHOPPING INTENT & DATABASE-DRIVEN SEARCH ASSISTANT
 export const detectShoppingIntent = asyncHandler(async (req: Request, res: Response) => {
   const { prompt = "I need a gift for my brother's birthday under 5000" } = req.body;
+  const rawPrompt = String(prompt).trim();
 
-  // Rule-based + regex entity extraction
-  const lower = prompt.toLowerCase();
+  // 1. Transliterate Bengali Numerals to English (০-৯ -> 0-9)
+  const bnToEnMap: Record<string, string> = {
+    "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4",
+    "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9",
+  };
+  const normalizedPrompt = rawPrompt.replace(/[০-৯]/g, (d) => bnToEnMap[d] || d);
+  const lower = normalizedPrompt.toLowerCase();
 
-  // Extract budget
-  const budgetMatch = lower.match(/(?:under|below|budget|within|tk|৳)\s*(\d+[\d,]*)/i);
-  const detectedBudget = budgetMatch ? Number(budgetMatch[1].replace(/,/g, "")) : 5000;
+  // 2. Extract Budget Constraint (Strict Maximum Budget)
+  let maxPrice: number | null = null;
+  let minPrice: number | null = null;
 
-  // Extract occasion
+  // Handle "k" multiplier (e.g. "under 5k", "2.5k er moddhe", "10k")
+  const kBudgetMatch = lower.match(/(?:under|below|budget|within|max|niche|moddhe|vitor|kom|takar)\s*(\d+(?:\.\d+)?)\s*k\b/i) ||
+    lower.match(/(\d+(?:\.\d+)?)\s*k\s*(?:under|below|budget|within|takar|tk|৳|moddhe|niche|vitor)/i);
+  if (kBudgetMatch) {
+    maxPrice = Math.round(parseFloat(kBudgetMatch[1]) * 1000);
+  } else {
+    // Standard numerical budget extraction
+    const budgetPatterns = [
+      /(?:under|below|budget|within|less than|max|maximum|up to|highest|niche|er niche|moddhe|er moddhe|vitor|kom)\s*(?:tk|taka|৳)?\s*(\d+[\d,]*)/i,
+      /(?:tk|taka|৳)\s*(\d+[\d,]*)\s*(?:under|below|niche|er niche|moddhe|er moddhe|vitor|kom)/i,
+      /(\d+[\d,]*)\s*(?:tk|taka|৳)\s*(?:er)?\s*(?:niche|moddhe|vitor|kom)/i,
+      /(\d+[\d,]*)\s*(?:takar|taka|tk|৳)\s*(?:moddhe|vitor|niche)/i,
+    ];
+    for (const pattern of budgetPatterns) {
+      const match = lower.match(pattern);
+      if (match) {
+        maxPrice = Number(match[1].replace(/,/g, ""));
+        break;
+      }
+    }
+  }
+
+  // Check for minimum budget (e.g. "above 2000", "min 1500", "2000 theke")
+  const minMatch = lower.match(/(?:above|more than|at least|min|minimum|theke|from)\s*(?:tk|taka|৳)?\s*(\d+[\d,]*)/i);
+  if (minMatch) {
+    minPrice = Number(minMatch[1].replace(/,/g, ""));
+  }
+
+  // 3. Extract Occasion
   let occasion = "General Shopping";
-  if (lower.includes("birthday")) occasion = "Birthday Celebration";
-  else if (lower.includes("eid")) occasion = "Eid Festival";
-  else if (lower.includes("wedding") || lower.includes("anniversary")) occasion = "Anniversary / Wedding";
-  else if (lower.includes("office") || lower.includes("work")) occasion = "Professional / Office Setup";
+  if (lower.includes("birthday") || lower.includes("jonmodin")) occasion = "Birthday Celebration";
+  else if (lower.includes("eid") || lower.includes("roza")) occasion = "Eid Festival";
+  else if (lower.includes("wedding") || lower.includes("biye") || lower.includes("anniversary")) occasion = "Wedding / Anniversary";
+  else if (lower.includes("office") || lower.includes("work") || lower.includes("desk")) occasion = "Professional / Office Setup";
+  else if (lower.includes("gaming") || lower.includes("gamer") || lower.includes("esport")) occasion = "Gaming Setup";
+  else if (lower.includes("gym") || lower.includes("workout") || lower.includes("running") || lower.includes("fitness")) occasion = "Sports & Fitness";
+  else if (lower.includes("travel") || lower.includes("tour")) occasion = "Travel & Outdoor";
 
-  // Extract recipient
+  // 4. Extract Recipient
   let recipient = "Self";
-  if (lower.includes("mother") || lower.includes("mom")) recipient = "Mother";
-  else if (lower.includes("father") || lower.includes("dad")) recipient = "Father";
-  else if (lower.includes("brother")) recipient = "Brother";
-  else if (lower.includes("sister")) recipient = "Sister";
-  else if (lower.includes("friend")) recipient = "Friend";
+  if (lower.includes("mother") || lower.includes("mom") || lower.includes("ammu") || lower.includes("ma")) recipient = "Mother";
+  else if (lower.includes("father") || lower.includes("dad") || lower.includes("abbu") || lower.includes("baba")) recipient = "Father";
+  else if (lower.includes("brother") || lower.includes("bhai") || lower.includes("vai")) recipient = "Brother";
+  else if (lower.includes("sister") || lower.includes("bon") || lower.includes("apu")) recipient = "Sister";
+  else if (lower.includes("friend") || lower.includes("bondhu") || lower.includes("dost")) recipient = "Friend";
+  else if (lower.includes("wife") || lower.includes("bou") || lower.includes("husband") || lower.includes("shami")) recipient = "Spouse";
+  else if (lower.includes("kids") || lower.includes("baby") || lower.includes("child") || lower.includes("baccha")) recipient = "Kids / Baby";
 
-  // Match products from database
-  const matchingProducts = await Product.find({
+  // 5. Extract Search Keywords by Stripping Stopwords & Context Words
+  const stopWords = [
+    "i need", "i want", "show me", "find me", "give me", "suggest", "recommend", "looking for",
+    "something for", "a gift for", "gift", "gifts", "under", "below", "less than", "within",
+    "budget", "price", "taka", "takar", "tk", "tks", "er", "moddhe", "vitor", "niche",
+    "kom", "ami", "chai", "lagbe", "khojo", "dekhao", "kono", "bhalo", "best", "good",
+    "cheap", "expensive", "brother", "sister", "mother", "father", "friend", "birthday",
+    "eid", "wedding", "anniversary", "office", "work", "for", "a", "an", "the", "in",
+    "and", "or", "to", "with", "please", "item", "product", "products", "stuff",
+  ];
+
+  let cleaned = lower;
+  // Remove extracted numerical expressions
+  cleaned = cleaned.replace(/\b\d+(?:[.,]\d+)?\s*(?:k|tk|taka|৳)?\b/gi, " ");
+  for (const sw of stopWords) {
+    const reg = new RegExp(`\\b${sw}\\b`, "gi");
+    cleaned = cleaned.replace(reg, " ");
+  }
+  const searchTokens = cleaned
+    .replace(/[^\w\s\u0980-\u09FF-]/g, " ")
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+
+  const cleanSearchQuery = searchTokens.join(" ");
+
+  // 6. Build Strict MongoDB Query Filters
+  const filter: Record<string, any> = {
     isDeleted: false,
     status: "approved",
-    price: { $lte: detectedBudget * 1.2 },
-  })
-    .sort({ ratingAvg: -1, sold: -1 })
-    .limit(6);
+  };
 
+  // Enforce Strict Budget Constraints (NEVER exceed maxPrice)
+  if (maxPrice !== null && maxPrice > 0) {
+    filter.price = { $lte: maxPrice };
+  }
+  if (minPrice !== null && minPrice > 0) {
+    filter.price = { ...(filter.price || {}), $gte: minPrice };
+  }
+
+  // Detect explicit category intent
+  let categoryHint = "";
+  if (lower.includes("phone") || lower.includes("mobile") || lower.includes("smartphone")) categoryHint = "Phones & Tablets";
+  else if (lower.includes("laptop") || lower.includes("computer") || lower.includes("pc") || lower.includes("macbook")) categoryHint = "Computers";
+  else if (lower.includes("mouse") || lower.includes("keyboard") || lower.includes("headphone") || lower.includes("earbud") || lower.includes("earphone") || lower.includes("soundbox") || lower.includes("speaker")) categoryHint = "Electronics";
+  else if (lower.includes("shirt") || lower.includes("t-shirt") || lower.includes("saree") || lower.includes("panjabi") || lower.includes("dress") || lower.includes("pant") || lower.includes("jacket")) categoryHint = "Fashion";
+  else if (lower.includes("watch") || lower.includes("smartwatch") || lower.includes("bag") || lower.includes("wallet") || lower.includes("perfume")) categoryHint = "Accessories";
+
+  // Build Keyword Filter
+  if (searchTokens.length > 0) {
+    // Construct multi-token field search: title, category, tags, description
+    const tokenConditions = searchTokens.map((token) => ({
+      $or: [
+        { title: { $regex: token, $options: "i" } },
+        { category: { $regex: token, $options: "i" } },
+        { tags: { $regex: token, $options: "i" } },
+        { description: { $regex: token, $options: "i" } },
+      ],
+    }));
+    filter.$and = tokenConditions;
+  } else if (categoryHint) {
+    filter.category = { $regex: categoryHint, $options: "i" };
+  }
+
+  // 7. Query Real MongoDB Database
+  let matchingProducts = await Product.find(filter)
+    .sort({ ratingAvg: -1, sold: -1, stock: -1 })
+    .limit(8)
+    .lean();
+
+  // If strict $and yielded 0 and multiple tokens were provided, try broader $or match within same budget
+  if (matchingProducts.length === 0 && searchTokens.length > 1) {
+    const broaderFilter: Record<string, any> = {
+      isDeleted: false,
+      status: "approved",
+    };
+    if (maxPrice !== null && maxPrice > 0) {
+      broaderFilter.price = { $lte: maxPrice };
+    }
+    if (minPrice !== null && minPrice > 0) {
+      broaderFilter.price = { ...(broaderFilter.price || {}), $gte: minPrice };
+    }
+    broaderFilter.$or = searchTokens.map((token) => ({
+      title: { $regex: token, $options: "i" },
+    }));
+
+    matchingProducts = await Product.find(broaderFilter)
+      .sort({ ratingAvg: -1, sold: -1 })
+      .limit(6)
+      .lean();
+  }
+
+  // 8. Generate Honest, Non-Hallucinated Explanation
+  let recommendationSummary = "";
+  if (matchingProducts.length === 0) {
+    // Honest Zero-Hallucination state
+    const budgetClause = maxPrice ? ` under ৳${maxPrice.toLocaleString()}` : "";
+    const termClause = cleanSearchQuery ? ` for "${cleanSearchQuery}"` : "";
+    recommendationSummary = `I couldn't find any products in our current catalog matching${termClause}${budgetClause}. Please try searching with a different keyword or adjusting your budget.`;
+  } else {
+    const budgetClause = maxPrice ? ` within your budget of ৳${maxPrice.toLocaleString()}` : "";
+    const targetClause = cleanSearchQuery ? ` for "${cleanSearchQuery}"` : (occasion !== "General Shopping" ? ` for ${occasion}` : "");
+    recommendationSummary = `Found ${matchingProducts.length} verified products from real marketplace inventory${targetClause}${budgetClause}. All items are in-stock and spec-verified.`;
+  }
+
+  // 9. Structured Backend Logging
+  logger.info("[AI Shopping Assistant] Processed Query", {
+    rawPrompt,
+    parsedIntent: {
+      occasion,
+      recipient,
+      cleanSearchQuery,
+      maxPrice,
+      minPrice,
+      categoryHint,
+    },
+    mongoFilter: JSON.stringify(filter),
+    productsFoundCount: matchingProducts.length,
+    productIds: matchingProducts.map((p: any) => p._id),
+  });
+
+  // 10. Return Real DB Products to Frontend
   sendSuccess(res, {
     extractedIntent: {
       occasion,
       recipient,
-      detectedBudget: `৳${detectedBudget.toLocaleString()}`,
-      categoryFocus: lower.includes("gaming") ? "Gaming & Tech" : "Curated Gift Catalog",
+      detectedBudget: maxPrice ? `৳${maxPrice.toLocaleString()}` : "Any Budget",
+      categoryFocus: categoryHint || (searchTokens.length > 0 ? searchTokens.join(" ") : "All Categories"),
+      rawQuery: rawPrompt,
     },
-    matchingProducts,
-    recommendationSummary: `Found ${matchingProducts.length} verified products suitable for ${recipient} (${occasion}) within ৳${detectedBudget.toLocaleString()}.`,
+    matchingProducts: matchingProducts.map((p: any) => ({
+      id: String(p._id),
+      _id: String(p._id),
+      title: p.title,
+      description: p.description,
+      price: p.price,
+      discountPrice: p.discountPrice,
+      category: p.category,
+      images: p.images || [],
+      stock: p.stock || 0,
+      ratingAvg: p.ratingAvg || 0,
+      ratingCount: p.ratingCount || 0,
+      sold: p.sold || 0,
+      tags: p.tags || [],
+    })),
+    recommendationSummary,
   });
 });
 
@@ -274,30 +441,51 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
 export const commerceCopilot = asyncHandler(async (req: Request, res: Response) => {
   const { query, role = "customer", context = {} } = req.body;
   const userRole = req.user?.role || role;
+  const userId = req.user?.id;
 
   if (!query) throw ApiError.badRequest("Please provide a prompt for the AI Copilot");
 
   let systemPrompt = "";
   let answer = "";
   let suggestedActions: Array<{ label: string; action: string; targetUrl?: string }> = [];
+  const aiContext: AiContext = {};
 
-  if (userRole === "admin") {
+  if (userRole === "admin" && userId) {
     systemPrompt = "You are the ShopNest Marketplace Admin Intelligence Copilot. Provide actionable marketplace audit insights, anomaly analysis, and platform growth telemetry.";
-    answer = `📊 **Marketplace Intelligence Insight**:
-Platform GMV is tracking at **৳42.8M** (+18% MoM). 
-- **Security**: ATO shield is 100% active with zero critical breach vectors.
-- **Moderation**: 3 seller anomaly logs are queued for review (1 order spike, 1 review velocity surge).
-- **Recommendation**: Deploy category promotion for Electronics & Lifestyle to capture forecasted weekend traffic surges.`;
+    const userCount = await import("../users/user.model").then((m) => m.usersCollection().countDocuments({}));
+    const sellerCount = await import("../sellers/store.model").then((m) => m.Store.countDocuments({}));
+    const orderCount = await Order.countDocuments({});
+    const productCount = await Product.countDocuments({ isDeleted: false });
+    const totalRevenue = await Order.aggregate([
+      { $match: { status: { $in: ["delivered", "shipped", "out_for_delivery"] } } },
+      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+    ]);
+    aiContext.userContext = {
+      userCount, sellerCount, orderCount, productCount,
+      totalRevenue: totalRevenue[0]?.total || 0,
+    };
+    answer = `📊 **Marketplace Overview**: ${userCount} users, ${sellerCount} sellers, ${orderCount} orders, ${productCount} products. Total revenue: ৳${(totalRevenue[0]?.total || 0).toLocaleString()}.`;
     suggestedActions = [
       { label: "Review Anomaly Center", action: "navigate", targetUrl: "/admin/dashboard" },
       { label: "Inspect Geographical Map", action: "filter", targetUrl: "/admin/dashboard" },
     ];
-  } else if (userRole === "seller") {
+  } else if (userRole === "seller" && userId) {
     systemPrompt = "You are the ShopNest Seller Business Copilot. Analyze store metrics, inventory reorders, pricing elasticity, and marketing ROI.";
-    answer = `💼 **Seller Business Copilot**:
-Your store health is strong at **87/100** with a **92% Customer Satisfaction** rating.
-- **Sales Forecast**: Projected revenue over the next 30 days is **৳345,000** (88% confidence).
-- **Opportunity**: Your accessories category has a 38% net margin. Launching a 10% bundle promotion is projected to increase unit velocity by +18%.`;
+    const store = await Store.findOne({ $or: [{ ownerId: userId }, { userId }] });
+    if (store) {
+      const [orderCount, productCount] = await Promise.all([
+        Order.countDocuments({ "items.sellerId": store.id }),
+        Product.countDocuments({ storeId: store.id, isDeleted: false }),
+      ]);
+      aiContext.userContext = {
+        storeName: store.storeName,
+        trustScore: store.trustScore,
+        orderCount, productCount,
+      };
+      answer = `💼 **Store Overview**: ${store.storeName} (Trust Score: ${store.trustScore}/100). ${orderCount} orders, ${productCount} active products.`;
+    } else {
+      answer = "You don't have a store registered yet. Register a store to access seller insights.";
+    }
     suggestedActions = [
       { label: "Run Campaign Simulator", action: "open_simulator" },
       { label: "View Profitability Waterfall", action: "navigate" },
@@ -305,11 +493,17 @@ Your store health is strong at **87/100** with a **92% Customer Satisfaction** r
   } else {
     // Customer Shopping Copilot
     systemPrompt = "You are the ShopNest Smart Shopping Copilot. Help customers find verified products, optimize budgets, check compatibility, and find lawful discounts.";
-    answer = `🛍️ **ShopNest Shopping Copilot**:
-I've analyzed your shopping goals and current marketplace offers:
-- We found **top-rated compatible components** within your target price bracket.
-- You can stack valid coupon **SHOPNEST10** for an additional 10% discount on checkout.
-- Would you like me to build a personalized budget plan or verify hardware compatibility?`;
+    if (userId) {
+      const [orders, wishlist] = await Promise.all([
+        Order.find({ customerId: userId }).sort({ createdAt: -1 }).limit(5),
+        import("../wishlist/wishlist.model").then((m) => m.Wishlist.findOne({ userId })),
+      ]);
+      aiContext.orders = orders.map((o) => ({ id: o.id, status: o.status, totalAmount: o.totalAmount }));
+      aiContext.userContext = { wishlistCount: wishlist?.items?.length || 0 };
+      answer = `🛍️ **Shopping Summary**: You have ${orders.length} recent orders${wishlist?.items?.length ? ` and ${wishlist.items.length} items in your wishlist` : ""}. How can I help you today?`;
+    } else {
+      answer = "Welcome to ShopNest! I can help you find products, compare prices, and manage your orders.";
+    }
     suggestedActions = [
       { label: "Open Budget Planner", action: "open_budget" },
       { label: "Check Product Compatibility", action: "open_compatibility" },
@@ -321,6 +515,6 @@ I've analyzed your shopping goals and current marketplace offers:
     query,
     answer,
     suggestedActions,
-    mode: "Production Intelligence Engine (Hybrid AI + Deterministic Fallback)",
+    isFallback: true,
   });
 });

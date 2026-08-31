@@ -372,43 +372,7 @@ export const getAbExperiments = asyncHandler(async (req: Request, res: Response)
   const userId = req.user?.id || "demo-seller";
   const store = await getSellerStore(userId);
 
-  let experiments = await AbExperiment.find({ storeId: store.id });
-
-  if (experiments.length === 0) {
-    const sampleProduct = await Product.findOne({ isDeleted: false });
-    const seeded = await AbExperiment.create({
-      sellerId: userId,
-      storeId: store.id,
-      productId: sampleProduct?.id || "prod-sample",
-      productTitle: sampleProduct?.title || "Pro Wireless Gaming Mouse",
-      testType: "title",
-      variantA: {
-        name: "A",
-        value: "Wireless Gaming Mouse with RGB",
-        views: 1240,
-        clicks: 186,
-        cartAdds: 48,
-        orders: 22,
-        revenue: 44000,
-        conversionRate: 1.77,
-      },
-      variantB: {
-        name: "B",
-        value: "ShopNest Elite RGB Ultra-Light Gaming Mouse (Zero Latency)",
-        views: 1310,
-        clicks: 274,
-        cartAdds: 76,
-        orders: 38,
-        revenue: 76000,
-        conversionRate: 2.90,
-      },
-      status: "active",
-      winner: "variantB",
-      confidenceScore: 94,
-      startDate: new Date(Date.now() - 14 * 24 * 3600 * 1000),
-    });
-    experiments = [seeded];
-  }
+  const experiments = await AbExperiment.find({ storeId: store.id });
 
   sendSuccess(res, experiments);
 });

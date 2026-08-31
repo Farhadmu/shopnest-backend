@@ -7,7 +7,7 @@ import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
 import { Review } from "../reviews/review.model";
-import { complete, completeJSON } from "../ai/providers/claude.provider";
+import { complete, completeJSON, completeWithContext, AiContext } from "../ai/providers/claude.provider";
 import { SearchHistory, UserPreferences } from "./customer-features.model";
 import { SavedSearch } from "./customer-extras.model";
 import { logAiIncident } from "../ai/incident/incident.service";
@@ -56,7 +56,7 @@ export const advancedSearch = asyncHandler(async (req: Request, res: Response) =
           system: 'You are a shopping intent detector for a Bangladeshi e-commerce platform. Parse natural language and Bengali queries. Return ONLY valid JSON: {"category":"...","budgetMax":0,"useCase":"...","brand":"..."}',
         }
       );
-      detectedIntent = intentResult as typeof detectedIntent;
+      detectedIntent = intentResult.data as typeof detectedIntent;
     } catch {
       // Fallback: continue without intent detection
     }
@@ -264,6 +264,7 @@ export const shoppingAgentChat = asyncHandler(async (req: Request, res: Response
     .limit(5);
 
   let aiResponse: string;
+  let isFallback = false;
   let suggestedProducts = relevantProducts.map((p) => ({
     id: p.id,
     title: p.title,
@@ -273,19 +274,27 @@ export const shoppingAgentChat = asyncHandler(async (req: Request, res: Response
     ratingAvg: p.ratingAvg,
   }));
 
+  const aiContext: AiContext = {
+    userContext,
+    products: suggestedProducts,
+    orders: recentOrders.map((o) => ({ id: o.id, status: o.status, totalAmount: o.totalAmount })),
+  };
+
   try {
-    const aiResult = await complete(
+    const aiResult = await completeWithContext(
       [
         {
           role: "user",
           content: `User context: ${JSON.stringify(userContext)}\nAvailable products: ${JSON.stringify(suggestedProducts)}\nUser question: "${message}"\n\nHelp the user with product recommendations, comparisons, budget advice, and shopping guidance. Be specific about products when possible. Respond in the same language as the user (English or Bengali).`,
         },
       ],
+      aiContext,
       {
         system: `You are ShopNest AI Shopping Assistant for Bangladesh. Help customers find products, compare options, suggest budgets, and provide shopping guidance. Be helpful, specific, and honest. If you recommend products, use the available products list. Use ৳ for currency. Keep responses concise but informative.`,
       }
     );
-    aiResponse = aiResult;
+    aiResponse = aiResult.content;
+    isFallback = aiResult.isFallback;
   } catch (err) {
     await logAiIncident({
       type: "PROVIDER_ERROR",
@@ -294,16 +303,20 @@ export const shoppingAgentChat = asyncHandler(async (req: Request, res: Response
       input: message,
       error: err instanceof Error ? err.message : String(err),
     });
-    // Fallback response
-    aiResponse = budgetMax > 0
-      ? `I found ${suggestedProducts.length} products within your ৳${budgetMax.toLocaleString()} budget. Check the recommendations below.`
-      : `I'd be happy to help you find what you're looking for! Could you tell me more about your budget or specific needs?`;
+    // Fallback response using real data
+    aiResponse = suggestedProducts.length > 0
+      ? `I found ${suggestedProducts.length} products${budgetMax > 0 ? ` within your ৳${budgetMax.toLocaleString()} budget` : ""} that might interest you. Check the recommendations below.`
+      : budgetMax > 0
+        ? `I couldn't find any products matching your criteria within ৳${budgetMax.toLocaleString()}. Try adjusting your budget or search terms.`
+        : "I'd be happy to help you find what you're looking for! Could you tell me more about your budget or specific needs?";
+    isFallback = true;
   }
 
   sendSuccess(res, {
     response: aiResponse,
     suggestedProducts,
     detectedBudget: budgetMax > 0 ? budgetMax : undefined,
+    isFallback,
   });
 });
 
@@ -357,20 +370,27 @@ export const giftFinder = asyncHandler(async (req: Request, res: Response) => {
   }));
 
   let aiSuggestion = "";
+  let isFallback = false;
   try {
-    aiSuggestion = await complete(
+    const result = await completeWithContext(
       [
         {
           role: "user",
           content: `Occasion: ${occasion || "general"}, Relationship: ${relationship || "friend"}, Age: ${ageRange || "any"}, Budget: ৳${budget}, Interests: ${interests || "general"}, Gender: ${gender || "any"}. Products: ${JSON.stringify(recommendedProducts.map((p) => ({ title: p.title, price: p.price, category: p.category })))}. Give a brief gift recommendation summary.`,
         },
       ],
+      { products: recommendedProducts },
       {
         system: "You are a gift advisor for a Bangladeshi e-commerce platform. Give warm, personalized gift suggestions in 2-3 sentences. Use ৳ for currency.",
       }
     );
+    aiSuggestion = result.content;
+    isFallback = result.isFallback;
   } catch {
-    aiSuggestion = `Found ${recommendedProducts.length} great gift options within your ৳${budget.toLocaleString()} budget!`;
+    aiSuggestion = recommendedProducts.length > 0
+      ? `Found ${recommendedProducts.length} great gift options within your ৳${budget.toLocaleString()} budget!`
+      : `I couldn't find any gift options within ৳${budget.toLocaleString()}. Try increasing your budget.`;
+    isFallback = true;
   }
 
   sendSuccess(res, {
@@ -378,6 +398,7 @@ export const giftFinder = asyncHandler(async (req: Request, res: Response) => {
     budget,
     recommendations: recommendedProducts,
     aiSuggestion,
+    isFallback,
   });
 });
 
@@ -412,20 +433,25 @@ export const generateReviewDraft = asyncHandler(async (req: Request, res: Respon
   const avgRating = Math.round(((ratings.quality + ratings.delivery + ratings.packaging + ratings.value) / 4) * 10) / 10;
 
   let reviewDraft = "";
+  let isFallback = false;
   try {
-    reviewDraft = await complete(
+    const result = await completeWithContext(
       [
         {
           role: "user",
           content: `Product: ${product.title} (${product.category}). Ratings: Quality=${ratings.quality}/5, Delivery=${ratings.delivery}/5, Packaging=${ratings.packaging}/5, Value=${ratings.value}/5. Overall: ${overallExperience || "satisfactory"}. Generate a helpful, balanced product review draft (2-4 sentences) that the customer can edit before submitting.`,
         },
       ],
+      { productName: product.title, category: product.category },
       {
         system: "You are a review writing assistant. Generate honest, balanced review drafts based on the customer's ratings. The review should be helpful to other buyers. Keep it natural and authentic. Output ONLY the review text, no explanations.",
       }
     );
+    reviewDraft = result.content;
+    isFallback = result.isFallback;
   } catch {
     reviewDraft = `The ${product.title} is a solid ${product.category.toLowerCase()} option. ${ratings.quality >= 4 ? "Good quality build and performance." : "Quality could be better."} ${ratings.value >= 4 ? "Value for money is decent." : "A bit pricey for what you get."} ${ratings.delivery >= 4 ? "Delivery was on time." : "Delivery took longer than expected."}`;
+    isFallback = true;
   }
 
   sendSuccess(res, {
@@ -435,6 +461,7 @@ export const generateReviewDraft = asyncHandler(async (req: Request, res: Respon
     suggestedRatings: ratings,
     averageRating: avgRating,
     note: "This is a draft. Please edit and personalize before submitting.",
+    isFallback,
   });
 });
 

@@ -9,7 +9,7 @@ import { Review } from "../reviews/review.model";
 import { Wishlist } from "../wishlist/wishlist.model";
 import { Notification } from "../notifications/notification.model";
 import { DeliveryZone } from "../delivery/delivery-zone.model";
-import { complete } from "../ai/providers/claude.provider";
+import { complete, completeWithContext, AiContext } from "../ai/providers/claude.provider";
 import { logAiIncident } from "../ai/incident/incident.service";
 import {
   UserPreferences,
@@ -649,21 +649,32 @@ export const aiSupportChat = asyncHandler(async (req: Request, res: Response) =>
 
   let aiResponse = "";
   let suggestedAction = "";
+  let isFallback = false;
+
+  const aiContext: AiContext = {
+    orders: recentOrders.map((o) => ({ id: o.id, status: o.status, totalAmount: o.totalAmount })),
+  };
 
   try {
-    aiResponse = await complete(
+    const result = await completeWithContext(
       [{ role: "user", content: `Customer: "${message}"\nOrders: ${JSON.stringify(recentOrders.map((o) => ({ id: o.id, status: o.status, total: o.totalAmount })))}` }],
+      aiContext,
       { system: "You are ShopNest support AI. Help with orders, delivery, returns. Be concise. If issue needs human help, say so clearly." }
     );
+    aiResponse = result.content;
+    isFallback = result.isFallback;
     const lowerMsg = message.toLowerCase();
     if (lowerMsg.includes("not arrived") || lowerMsg.includes("late") || lowerMsg.includes("damaged") || lowerMsg.includes("wrong")) suggestedAction = "create_ticket";
   } catch (err) {
     await logAiIncident({ type: "PROVIDER_ERROR", userId, endpoint: "/customer/support/ai-chat", input: message, error: err instanceof Error ? err.message : String(err) });
-    aiResponse = "I apologize for the trouble. Let me create a support ticket for you.";
+    aiResponse = recentOrders.length > 0
+      ? "I apologize for the trouble. Let me create a support ticket for you."
+      : "I'm here to help. Could you please describe your issue?";
     suggestedAction = "create_ticket";
+    isFallback = true;
   }
 
-  sendSuccess(res, { response: aiResponse, suggestedAction, recentOrders: recentOrders.map((o) => ({ id: o.id, status: o.status })) });
+  sendSuccess(res, { response: aiResponse, suggestedAction, isFallback, recentOrders: recentOrders.map((o) => ({ id: o.id, status: o.status })) });
 });
 
 export const getSupportTickets = asyncHandler(async (req: Request, res: Response) => {
@@ -1658,16 +1669,29 @@ You have authorized access to ONLY this customer's private shopping data:
 Provide helpful, accurate, friendly, and concise responses in English/Bangla as prompted. Never fabricate orders.
 `;
 
+  const aiContext: AiContext = {
+    orders: orders.map((o) => ({ id: o.id, status: o.status, totalAmount: o.totalAmount })),
+    wishlist: wishProducts.map((wp) => {
+      const match = wp.match(/^(.+) \(৳(\d+)\)$/);
+      return { title: match?.[1] || wp, price: match ? Number(match[2]) : 0 };
+    }),
+    userContext: {
+      typicalBudget: preferences?.typicalBudgetMax || 30000,
+      goals: goals.map((g) => ({ title: g.title, targetBudget: g.targetBudget })),
+    },
+  };
+
   try {
-    const aiResponseText = await complete(
+    const result = await completeWithContext(
       [{ role: "user", content: prompt }],
+      aiContext,
       {
         system: `${systemContext}\nYou are an intelligent e-commerce personal assistant for Bangladesh.`,
         maxTokens: 500,
       }
     );
 
-    sendSuccess(res, { answer: aiResponseText });
+    sendSuccess(res, { answer: result.content, isFallback: result.isFallback });
   } catch {
     // Deterministic Rule-Based Fallback
     let fallbackAnswer = "I am here to assist with your shopping activity! ";

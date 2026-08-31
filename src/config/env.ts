@@ -38,9 +38,20 @@ if (!parsed.success) {
   process.exit(1);
 }
 
+const aiKeysPresent = parsed.data.ANTHROPIC_API_KEY.length > 0 || parsed.data.GEMINI_API_KEY.length > 0;
+
+if (!aiKeysPresent && parsed.data.NODE_ENV === "production") {
+  // eslint-disable-next-line no-console
+  console.warn("⚠️  WARNING: No AI API key configured (ANTHROPIC_API_KEY or GEMINI_API_KEY).");
+  // eslint-disable-next-line no-console
+  console.warn("⚠️  All AI features will use rule-based fallback responses.");
+  // eslint-disable-next-line no-console
+  console.warn("⚠️  Set ANTHROPIC_API_KEY or GEMINI_API_KEY in production for live AI responses.");
+}
+
 export const env = {
   ...parsed.data,
   CORS_ORIGIN_LIST: parsed.data.CORS_ORIGINS.split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean),
   IS_PROD: parsed.data.NODE_ENV === "production",
-  IS_AI_ENABLED: parsed.data.ANTHROPIC_API_KEY.length > 0 || parsed.data.GEMINI_API_KEY.length > 0,
+  IS_AI_ENABLED: aiKeysPresent,
 };

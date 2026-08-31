@@ -49,11 +49,14 @@ export const chat = asyncHandler(async (req: Request, res: Response) => {
   const history = conversation.messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
 
   let reply: string;
+  let isFallback = false;
   try {
-    reply = await complete(
+    const result = await complete(
       [...history.slice(0, -1), { role: "user" as const, content: `${context}\n\nCustomer: ${message}` }],
       { system: SHOPPING_ASSISTANT_SYSTEM }
     );
+    reply = result.content;
+    isFallback = result.isFallback;
   } catch (err) {
     await logAiIncident({
       type: "PROVIDER_ERROR",
@@ -72,6 +75,7 @@ export const chat = asyncHandler(async (req: Request, res: Response) => {
     conversationId: conversation.id,
     reply,
     suggestedProducts: candidates.slice(0, 5),
+    isFallback,
   });
 });
 

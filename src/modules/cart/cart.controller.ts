@@ -1,12 +1,31 @@
 import { Request, Response } from "express";
-import { Cart, toCartResponse } from "./cart.model";
+import { Cart, ICart, toCartResponse } from "./cart.model";
 import { Product } from "../products/product.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { ApiError } from "../../utils/api-error";
 
+/** Collapses historic duplicate product rows into one line item per product. */
+async function normalizeCartItems(cart: ICart & { save: () => Promise<unknown> }) {
+  const mergedItems = new Map<string, { productId: string; quantity: number; price: number }>();
+
+  for (const item of cart.items) {
+    const productId = String(item.productId);
+    const existing = mergedItems.get(productId);
+    mergedItems.set(productId, existing
+      ? { ...existing, quantity: existing.quantity + item.quantity, price: item.price }
+      : { productId, quantity: item.quantity, price: item.price });
+  }
+
+  if (mergedItems.size !== cart.items.length) {
+    cart.items = Array.from(mergedItems.values());
+    await cart.save();
+  }
+}
+
 async function getOrCreateCart(userId: string) {
   let cart = await Cart.findOne({ userId });
   if (!cart) cart = await Cart.create({ userId, items: [] });
+  await normalizeCartItems(cart);
   return cart;
 }
 

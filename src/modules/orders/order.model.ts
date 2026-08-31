@@ -27,6 +27,8 @@ export interface IOrder {
   items: IOrderItem[];
   subtotal: number;
   discount: number;
+  division: string;
+  deliveryFee: number;
   couponCode?: string;
   totalAmount: number;
   shippingAddress: string;
@@ -56,6 +58,8 @@ const orderSchema = new Schema<IOrder>(
     items: { type: [orderItemSchema], required: true },
     subtotal: { type: Number, required: true },
     discount: { type: Number, default: 0 },
+    division: { type: String, required: true },
+    deliveryFee: { type: Number, required: true, min: 0 },
     couponCode: { type: String },
     totalAmount: { type: Number, required: true },
     shippingAddress: { type: String, required: true },

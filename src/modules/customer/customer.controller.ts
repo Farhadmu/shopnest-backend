@@ -91,117 +91,120 @@ export const recordJourneyEvent = asyncHandler(async (req: Request, res: Respons
 
 // 2. SMART BUDGET PLANNER
 export const generateBudgetPlan = asyncHandler(async (req: Request, res: Response) => {
-  const { budget, purpose = "general", preferredCategories = [] } = req.body;
+  const { budget, purpose } = req.body;
   const targetBudget = Number(budget);
 
   if (!targetBudget || targetBudget <= 0) {
     throw ApiError.badRequest("Please provide a valid budget amount");
   }
+  if (!purpose) {
+    throw ApiError.badRequest("Please select a category");
+  }
 
-  // Define category allocation blueprints based on purpose
-  const blueprints: Record<string, Array<{ role: string; categoryKeyword: string; percentage: number }>> = {
-    gaming: [
-      { role: "Core Device (Laptop / PC)", categoryKeyword: "laptop", percentage: 0.70 },
-      { role: "Mechanical Keyboard", categoryKeyword: "keyboard", percentage: 0.10 },
-      { role: "Precision Mouse", categoryKeyword: "mouse", percentage: 0.08 },
-      { role: "Surround Headset", categoryKeyword: "headphone", percentage: 0.07 },
-      { role: "Mousepad & Accessories", categoryKeyword: "accessories", percentage: 0.05 },
-    ],
-    work_office: [
-      { role: "Office Laptop / Ultrabook", categoryKeyword: "laptop", percentage: 0.72 },
-      { role: "Ergonomic Mouse", categoryKeyword: "mouse", percentage: 0.08 },
-      { role: "Wireless Keyboard", categoryKeyword: "keyboard", percentage: 0.08 },
-      { role: "Protective Backpack", categoryKeyword: "bag", percentage: 0.07 },
-      { role: "USB Hub & Stand", categoryKeyword: "hub", percentage: 0.05 },
-    ],
-    photography: [
-      { role: "Primary Camera / Body", categoryKeyword: "camera", percentage: 0.65 },
-      { role: "Prime Lens", categoryKeyword: "lens", percentage: 0.20 },
-      { role: "High-Speed Memory Card", categoryKeyword: "card", percentage: 0.05 },
-      { role: "Tripod & Mount", categoryKeyword: "tripod", percentage: 0.05 },
-      { role: "Camera Bag", categoryKeyword: "bag", percentage: 0.05 },
-    ],
-    student: [
-      { role: "Student Laptop / Tablet", categoryKeyword: "laptop", percentage: 0.70 },
-      { role: "Bluetooth Earbuds", categoryKeyword: "earbud", percentage: 0.12 },
-      { role: "Backpack & Sleeve", categoryKeyword: "bag", percentage: 0.10 },
-      { role: "Stationery & Desk Mat", categoryKeyword: "desk", percentage: 0.08 },
-    ],
-    general: [
-      { role: "Primary Item", categoryKeyword: "electronics", percentage: 0.60 },
-      { role: "Secondary Essential", categoryKeyword: "gadget", percentage: 0.25 },
-      { role: "Useful Accessories", categoryKeyword: "accessories", percentage: 0.15 },
-    ],
-  };
+  // Fetch approved, in-stock products for the category
+  const categoryProducts = await Product.find({
+    isDeleted: false,
+    status: "approved",
+    stock: { $gt: 0 },
+    category: { $regex: new RegExp(`^${purpose}$`, "i") },
+  });
 
-  const selectedBlueprint = blueprints[purpose.toLowerCase()] || blueprints.general;
-  const availableProducts = await Product.find({ isDeleted: false, status: "approved", stock: { $gt: 0 } });
+  if (categoryProducts.length === 0) {
+    return sendSuccess(res, {
+      targetBudget,
+      totalPlannedSpend: 0,
+      remainingBudget: targetBudget,
+      purpose,
+      items: [],
+      planSummary: "No available products found in this category to build a plan yet.",
+    });
+  }
+
+  // Filter products that actually fit inside the user's budget
+  const affordableProducts = categoryProducts
+    .filter((p) => p.price <= targetBudget)
+    .sort((a, b) => a.price - b.price);
+
+  // If the cheapest item in the category exceeds targetBudget
+  if (affordableProducts.length === 0) {
+    const minPrice = Math.min(...categoryProducts.map((p) => p.price));
+    return sendSuccess(res, {
+      targetBudget,
+      totalPlannedSpend: 0,
+      remainingBudget: targetBudget,
+      purpose,
+      items: [],
+      planSummary: `The minimum price in the '${purpose}' category is ৳${minPrice.toLocaleString()}. Please increase your budget.`,
+    });
+  }
 
   const plannedItems: Array<{
     role: string;
     allocatedBudget: number;
-    selectedProduct?: {
-      id: string;
-      title: string;
-      price: number;
-      category: string;
-      image: string;
-    };
+    selectedProduct?: { id: string; title: string; price: number; category: string; image: string };
     alternatives: Array<{ id: string; title: string; price: number; type: "cheaper" | "premium" }>;
   }> = [];
 
+  const usedIds = new Set<string>();
+  let currentRemaining = targetBudget;
   let totalPlannedSpend = 0;
 
-  for (const slot of selectedBlueprint) {
-    const slotBudget = targetBudget * slot.percentage;
-
-    // Search for product matching slot keyword or fallback to price matching
-    const matching = availableProducts.filter((p) => {
-      const matchText = `${p.title} ${p.category} ${p.tags.join(" ")}`.toLowerCase();
-      return matchText.includes(slot.categoryKeyword.toLowerCase()) || p.price <= slotBudget * 1.3;
-    });
-
-    const sortedByBudgetFit = matching.length > 0 ? matching : availableProducts;
-    sortedByBudgetFit.sort((a, b) => Math.abs(a.price - slotBudget) - Math.abs(b.price - slotBudget));
-
-    const selected = sortedByBudgetFit[0];
-    const itemPrice = selected ? selected.price : Math.round(slotBudget);
-
-    totalPlannedSpend += itemPrice;
-
-    // Cheaper & better alternatives
-    const cheaper = sortedByBudgetFit.filter((p) => selected && p.id !== selected.id && p.price < selected.price).slice(0, 2);
-    const premium = sortedByBudgetFit.filter((p) => selected && p.id !== selected.id && p.price > selected.price).slice(0, 2);
+  const pushItem = (
+    role: string,
+    product: (typeof categoryProducts)[number],
+    allocatedBudget: number
+  ) => {
+    const pool = categoryProducts.filter((p) => p.id !== product.id);
+    const cheaper = pool.filter((p) => p.price < product.price).sort((a, b) => b.price - a.price).slice(0, 2);
+    const premium = pool.filter((p) => p.price > product.price).sort((a, b) => a.price - b.price).slice(0, 2);
 
     plannedItems.push({
-      role: slot.role,
-      allocatedBudget: Math.round(slotBudget),
-      selectedProduct: selected
-        ? {
-            id: selected.id,
-            title: selected.title,
-            price: selected.price,
-            category: selected.category,
-            image: selected.images[0] || "",
-          }
-        : undefined,
+      role,
+      allocatedBudget: Math.round(allocatedBudget),
+      selectedProduct: {
+        id: product.id,
+        title: product.title,
+        price: product.price,
+        category: product.category,
+        image: product.images?.[0] || "",
+      },
       alternatives: [
         ...cheaper.map((p) => ({ id: p.id, title: p.title, price: p.price, type: "cheaper" as const })),
         ...premium.map((p) => ({ id: p.id, title: p.title, price: p.price, type: "premium" as const })),
       ],
     });
+  };
+
+  // Build optimal allocation within budget limit
+  const maxItems = Math.min(3, affordableProducts.length);
+
+  for (let i = 0; i < maxItems; i++) {
+    const slotBudget = currentRemaining / (maxItems - i);
+    
+    // Pick best matching product that strictly costs <= currentRemaining
+    const pick = affordableProducts
+      .filter((p) => !usedIds.has(p.id) && p.price <= currentRemaining)
+      .sort((a, b) => Math.abs(a.price - slotBudget) - Math.abs(b.price - slotBudget))[0];
+
+    if (!pick) break;
+
+    usedIds.add(pick.id);
+    const role = i === 0 ? "Primary Value Pick" : `Complementary Pick ${i}`;
+    pushItem(role, pick, slotBudget);
+
+    totalPlannedSpend += pick.price;
+    currentRemaining -= pick.price;
   }
 
-  // Ensure total plan never exceeds targetBudget arbitrarily without clear balance indicator
   const remainingBudget = Math.max(0, targetBudget - totalPlannedSpend);
 
-  sendSuccess(res, {
+  return sendSuccess(res, {
     targetBudget,
     totalPlannedSpend,
     remainingBudget,
     purpose,
     items: plannedItems,
-    planSummary: `Allocated ${plannedItems.length} curated components within your ৳${targetBudget.toLocaleString()} budget with ৳${remainingBudget.toLocaleString()} remaining buffer.`,
+    planSummary: `Allocated ${plannedItems.length} curated pick(s) within your ৳${targetBudget.toLocaleString()} budget with ৳${remainingBudget.toLocaleString()} remaining buffer.`,
   });
 });
 

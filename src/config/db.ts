@@ -1,6 +1,14 @@
+import { Resolver } from "dns";
+import { setServers } from "dns";
 import mongoose from "mongoose";
 import { env } from "./env";
 import { logger } from "../utils/logger";
+
+// Override the default DNS servers to use Google's public DNS.
+// The local router DNS (192.168.0.1) often fails MongoDB SRV record lookups
+// from Node.js, causing ECONNREFUSED on querySrv.
+setServers(["8.8.8.8", "8.8.4.4"]);
+void Resolver; // imported for side-effect awareness only
 
 mongoose.set("strictQuery", true);
 

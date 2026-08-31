@@ -179,4 +179,37 @@ router.put("/profile/preferences", ...requireAuth, featuresCtrl.updateShoppingPr
 router.delete("/profile/preferences", ...requireAuth, featuresCtrl.resetShoppingProfile);
 router.delete("/profile/personalization", ...requireAuth, featuresCtrl.deletePersonalizationData);
 
+// ============================================================
+// 28. 30 ADVANCED CUSTOMER EXTENSION ROUTES
+// ============================================================
+router.get("/search/bangla", attachUserIfPresent, featuresCtrl.searchBanglaBanglish);
+router.get("/cod-risk", ...requireAuth, featuresCtrl.getCODOrderRisk);
+router.get("/products/:productId/trust-report", featuresCtrl.getProductTrustReport);
+router.get("/couriers/compare", featuresCtrl.getCourierComparison);
+router.get("/orders/:orderId/return-eligibility", ...requireAuth, featuresCtrl.getReturnEligibility);
+router.get("/price-alerts", ...requireAuth, featuresCtrl.getUserPriceAlerts);
+router.post("/price-alerts", ...requireAuth, featuresCtrl.subscribePriceAlert);
+router.delete("/price-alerts/:id", ...requireAuth, featuresCtrl.deletePriceAlert);
+router.post("/stock-alerts", ...requireAuth, featuresCtrl.subscribeStockAlert);
+router.get("/budget-recommendations", featuresCtrl.getBudgetShoppingRecommendations);
+router.get("/products/:productId/value-score", featuresCtrl.getValueForMoneyScore);
+router.get("/products/:productId/questions", featuresCtrl.getProductQuestions);
+router.post("/products/:productId/questions", ...requireAuth, featuresCtrl.askProductQuestion);
+router.post("/products/questions/:questionId/answers", ...requireAuth, featuresCtrl.answerProductQuestion);
+router.get("/deals/personalized", attachUserIfPresent, featuresCtrl.getPersonalizedDealFeed);
+router.get("/compare-history", ...requireAuth, featuresCtrl.getCompareHistory);
+router.post("/compare-history", ...requireAuth, featuresCtrl.saveCompareHistory);
+router.delete("/compare-history", ...requireAuth, featuresCtrl.clearCompareHistory);
+router.get("/wishlist-groups", ...requireAuth, featuresCtrl.getWishlistGroups);
+router.post("/wishlist-groups", ...requireAuth, featuresCtrl.createWishlistGroup);
+router.patch("/wishlist-groups/:id", ...requireAuth, featuresCtrl.updateWishlistGroup);
+router.delete("/wishlist-groups/:id", ...requireAuth, featuresCtrl.deleteWishlistGroup);
+router.get("/budget/tracker", ...requireAuth, featuresCtrl.getPurchaseBudgetTracker);
+router.get("/analytics/spending", ...requireAuth, featuresCtrl.getPersonalSpendingAnalytics);
+router.post("/delivery-feedback", ...requireAuth, featuresCtrl.submitDeliveryFeedback);
+router.get("/delivery-feedback/:orderId", ...requireAuth, featuresCtrl.getDeliveryFeedback);
+router.post("/reports", ...requireAuth, featuresCtrl.submitProductReport);
+router.get("/reports", ...requireAuth, featuresCtrl.getUserProductReports);
+router.post("/commerce-assistant", ...requireAuth, aiLimiter, featuresCtrl.askPersonalCommerceAssistant);
+
 export default router;

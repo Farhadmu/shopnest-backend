@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as ctrl from "./seller.controller";
 import sellerIntelligenceRoutes from "./seller-intelligence.routes";
+import profitCalculatorRoutes from "./profit-calculator.routes";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
@@ -10,6 +11,7 @@ const router = Router();
 
 // Sub-routes for Seller Intelligence & Growth Hub
 router.use("/", sellerIntelligenceRoutes);
+router.use("/profit-calculator", profitCalculatorRoutes);
 
 router.get("/stores/:storeId", ctrl.getStoreById);
 router.get("/", ctrl.listStores);

@@ -106,6 +106,11 @@ export interface IAddress {
   division: string;
   district: string;
   upazila: string;
+  area: string;
+  unionWard: string;
+  road: string;
+  house: string;
+  landmark: string;
   city: string;
   streetAddress: string;
   postalCode: string;
@@ -124,6 +129,11 @@ const addressSchema = new Schema<IAddress>(
     division: { type: String, required: true, default: "Dhaka" },
     district: { type: String, required: true, default: "Dhaka" },
     upazila: { type: String, default: "" },
+    area: { type: String, default: "" },
+    unionWard: { type: String, default: "" },
+    road: { type: String, default: "" },
+    house: { type: String, default: "" },
+    landmark: { type: String, default: "" },
     city: { type: String, default: "" },
     streetAddress: { type: String, required: true },
     postalCode: { type: String, default: "" },
@@ -162,3 +172,233 @@ const supportTicketSchema = new Schema<ISupportTicket>(
 supportTicketSchema.index({ userId: 1, createdAt: -1 });
 applyToJSON(supportTicketSchema);
 export const SupportTicket = model<ISupportTicket>("SupportTicket", supportTicketSchema);
+
+// 6. Price Drop Alert Subscription
+export interface IPriceAlert {
+  _id: Types.ObjectId;
+  userId: string;
+  productId: string;
+  productTitle: string;
+  targetPrice: number;
+  currentPrice: number;
+  isTriggered: boolean;
+  notifiedAt?: Date;
+  createdAt: Date;
+}
+
+const priceAlertSchema = new Schema<IPriceAlert>(
+  {
+    userId: { type: String, required: true, index: true },
+    productId: { type: String, required: true, index: true },
+    productTitle: { type: String, required: true },
+    targetPrice: { type: Number, required: true },
+    currentPrice: { type: Number, required: true },
+    isTriggered: { type: Boolean, default: false },
+    notifiedAt: { type: Date },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+
+priceAlertSchema.index({ userId: 1, productId: 1 }, { unique: true });
+applyToJSON(priceAlertSchema);
+export const PriceAlert = model<IPriceAlert>("PriceAlert", priceAlertSchema);
+
+// 7. Back-in-Stock Alert Subscription
+export interface IStockAlert {
+  _id: Types.ObjectId;
+  userId: string;
+  userEmail?: string;
+  productId: string;
+  productTitle: string;
+  isNotified: boolean;
+  notifiedAt?: Date;
+  createdAt: Date;
+}
+
+const stockAlertSchema = new Schema<IStockAlert>(
+  {
+    userId: { type: String, required: true, index: true },
+    userEmail: { type: String },
+    productId: { type: String, required: true, index: true },
+    productTitle: { type: String, required: true },
+    isNotified: { type: Boolean, default: false },
+    notifiedAt: { type: Date },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+
+stockAlertSchema.index({ userId: 1, productId: 1 }, { unique: true });
+applyToJSON(stockAlertSchema);
+export const StockAlert = model<IStockAlert>("StockAlert", stockAlertSchema);
+
+// 8. Product Review Q&A
+export interface IProductAnswer {
+  _id?: Types.ObjectId;
+  authorId: string;
+  authorName: string;
+  authorRole: "seller" | "customer" | "ai_assistant";
+  content: string;
+  helpfulVotes: number;
+  createdAt: Date;
+}
+
+export interface IProductQuestion {
+  _id: Types.ObjectId;
+  productId: string;
+  userId: string;
+  userName: string;
+  question: string;
+  answers: IProductAnswer[];
+  isAnswered: boolean;
+  createdAt: Date;
+}
+
+const productAnswerSchema = new Schema<IProductAnswer>(
+  {
+    authorId: { type: String, required: true },
+    authorName: { type: String, required: true },
+    authorRole: { type: String, enum: ["seller", "customer", "ai_assistant"], default: "customer" },
+    content: { type: String, required: true },
+    helpfulVotes: { type: Number, default: 0 },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { timestamps: false }
+);
+
+const productQuestionSchema = new Schema<IProductQuestion>(
+  {
+    productId: { type: String, required: true, index: true },
+    userId: { type: String, required: true, index: true },
+    userName: { type: String, required: true },
+    question: { type: String, required: true, trim: true, maxlength: 500 },
+    answers: { type: [productAnswerSchema], default: [] },
+    isAnswered: { type: Boolean, default: false },
+  },
+  { timestamps: true }
+);
+
+applyToJSON(productQuestionSchema);
+export const ProductQuestion = model<IProductQuestion>("ProductQuestion", productQuestionSchema);
+
+// 9. Product Problem Report (Admin Moderation)
+export interface IProductReport {
+  _id: Types.ObjectId;
+  userId: string;
+  productId: string;
+  productTitle: string;
+  sellerId?: string;
+  category: "wrong_info" | "misleading_image" | "wrong_specs" | "suspicious_seller" | "damaged_product" | "other";
+  description: string;
+  evidenceUrls: string[];
+  status: "pending" | "investigating" | "resolved" | "dismissed";
+  adminNotes?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const productReportSchema = new Schema<IProductReport>(
+  {
+    userId: { type: String, required: true, index: true },
+    productId: { type: String, required: true, index: true },
+    productTitle: { type: String, required: true },
+    sellerId: { type: String },
+    category: {
+      type: String,
+      enum: ["wrong_info", "misleading_image", "wrong_specs", "suspicious_seller", "damaged_product", "other"],
+      required: true,
+    },
+    description: { type: String, required: true, trim: true, maxlength: 2000 },
+    evidenceUrls: { type: [String], default: [] },
+    status: { type: String, enum: ["pending", "investigating", "resolved", "dismissed"], default: "pending" },
+    adminNotes: { type: String },
+  },
+  { timestamps: true }
+);
+
+applyToJSON(productReportSchema);
+export const ProductReport = model<IProductReport>("ProductReport", productReportSchema);
+
+// 10. Delivery Experience Feedback
+export interface IDeliveryFeedback {
+  _id: Types.ObjectId;
+  userId: string;
+  orderId: string;
+  courierName: string;
+  speedRating: number; // 1-5
+  packagingRating: number; // 1-5
+  courierBehaviorRating: number; // 1-5
+  overallRating: number; // 1-5
+  feedbackText?: string;
+  createdAt: Date;
+}
+
+const deliveryFeedbackSchema = new Schema<IDeliveryFeedback>(
+  {
+    userId: { type: String, required: true, index: true },
+    orderId: { type: String, required: true, unique: true, index: true },
+    courierName: { type: String, default: "Standard Express" },
+    speedRating: { type: Number, required: true, min: 1, max: 5 },
+    packagingRating: { type: Number, required: true, min: 1, max: 5 },
+    courierBehaviorRating: { type: Number, required: true, min: 1, max: 5 },
+    overallRating: { type: Number, required: true, min: 1, max: 5 },
+    feedbackText: { type: String, default: "" },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+
+applyToJSON(deliveryFeedbackSchema);
+export const DeliveryFeedback = model<IDeliveryFeedback>("DeliveryFeedback", deliveryFeedbackSchema);
+
+// 11. Comparison History
+export interface IComparisonHistory {
+  _id: Types.ObjectId;
+  userId: string;
+  title: string;
+  productIds: string[];
+  category: string;
+  createdAt: Date;
+}
+
+const comparisonHistorySchema = new Schema<IComparisonHistory>(
+  {
+    userId: { type: String, required: true, index: true },
+    title: { type: String, default: "Product Comparison" },
+    productIds: { type: [String], required: true },
+    category: { type: String, default: "General" },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+
+comparisonHistorySchema.index({ userId: 1, createdAt: -1 });
+applyToJSON(comparisonHistorySchema);
+export const ComparisonHistory = model<IComparisonHistory>("ComparisonHistory", comparisonHistorySchema);
+
+// 12. Smart Wishlist Custom Groups
+export interface IWishlistGroup {
+  _id: Types.ObjectId;
+  userId: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  productIds: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const wishlistGroupSchema = new Schema<IWishlistGroup>(
+  {
+    userId: { type: String, required: true, index: true },
+    name: { type: String, required: true, trim: true },
+    description: { type: String, default: "" },
+    icon: { type: String, default: "❤️" },
+    color: { type: String, default: "#6366f1" },
+    productIds: { type: [String], default: [] },
+  },
+  { timestamps: true }
+);
+
+wishlistGroupSchema.index({ userId: 1, name: 1 }, { unique: true });
+applyToJSON(wishlistGroupSchema);
+export const WishlistGroup = model<IWishlistGroup>("WishlistGroup", wishlistGroupSchema);
+

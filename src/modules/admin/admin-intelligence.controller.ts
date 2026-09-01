@@ -439,31 +439,134 @@ export const getMarketplaceForecast = asyncHandler(async (_req: Request, res: Re
 });
 
 // 34. CATEGORY INTELLIGENCE
-export const getCategoryIntelligence = asyncHandler(async (_req: Request, res: Response) => {
-  const products = await Product.find({ isDeleted: false, status: "approved" });
-  const categoryCountMap: Record<string, number> = {};
+export const getCategoryIntelligence = asyncHandler(async (req: Request, res: Response) => {
+  const { range = "30d" } = req.query as { range?: string };
 
+  const now = new Date();
+  const rangeMs = {
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+    "3m": 90 * 24 * 60 * 60 * 1000,
+    "6m": 180 * 24 * 60 * 60 * 1000,
+    "1y": 365 * 24 * 60 * 60 * 1000,
+  }[range] || 30 * 24 * 60 * 60 * 1000;
+
+  const startDate = new Date(now.getTime() - rangeMs);
+  const prevStartDate = new Date(startDate.getTime() - rangeMs);
+
+  const products = await Product.find({ isDeleted: false });
+  const currentOrders = await Order.find({ createdAt: { $gte: startDate } });
+  const prevOrders = await Order.find({ createdAt: { $gte: prevStartDate, $lt: startDate } });
+
+  const productCategoryMap = new Map<string, string>();
   products.forEach((p) => {
-    const cat = p.category || "General";
-    categoryCountMap[cat] = (categoryCountMap[cat] || 0) + 1;
+    productCategoryMap.set(p._id?.toString() || "", p.category || "General");
   });
 
-  const totalProds = products.length || 1;
-  const categories = Object.entries(categoryCountMap).map(([name, count]) => ({
-    name,
-    growthRate: "+10%",
-    revenueShare: Math.round((count / totalProds) * 100),
-    orderVolume: `${count} item(s)`,
-    activeSellers: 1,
-    avgOrderValue: "৳3,500",
-  }));
+  const categoryStats: Record<string, {
+    revenue: number;
+    prevRevenue: number;
+    orders: Set<string>;
+    prevOrders: Set<string>;
+    unitsSold: number;
+    sellers: Set<string>;
+    ratings: number[];
+    ratingCount: number;
+  }> = {};
+
+  const validStatuses = ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"];
+
+  currentOrders.forEach((order) => {
+    if (!validStatuses.includes(order.status)) return;
+    const orderId = order._id?.toString() || "";
+
+    order.items?.forEach((item: any) => {
+      const productId = item.productId?.toString() || "";
+      const category = productCategoryMap.get(productId) || "General";
+      const itemRevenue = (item.price || 0) * (item.quantity || 1);
+
+      if (!categoryStats[category]) {
+        categoryStats[category] = {
+          revenue: 0, prevRevenue: 0, orders: new Set(), prevOrders: new Set(),
+          unitsSold: 0, sellers: new Set(), ratings: [], ratingCount: 0,
+        };
+      }
+
+      categoryStats[category].revenue += itemRevenue;
+      categoryStats[category].orders.add(orderId);
+      categoryStats[category].unitsSold += item.quantity || 1;
+      if (item.sellerId) categoryStats[category].sellers.add(item.sellerId);
+    });
+  });
+
+  prevOrders.forEach((order) => {
+    if (!validStatuses.includes(order.status)) return;
+    const orderId = order._id?.toString() || "";
+
+    order.items?.forEach((item: any) => {
+      const productId = item.productId?.toString() || "";
+      const category = productCategoryMap.get(productId) || "General";
+      const itemRevenue = (item.price || 0) * (item.quantity || 1);
+
+      if (!categoryStats[category]) {
+        categoryStats[category] = {
+          revenue: 0, prevRevenue: 0, orders: new Set(), prevOrders: new Set(),
+          unitsSold: 0, sellers: new Set(), ratings: [], ratingCount: 0,
+        };
+      }
+
+      categoryStats[category].prevRevenue += itemRevenue;
+      categoryStats[category].prevOrders.add(orderId);
+    });
+  });
+
+  products.forEach((p) => {
+    const category = p.category || "General";
+    if (!categoryStats[category]) {
+      categoryStats[category] = {
+        revenue: 0, prevRevenue: 0, orders: new Set(), prevOrders: new Set(),
+        unitsSold: 0, sellers: new Set(), ratings: [], ratingCount: 0,
+      };
+    }
+    if (p.sellerId) categoryStats[category].sellers.add(p.sellerId);
+    if (p.ratingAvg > 0) {
+      categoryStats[category].ratings.push(p.ratingAvg);
+      categoryStats[category].ratingCount += p.ratingCount || 1;
+    }
+  });
+
+  const totalRevenue = Object.values(categoryStats).reduce((sum, s) => sum + s.revenue, 0);
+
+  const categories = Object.entries(categoryStats).map(([name, stats]) => {
+    const avgOrderValue = stats.orders.size > 0 ? Math.round(stats.revenue / stats.orders.size) : 0;
+    const revenueShare = totalRevenue > 0 ? Math.round((stats.revenue / totalRevenue) * 1000) / 10 : 0;
+    const growthRate = stats.prevRevenue > 0
+      ? Math.round(((stats.revenue - stats.prevRevenue) / stats.prevRevenue) * 1000) / 10
+      : stats.revenue > 0 ? 100 : 0;
+    const avgRating = stats.ratings.length > 0
+      ? Math.round((stats.ratings.reduce((a, b) => a + b, 0) / stats.ratings.length) * 10) / 10
+      : 0;
+
+    return {
+      name,
+      products: products.filter((p) => (p.category || "General") === name).length,
+      activeSellers: stats.sellers.size,
+      orders: stats.orders.size,
+      unitsSold: stats.unitsSold,
+      revenue: stats.revenue,
+      avgOrderValue,
+      revenueShare,
+      growthRate,
+      avgRating,
+      ratingCount: stats.ratingCount,
+    };
+  }).sort((a, b) => b.revenue - a.revenue);
 
   sendSuccess(res, {
-    categories: categories.length > 0 ? categories : [
-      { name: "Electronics", growthRate: "0%", revenueShare: 100, orderVolume: "0 orders", activeSellers: 1, avgOrderValue: "৳0" }
-    ],
-    topPerformer: categories[0]?.name || "Electronics",
-    fastestExpandingCatalog: `${totalProds} Active Products`,
+    categories,
+    topPerformer: categories[0]?.name || "N/A",
+    fastestExpandingCatalog: `${categories.length} Categories`,
+    totalRevenue,
   });
 });
 
@@ -491,22 +594,53 @@ export const getSystemTelemetry = asyncHandler(async (_req: Request, res: Respon
 export const getPlatformAnalytics = asyncHandler(async (req: Request, res: Response) => {
   const { range = "30d" } = req.query as { range?: string };
 
+  const now = new Date();
+  const rangeMs = {
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+    "3m": 90 * 24 * 60 * 60 * 1000,
+    "6m": 180 * 24 * 60 * 60 * 1000,
+    "1y": 365 * 24 * 60 * 60 * 1000,
+  }[range] || 30 * 24 * 60 * 60 * 1000;
+
+  const startDate = new Date(now.getTime() - rangeMs);
+  const prevStartDate = new Date(startDate.getTime() - rangeMs);
+
   const db = mongoose.connection.db;
-  const realOrders = await Order.find({});
-  const realProducts = await Product.find({ isDeleted: false });
   const totalUsers = (await db?.collection("user").countDocuments()) || 0;
   const totalSellers = (await db?.collection("user").countDocuments({ role: "seller" })) || 0;
 
-  const totalRevenue = realOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-  const totalOrders = realOrders.length;
+  const currentOrders = await Order.find({ createdAt: { $gte: startDate } });
+  const prevOrders = await Order.find({ createdAt: { $gte: prevStartDate, $lt: startDate } });
+  const allOrders = await Order.find({});
 
-  // Real timeline aggregation from actual orders
+  const validStatuses = ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"];
+  const currentValidOrders = currentOrders.filter((o) => validStatuses.includes(o.status));
+  const prevValidOrders = prevOrders.filter((o) => validStatuses.includes(o.status));
+
+  const totalRevenue = currentValidOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const prevTotalRevenue = prevValidOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const totalOrders = currentValidOrders.length;
+
+  const revenueGrowth = prevTotalRevenue > 0
+    ? Math.round(((totalRevenue - prevTotalRevenue) / prevTotalRevenue) * 1000) / 10
+    : totalRevenue > 0 ? 100 : 0;
+
+  const products = await Product.find({ isDeleted: false });
+  const productCategoryMap = new Map<string, string>();
+  products.forEach((p) => productCategoryMap.set(p._id?.toString() || "", p.category || "General"));
+
   const timelineMap: Record<string, { revenue: number; orders: number }> = {};
-  realOrders.forEach((o) => {
+  currentValidOrders.forEach((o) => {
     const d = new Date(o.createdAt);
-    const label = range === "7d"
-      ? d.toLocaleDateString("default", { weekday: "short" })
-      : d.toLocaleDateString("default", { month: "short" });
+    let label: string;
+    if (range === "7d") {
+      label = d.toLocaleDateString("default", { weekday: "short" });
+    } else if (range === "30d") {
+      label = d.toLocaleDateString("default", { month: "short", day: "numeric" });
+    } else {
+      label = d.toLocaleDateString("default", { month: "short" });
+    }
     if (!timelineMap[label]) timelineMap[label] = { revenue: 0, orders: 0 };
     timelineMap[label].revenue += o.totalAmount || 0;
     timelineMap[label].orders += 1;
@@ -520,37 +654,102 @@ export const getPlatformAnalytics = asyncHandler(async (req: Request, res: Respo
     sellers: Math.max(1, totalSellers),
   }));
 
-  // Real category performance from actual products
-  const categoryMap: Record<string, number> = {};
-  realProducts.forEach((p) => {
-    const cat = p.category || "General";
-    categoryMap[cat] = (categoryMap[cat] || 0) + (p.price || 0);
+  const categoryRevenueMap: Record<string, number> = {};
+  const categoryOrderMap: Record<string, Set<string>> = {};
+
+  currentValidOrders.forEach((order) => {
+    const orderId = order._id?.toString() || "";
+    order.items?.forEach((item: any) => {
+      const productId = item.productId?.toString() || "";
+      const category = productCategoryMap.get(productId) || "General";
+      const itemRevenue = (item.price || 0) * (item.quantity || 1);
+
+      categoryRevenueMap[category] = (categoryRevenueMap[category] || 0) + itemRevenue;
+      if (!categoryOrderMap[category]) categoryOrderMap[category] = new Set();
+      categoryOrderMap[category].add(orderId);
+    });
   });
 
-  const totalCatalogValue = Object.values(categoryMap).reduce((s, v) => s + v, 0) || 1;
-  const categoryPerformance = Object.entries(categoryMap).map(([category, catRev]) => ({
-    category,
-    revenue: catRev,
-    share: Math.round((catRev / totalCatalogValue) * 100),
-    growth: "Active",
-  }));
+  const totalCategoryRevenue = Object.values(categoryRevenueMap).reduce((s, v) => s + v, 0) || 1;
+  const categoryPerformance = Object.entries(categoryRevenueMap)
+    .map(([category, revenue]) => ({
+      category,
+      revenue,
+      share: Math.round((revenue / totalCategoryRevenue) * 1000) / 10,
+      orders: categoryOrderMap[category]?.size || 0,
+    }))
+    .sort((a, b) => b.revenue - a.revenue);
 
-  // Real seller ranking from active stores
-  const stores = await Store.find({}).limit(10);
-  const topSellersRanking = stores.map((s, idx) => ({
-    rank: idx + 1,
-    name: s.storeName || (s as any).name || "Store",
-    gmv: `৳${totalRevenue.toLocaleString()}`,
-    orders: totalOrders,
-    rating: s.rating || 5.0,
-    returnRate: "0.0%",
-  }));
+  const sellerStats: Record<string, {
+    gmv: number;
+    orders: Set<string>;
+    returnedOrders: Set<string>;
+    rating: number;
+    storeName: string;
+    productCount: number;
+  }> = {};
+
+  currentValidOrders.forEach((order) => {
+    const orderId = order._id?.toString() || "";
+    order.items?.forEach((item: any) => {
+      const storeId = item.storeId?.toString() || "";
+      if (!sellerStats[storeId]) {
+        sellerStats[storeId] = { gmv: 0, orders: new Set(), returnedOrders: new Set(), rating: 0, storeName: "", productCount: 0 };
+      }
+      sellerStats[storeId].gmv += (item.price || 0) * (item.quantity || 1);
+      sellerStats[storeId].orders.add(orderId);
+    });
+  });
+
+  allOrders.forEach((order) => {
+    if (order.status === "returned" || order.status === "refunded") {
+      const orderId = order._id?.toString() || "";
+      order.items?.forEach((item: any) => {
+        const storeId = item.storeId?.toString() || "";
+        if (sellerStats[storeId]) {
+          sellerStats[storeId].returnedOrders.add(orderId);
+        }
+      });
+    }
+  });
+
+  const stores = await Store.find({});
+  stores.forEach((store) => {
+    const storeId = store._id?.toString() || "";
+    if (sellerStats[storeId]) {
+      sellerStats[storeId].rating = store.rating || 0;
+      sellerStats[storeId].storeName = store.storeName || "Unknown Store";
+    }
+  });
+
+  products.forEach((p) => {
+    const storeId = p.storeId?.toString() || "";
+    if (sellerStats[storeId]) {
+      sellerStats[storeId].productCount += 1;
+    }
+  });
+
+  const topSellersRanking = Object.entries(sellerStats)
+    .map(([storeId, stats]) => ({
+      rank: 0,
+      storeId,
+      name: stats.storeName || "Unknown Store",
+      gmv: stats.gmv,
+      gmvFormatted: `৳${stats.gmv.toLocaleString()}`,
+      orders: stats.orders.size,
+      rating: stats.rating,
+      returnRate: stats.orders.size > 0 ? Math.round((stats.returnedOrders.size / stats.orders.size) * 1000) / 10 : 0,
+      products: stats.productCount,
+    }))
+    .sort((a, b) => b.gmv - a.gmv)
+    .slice(0, 10)
+    .map((s, idx) => ({ ...s, rank: idx + 1 }));
 
   sendSuccess(res, {
     range,
     kpis: {
       totalRevenue,
-      revenueGrowth: totalRevenue > 0 ? "+100%" : "0%",
+      revenueGrowth,
       totalUsers,
       userGrowth: totalUsers > 0 ? `+${totalUsers}` : "0",
       totalSellers,

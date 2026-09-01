@@ -37,6 +37,15 @@ router.get("/platform-analytics", ctrl.getPlatformAnalytics);
 // 37. Rule-Based Fraud & Risk Detection Matrix
 router.get("/risk-matrix", ctrl.getRiskMatrix);
 
+// 37b. Suspicious Orders Detection
+router.get("/suspicious-orders", ctrl.getSuspiciousOrders);
+
+// 37c. Financial Risk Exposure
+router.get("/financial-risk", ctrl.getFinancialRisk);
+
+// 37d. Fraud Alerts
+router.get("/fraud-alerts", ctrl.getFraudAlerts);
+
 // 38. Security Incident Management
 router.get("/incidents", ctrl.getSecurityIncidents);
 router.patch("/incidents/:id", ctrl.updateSecurityIncident);

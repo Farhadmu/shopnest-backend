@@ -2,6 +2,7 @@ import { Router } from "express";
 import * as ctrl from "./admin.controller";
 import adminIntelligenceRoutes from "./admin-intelligence.routes";
 import securityCenterRoutes from "./security-center.routes";
+import orderRiskRoutes from "../risk/order-risk.routes";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 
@@ -15,6 +16,9 @@ router.use("/", adminIntelligenceRoutes);
 
 // Security Center routes
 router.use("/security-center", securityCenterRoutes);
+
+// Order Risk Assessment routes
+router.use("/order-risk", orderRiskRoutes);
 
 // Core admin routes
 router.get("/dashboard", ctrl.getDashboardMetrics);

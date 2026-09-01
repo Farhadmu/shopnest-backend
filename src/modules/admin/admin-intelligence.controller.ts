@@ -151,35 +151,259 @@ export const getMarketplaceHealthIndex = asyncHandler(async (_req: Request, res:
 
 // 31. REVENUE LEAKAGE DETECTOR
 export const getRevenueLeakage = asyncHandler(async (_req: Request, res: Response) => {
-  const cancelledOrders = await Order.find({ status: { $in: ["cancelled", "refunded", "returned"] } });
-  const totalLeakage = cancelledOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const allOrders = await Order.find({});
+  const totalRevenue = allOrders
+    .filter((o) => ["delivered", "shipped", "out_for_delivery", "processing", "confirmed"].includes(o.status))
+    .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
 
-  const leakageCategories = [
-    { type: "Cancelled Orders", amount: totalLeakage, severity: totalLeakage > 0 ? "medium" : "low", details: "Cancelled or returned customer transactions" },
-  ];
+  const cancelledOrders = allOrders.filter((o) => o.status === "cancelled");
+  const refundedOrders = allOrders.filter((o) => o.status === "refunded" || o.status === "returned");
+
+  const cancelledValue = cancelledOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const refundValue = refundedOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+
+  const totalDiscount = allOrders.reduce((sum, o) => sum + (o.discount || 0), 0);
+
+  const couponOrders = allOrders.filter((o) => o.couponCode);
+  const couponImpact = couponOrders.reduce((sum, o) => sum + (o.discount || 0), 0);
+
+  const unpaidOrders = allOrders.filter((o) => o.paymentStatus === "unpaid" && o.status !== "cancelled");
+  const unpaidValue = unpaidOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+
+  const totalPotentialLeakage = cancelledValue + refundValue + unpaidValue;
+
+  const leakageCategories = [];
+
+  if (cancelledValue > 0) {
+    leakageCategories.push({
+      type: "Cancelled Orders",
+      amount: cancelledValue,
+      count: cancelledOrders.length,
+      severity: cancelledValue > totalRevenue * 0.1 ? "high" : cancelledValue > totalRevenue * 0.05 ? "medium" : "low",
+      details: `${cancelledOrders.length} cancelled orders totaling ৳${cancelledValue.toLocaleString()}`,
+    });
+  }
+
+  if (refundValue > 0) {
+    leakageCategories.push({
+      type: "Refunded/Returned Orders",
+      amount: refundValue,
+      count: refundedOrders.length,
+      severity: refundValue > totalRevenue * 0.1 ? "high" : refundValue > totalRevenue * 0.05 ? "medium" : "low",
+      details: `${refundedOrders.length} refunded/returned orders totaling ৳${refundValue.toLocaleString()}`,
+    });
+  }
+
+  if (unpaidValue > 0) {
+    leakageCategories.push({
+      type: "Unpaid Orders",
+      amount: unpaidValue,
+      count: unpaidOrders.length,
+      severity: "medium",
+      details: `${unpaidOrders.length} unpaid orders totaling ৳${unpaidValue.toLocaleString()}`,
+    });
+  }
+
+  if (totalDiscount > 0) {
+    leakageCategories.push({
+      type: "Discount Impact",
+      amount: totalDiscount,
+      count: allOrders.filter((o) => (o.discount || 0) > 0).length,
+      severity: totalDiscount > totalRevenue * 0.2 ? "high" : totalDiscount > totalRevenue * 0.1 ? "medium" : "low",
+      details: `Total discounts given: ৳${totalDiscount.toLocaleString()}`,
+    });
+  }
+
+  if (couponImpact > 0) {
+    leakageCategories.push({
+      type: "Coupon Impact",
+      amount: couponImpact,
+      count: couponOrders.length,
+      severity: couponImpact > totalRevenue * 0.15 ? "high" : couponImpact > totalRevenue * 0.05 ? "medium" : "low",
+      details: `${couponOrders.length} orders used coupons totaling ৳${couponImpact.toLocaleString()}`,
+    });
+  }
+
+  if (leakageCategories.length === 0) {
+    leakageCategories.push({
+      type: "No Leakage Detected",
+      amount: 0,
+      count: 0,
+      severity: "low",
+      details: "No financial leakage detected from the currently available transaction data.",
+    });
+  }
 
   sendSuccess(res, {
-    totalPotentialLeakage: totalLeakage,
-    leakageFormatted: `৳${totalLeakage.toLocaleString()}`,
+    totalRevenue,
+    totalPotentialLeakage,
+    leakageFormatted: `৳${totalPotentialLeakage.toLocaleString()}`,
+    leakagePercentage: totalRevenue > 0 ? Math.round((totalPotentialLeakage / totalRevenue) * 100) : 0,
     recoveredThisMonth: "৳0",
     leakageCategories,
-    automatedRemediation: "Zero unintended revenue leakage detected.",
+    orderSummary: {
+      total: allOrders.length,
+      completed: allOrders.filter((o) => o.status === "delivered").length,
+      cancelled: cancelledOrders.length,
+      refunded: refundedOrders.length,
+    },
+    automatedRemediation: totalPotentialLeakage > 0
+      ? "Review flagged transactions and verify refund/cancellation legitimacy."
+      : "No automated remediation required. All transactions appear normal.",
   });
 });
 
 // 32. SELLER RISK RANKING
 export const getSellerRiskRanking = asyncHandler(async (_req: Request, res: Response) => {
-  const stores = await Store.find({ status: "approved" });
-  const total = stores.length;
+  const stores = await Store.find({});
+  const allOrders = await Order.find({});
+  const products = await Product.find({ isDeleted: false });
+
+  const sellerRisks = stores.map((store) => {
+    const storeId = store._id?.toString() || "";
+    const sellerProducts = products.filter((p) => p.storeId === storeId);
+    const storeOrders = allOrders.filter((o) =>
+      o.items?.some((item: any) => item.storeId === storeId)
+    );
+
+    const totalOrders = storeOrders.length;
+    const cancelledOrders = storeOrders.filter((o) => o.status === "cancelled");
+    const refundedOrders = storeOrders.filter((o) => o.status === "refunded" || o.status === "returned");
+    const deliveredOrders = storeOrders.filter((o) => o.status === "delivered");
+
+    const cancellationRate = totalOrders > 0 ? (cancelledOrders.length / totalOrders) * 100 : 0;
+    const returnRate = totalOrders > 0 ? (refundedOrders.length / totalOrders) * 100 : 0;
+    const deliveryRate = totalOrders > 0 ? (deliveredOrders.length / totalOrders) * 100 : 0;
+
+    const avgRating = store.rating || 0;
+    const trustScore = store.trustScore || 50;
+
+    const rejectedProducts = sellerProducts.filter((p) => p.status === "rejected").length;
+    const totalProducts = sellerProducts.length;
+
+    const riskFactors: string[] = [];
+    let riskScore = 0;
+
+    if (cancellationRate > 20) {
+      riskScore += 25;
+      riskFactors.push(`High cancellation rate (${cancellationRate.toFixed(1)}%)`);
+    } else if (cancellationRate > 10) {
+      riskScore += 15;
+      riskFactors.push(`Moderate cancellation rate (${cancellationRate.toFixed(1)}%)`);
+    } else if (cancellationRate > 5) {
+      riskScore += 5;
+      riskFactors.push(`Low cancellation rate (${cancellationRate.toFixed(1)}%)`);
+    }
+
+    if (returnRate > 15) {
+      riskScore += 20;
+      riskFactors.push(`High return/refund rate (${returnRate.toFixed(1)}%)`);
+    } else if (returnRate > 8) {
+      riskScore += 10;
+      riskFactors.push(`Moderate return/refund rate (${returnRate.toFixed(1)}%)`);
+    } else if (returnRate > 3) {
+      riskScore += 5;
+      riskFactors.push(`Low return/refund rate (${returnRate.toFixed(1)}%)`);
+    }
+
+    if (avgRating > 0 && avgRating < 3.0) {
+      riskScore += 20;
+      riskFactors.push(`Low rating (${avgRating.toFixed(1)}/5)`);
+    } else if (avgRating > 0 && avgRating < 3.5) {
+      riskScore += 10;
+      riskFactors.push(`Below average rating (${avgRating.toFixed(1)}/5)`);
+    } else if (avgRating > 0 && avgRating < 4.0) {
+      riskScore += 5;
+      riskFactors.push(`Average rating (${avgRating.toFixed(1)}/5)`);
+    }
+
+    if (trustScore < 40) {
+      riskScore += 20;
+      riskFactors.push(`Low trust score (${trustScore}/100)`);
+    } else if (trustScore < 60) {
+      riskScore += 10;
+      riskFactors.push(`Moderate trust score (${trustScore}/100)`);
+    } else if (trustScore < 75) {
+      riskScore += 5;
+      riskFactors.push(`Trust score (${trustScore}/100)`);
+    }
+
+    if (rejectedProducts > 0) {
+      riskScore += Math.min(15, rejectedProducts * 5);
+      riskFactors.push(`${rejectedProducts} rejected product(s)`);
+    }
+
+    if (totalProducts === 0) {
+      riskScore += 10;
+      riskFactors.push("No active products");
+    }
+
+    if (totalOrders === 0) {
+      riskScore += 5;
+      riskFactors.push("No order history");
+    }
+
+    riskScore = Math.min(100, Math.max(0, riskScore));
+
+    let riskLevel: "low" | "medium" | "high" | "critical" = "low";
+    if (riskScore >= 76) riskLevel = "critical";
+    else if (riskScore >= 51) riskLevel = "high";
+    else if (riskScore >= 26) riskLevel = "medium";
+
+    return {
+      sellerId: store.ownerId,
+      storeId,
+      storeName: store.storeName || "Unknown Store",
+      rating: avgRating,
+      trustScore,
+      totalOrders,
+      completedOrders: deliveredOrders.length,
+      cancelledOrders: cancelledOrders.length,
+      returnedOrders: refundedOrders.length,
+      cancellationRate: Math.round(cancellationRate * 10) / 10,
+      returnRate: Math.round(returnRate * 10) / 10,
+      totalProducts,
+      rejectedProducts,
+      riskScore,
+      riskLevel,
+      riskFactors,
+      status: store.status,
+      lastActivity: store.updatedAt || store.createdAt,
+    };
+  });
+
+  const total = sellerRisks.length;
+  const lowRisk = sellerRisks.filter((s) => s.riskLevel === "low");
+  const mediumRisk = sellerRisks.filter((s) => s.riskLevel === "medium");
+  const highRisk = sellerRisks.filter((s) => s.riskLevel === "high");
+  const criticalRisk = sellerRisks.filter((s) => s.riskLevel === "critical");
+  const avgRiskScore = total > 0 ? Math.round(sellerRisks.reduce((s, r) => s + r.riskScore, 0) / total) : 0;
+
+  const flaggedSellers = sellerRisks
+    .filter((s) => s.riskLevel === "high" || s.riskLevel === "critical")
+    .sort((a, b) => b.riskScore - a.riskScore)
+    .slice(0, 10)
+    .map((s) => ({
+      sellerId: s.sellerId,
+      storeId: s.storeId,
+      storeName: s.storeName,
+      riskScore: s.riskScore,
+      riskLevel: s.riskLevel,
+      reason: s.riskFactors[0] || "Multiple risk factors detected",
+      actionRequired: s.riskLevel === "critical" ? "Immediate Review" : "Review Required",
+    }));
 
   sendSuccess(res, {
     riskDistribution: {
-      low: { count: total, percentage: 100, label: "Low Risk (Verified & Good Standing)" },
-      medium: { count: 0, percentage: 0, label: "Medium Risk" },
-      high: { count: 0, percentage: 0, label: "High Risk" },
-      critical: { count: 0, percentage: 0, label: "Critical" },
+      low: { count: lowRisk.length, percentage: total > 0 ? Math.round((lowRisk.length / total) * 100) : 0, label: "Low Risk (Verified & Good Standing)" },
+      medium: { count: mediumRisk.length, percentage: total > 0 ? Math.round((mediumRisk.length / total) * 100) : 0, label: "Medium Risk" },
+      high: { count: highRisk.length, percentage: total > 0 ? Math.round((highRisk.length / total) * 100) : 0, label: "High Risk" },
+      critical: { count: criticalRisk.length, percentage: total > 0 ? Math.round((criticalRisk.length / total) * 100) : 0, label: "Critical" },
     },
-    flaggedSellers: [],
+    averageRiskScore: avgRiskScore,
+    totalSellers: total,
+    flaggedSellers,
+    allSellers: sellerRisks.sort((a, b) => b.riskScore - a.riskScore),
   });
 });
 

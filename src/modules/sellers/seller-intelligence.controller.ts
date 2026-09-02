@@ -6,68 +6,61 @@ import { Store } from "./store.model";
 import { Product } from "../products/product.model";
 import { Order } from "../orders/order.model";
 import { SellerGoal, AbExperiment } from "./seller-intelligence.model";
-
-async function getSellerStore(userId: string) {
-  const store = await Store.findOne({
-    $or: [{ ownerId: userId }, { userId: userId }],
-  });
-  if (!store) {
-    const anyStore = await Store.findOne();
-    if (anyStore) return anyStore;
-    return await Store.create({
-      ownerId: userId,
-      storeName: "ShopNest Official Store",
-      slug: `store-${userId.slice(-6)}`,
-      description: "Official seller storefront",
-      status: "approved",
-    });
-  }
-  return store;
-}
+import { getAuthenticatedSellerContext } from "../../utils/seller-context";
 
 // 11. SELLER HEALTH SCORE
 export const getSellerHealthScore = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
 
-  const totalProducts = await Product.countDocuments({ $or: [{ storeId: store.id }, { sellerId: userId }], isDeleted: false });
-  const orders = await Order.find({ "items.storeId": store.id });
+  const store = await Store.findById(ctx.storeId);
+  if (!store) throw ApiError.notFound("Store not found");
 
-  // Calculate real performance metrics
+  const totalProducts = await Product.countDocuments({ storeId: ctx.storeId, isDeleted: false });
+  const orders = await Order.find({ "items.storeId": ctx.storeId });
+
   const deliveredOrders = orders.filter((o) => o.status === "delivered").length;
   const returnedOrders = orders.filter((o) => o.status === "returned" || o.status === "refunded").length;
   const totalOrders = orders.length;
 
-  const deliveryReliability = totalOrders > 0 ? Math.round((deliveredOrders / totalOrders) * 100) : 100;
-  const returnRatePercent = totalOrders > 0 ? Math.round((returnedOrders / totalOrders) * 100) : 0;
-  const customerSatisfaction = Math.min(100, Math.round((store.rating || 5.0) * 20));
-  const responseRate = 95;
-  const productQuality = customerSatisfaction;
+  const deliveryReliability = totalOrders > 0 ? Math.round((deliveredOrders / totalOrders) * 100) : null;
+  const returnRatePercent = totalOrders > 0 ? Math.round((returnedOrders / totalOrders) * 100) : null;
+  const customerSatisfaction = store.rating ? Math.min(100, Math.round(store.rating * 20)) : null;
 
-  // Composite Weighted Score
-  const overallHealth = Math.round(
-    customerSatisfaction * 0.30 +
-      responseRate * 0.20 +
-      deliveryReliability * 0.25 +
-      productQuality * 0.15 +
-      (100 - returnRatePercent * 3) * 0.10
-  );
+  // Only calculate composite if we have enough data
+  const hasEnoughData = totalOrders >= 3 && totalProducts >= 1;
 
-  const recommendations = [
-    returnRatePercent > 5 ? "Review customer feedback on return reasons to optimize listing accuracy." : "Zero returns recorded! Maintain strict packaging standards.",
-    deliveryReliability < 90 ? "Dispatch pending orders promptly to boost delivery reliability." : "Great dispatch speed! Top tier on ShopNest marketplace.",
-    totalProducts < 3 ? "Expand your active catalog with more products to increase buyer discovery." : "Active product catalog is healthy.",
-  ];
+  let overallHealth: number | null = null;
+  if (hasEnoughData && deliveryReliability !== null && returnRatePercent !== null && customerSatisfaction !== null) {
+    overallHealth = Math.round(
+      customerSatisfaction * 0.30 +
+      (deliveryReliability * 0.35) +
+      (100 - Math.min(returnRatePercent * 3, 100)) * 0.35
+    );
+  }
+
+  const recommendations: string[] = [];
+  if (totalOrders === 0) {
+    recommendations.push("Start receiving orders to calculate your health score.");
+  } else {
+    if (returnRatePercent !== null && returnRatePercent > 5) {
+      recommendations.push("Review customer feedback on return reasons to optimize listing accuracy.");
+    }
+    if (deliveryReliability !== null && deliveryReliability < 90) {
+      recommendations.push("Dispatch pending orders promptly to boost delivery reliability.");
+    }
+  }
+  if (totalProducts < 3) {
+    recommendations.push("Expand your active catalog with more products to increase buyer discovery.");
+  }
 
   sendSuccess(res, {
     storeName: store.storeName,
     overallHealth,
+    hasEnoughData,
     metrics: {
-      customerSatisfaction: { score: customerSatisfaction, unit: "%", target: 95, status: "excellent" },
-      responseRate: { score: responseRate, unit: "%", target: 90, status: "good" },
-      deliveryReliability: { score: deliveryReliability, unit: "%", target: 95, status: "excellent" },
-      productQuality: { score: productQuality, unit: "%", target: 90, status: "good" },
-      returnRate: { score: returnRatePercent, unit: "%", target: 5, status: "excellent" },
+      customerSatisfaction: { score: customerSatisfaction, unit: "%", status: customerSatisfaction ? "calculated" : "no_data" },
+      deliveryReliability: { score: deliveryReliability, unit: "%", status: deliveryReliability ? "calculated" : "no_data" },
+      returnRate: { score: returnRatePercent, unit: "%", status: returnRatePercent ? "calculated" : "no_data" },
     },
     recommendations,
   });
@@ -75,14 +68,30 @@ export const getSellerHealthScore = asyncHandler(async (req: Request, res: Respo
 
 // 12. AI SALES FORECASTING
 export const getSalesForecast = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
 
-  const orders = await Order.find({ "items.storeId": store.id });
-  const totalHistoricalRevenue = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-  const baseDailyAvg = orders.length > 0 ? Math.round(totalHistoricalRevenue / Math.max(1, orders.length)) : 0;
+  const orders = await Order.find({ "items.storeId": ctx.storeId, status: { $in: ["delivered", "shipped", "out_for_delivery"] } });
 
-  // Generate 30-day forecast points with confidence bands
+  if (orders.length < 3) {
+    return sendSuccess(res, {
+      hasEnoughData: false,
+      message: "Not enough historical sales data to generate a reliable forecast. Need at least 3 completed orders.",
+      expectedRevenue: null,
+      expectedOrders: null,
+      confidenceScore: null,
+      forecastDaily: [],
+    });
+  }
+
+  const totalHistoricalRevenue = orders.reduce((sum, o) => {
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    return sum + sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
+  }, 0);
+
+  const oldestOrder = orders.reduce((oldest, o) => o.createdAt < oldest.createdAt ? o : oldest, orders[0]);
+  const daysSinceFirst = Math.max(1, Math.floor((Date.now() - oldestOrder.createdAt.getTime()) / (1000 * 60 * 60 * 24)));
+  const dailyAvg = totalHistoricalRevenue / daysSinceFirst;
+
   const forecastDaily: Array<{ day: number; date: string; expectedRevenue: number; lowerBand: number; upperBand: number; expectedOrders: number }> = [];
   let totalForecastRevenue = 0;
   let totalForecastOrders = 0;
@@ -90,13 +99,12 @@ export const getSalesForecast = asyncHandler(async (req: Request, res: Response)
   for (let i = 1; i <= 30; i++) {
     const dateObj = new Date(Date.now() + i * 24 * 3600 * 1000);
     const dayOfWeek = dateObj.getDay();
-    const weekendMultiplier = dayOfWeek === 5 || dayOfWeek === 6 ? 1.2 : 1.0;
-    const growthFactor = baseDailyAvg > 0 ? 1 + (i / 30) * 0.05 : 1;
+    const weekendMultiplier = dayOfWeek === 5 || dayOfWeek === 6 ? 1.15 : 1.0;
 
-    const expectedDayRevenue = Math.round(baseDailyAvg * weekendMultiplier * growthFactor);
-    const lowerBand = Math.round(expectedDayRevenue * 0.9);
-    const upperBand = Math.round(expectedDayRevenue * 1.1);
-    const dayOrders = expectedDayRevenue > 0 ? Math.max(1, Math.round(expectedDayRevenue / 1500)) : 0;
+    const expectedDayRevenue = Math.round(dailyAvg * weekendMultiplier);
+    const lowerBand = Math.round(expectedDayRevenue * 0.7);
+    const upperBand = Math.round(expectedDayRevenue * 1.3);
+    const dayOrders = expectedDayRevenue > 0 ? Math.max(1, Math.round(expectedDayRevenue / (totalHistoricalRevenue / orders.length))) : 0;
 
     totalForecastRevenue += expectedDayRevenue;
     totalForecastOrders += dayOrders;
@@ -112,242 +120,346 @@ export const getSalesForecast = asyncHandler(async (req: Request, res: Response)
   }
 
   sendSuccess(res, {
-    storeId: store.id,
+    storeId: ctx.storeId,
     period: "Next 30 Days",
+    hasEnoughData: true,
     expectedRevenue: totalForecastRevenue,
     expectedOrders: totalForecastOrders,
-    confidenceScore: totalForecastRevenue > 0 ? 88 : 50,
-    growthRateProjected: totalForecastRevenue > 0 ? "+10%" : "0%",
+    confidenceScore: Math.min(85, 40 + orders.length * 2),
+    growthRateProjected: null,
     forecastDaily,
-    limitations: "Forecast model uses exponential smoothing over recent order velocity and seasonal weekly weights.",
+    limitations: "Forecast is based on your store's historical order velocity. Actual results may vary based on market conditions, promotions, and seasonality.",
   });
 });
 
 // 13. DEMAND HEATMAP
 export const getDemandHeatmap = asyncHandler(async (req: Request, res: Response) => {
+  const ctx = await getAuthenticatedSellerContext(req);
   const { timeframe = "30d" } = req.query;
 
-  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const categories = ["Electronics", "Fashion", "Beauty & Care", "Home & Living", "Sports & Gear"];
+  const days = Math.min(90, Math.max(7, parseInt(timeframe as string) || 30));
+  const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-  // Density intensity grid: 0 (Low) to 100 (Peak)
-  const heatmapData = categories.map((cat) => {
-    return {
-      category: cat,
-      days: days.map((day, dIdx) => {
-        const isWeekend = day === "Fri" || day === "Sat";
-        const baseIntensity = cat === "Electronics" ? 65 : cat === "Fashion" ? 75 : 55;
-        const score = Math.min(100, Math.round(baseIntensity + (isWeekend ? 25 : (dIdx % 3) * 8)));
-        return {
-          day,
-          intensity: score,
-          level: score >= 85 ? "peak" : score >= 65 ? "high" : score >= 45 ? "medium" : "low",
-          orderVolume: Math.round(score * 1.4),
-        };
-      }),
-    };
+  const orders = await Order.find({
+    "items.storeId": ctx.storeId,
+    createdAt: { $gte: startDate },
   });
 
+  if (orders.length === 0) {
+    return sendSuccess(res, {
+      hasEnoughData: false,
+      message: "Not enough order data to generate a demand heatmap. Start receiving orders to see geographic demand patterns.",
+      timeframe,
+      heatmapData: [],
+    });
+  }
+
+  // Aggregate by division
+  const divisionMap: Record<string, { orders: number; revenue: number }> = {};
+  orders.forEach((o) => {
+    const division = o.division || "Unknown";
+    if (!divisionMap[division]) divisionMap[division] = { orders: 0, revenue: 0 };
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    divisionMap[division].orders += 1;
+    divisionMap[division].revenue += sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
+  });
+
+  const heatmapData = Object.entries(divisionMap)
+    .map(([division, data]) => ({
+      division,
+      orders: data.orders,
+      revenue: data.revenue,
+      intensity: Math.min(100, Math.round((data.orders / Math.max(1, orders.length)) * 100)),
+    }))
+    .sort((a, b) => b.orders - a.orders);
+
   sendSuccess(res, {
+    hasEnoughData: true,
     timeframe,
-    categories,
-    days,
     heatmapData,
-    peakDays: "Friday & Saturday (Weekend Evening Peaks)",
-    topCategory: "Fashion & Lifestyle (88% peak saturation)",
+    totalOrders: orders.length,
+    topDivision: heatmapData[0]?.division || null,
   });
 });
 
 // 14. SELLER GROWTH SIMULATOR
 export const simulateGrowthScenario = asyncHandler(async (req: Request, res: Response) => {
-  const { currentPrice = 2500, newPrice = 2300, adSpend = 5000, inventoryExpansion = 20 } = req.body;
+  const ctx = await getAuthenticatedSellerContext(req);
+  const { currentPrice, newPrice, adSpend = 0, inventoryExpansion = 0 } = req.body;
 
-  const priceDeltaPercent = ((newPrice - currentPrice) / currentPrice) * 100;
-  const elasticity = -1.6; // Price elasticity of demand in e-commerce
+  const orders = await Order.find({ "items.storeId": ctx.storeId, status: "delivered" });
+  const products = await Product.find({ storeId: ctx.storeId, isDeleted: false });
+
+  const currentRevenue = orders.reduce((sum, o) => {
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    return sum + sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
+  }, 0);
+
+  const avgPrice = products.length > 0
+    ? products.reduce((s, p) => s + (p.discountPrice || p.price), 0) / products.length
+    : currentPrice || 1000;
+
+  const effectiveCurrentPrice = currentPrice || avgPrice;
+  const effectiveNewPrice = newPrice || avgPrice;
+  const priceDeltaPercent = ((effectiveNewPrice - effectiveCurrentPrice) / effectiveCurrentPrice) * 100;
+
+  const elasticity = -1.6;
   const salesVolumeDeltaPercent = Math.round(priceDeltaPercent * elasticity + (adSpend / 1000) * 1.8);
   const revenueDeltaPercent = Math.round(salesVolumeDeltaPercent + priceDeltaPercent);
-  const marginDeltaPercent = Math.round(priceDeltaPercent * 0.7 - 2);
 
   sendSuccess(res, {
-    scenario: { currentPrice, newPrice, adSpend, inventoryExpansion },
+    currentBaseline: {
+      avgPrice: Math.round(effectiveCurrentPrice),
+      monthlyOrders: orders.length,
+      monthlyRevenue: currentRevenue,
+    },
+    simulatedScenario: {
+      newPrice: Math.round(effectiveNewPrice),
+      adSpend,
+      inventoryExpansion,
+    },
     projectedImpact: {
       salesVolumeChange: `${salesVolumeDeltaPercent > 0 ? "+" : ""}${salesVolumeDeltaPercent}%`,
       revenueChange: `${revenueDeltaPercent > 0 ? "+" : ""}${revenueDeltaPercent}%`,
-      grossMarginImpact: `${marginDeltaPercent > 0 ? "+" : ""}${marginDeltaPercent}%`,
-      estimatedExtraOrders: Math.max(15, Math.round(salesVolumeDeltaPercent * 3.2)),
+      estimatedOrdersChange: Math.round((salesVolumeDeltaPercent / 100) * orders.length),
     },
-    strategicInsight:
-      revenueDeltaPercent > 0
-        ? `✅ Price adjustment to ৳${newPrice.toLocaleString()} accompanied by ৳${adSpend.toLocaleString()} ad spend is projected to deliver positive net revenue growth.`
-        : `⚠️ Proposed price reduction may erode gross margin without sufficient unit velocity lift.`,
+    isSimulation: true,
+    disclaimer: "This is a simulation based on price elasticity models. Actual results will vary based on market conditions, competition, and customer behavior.",
   });
 });
 
 // 15. AI MARKETING CAMPAIGN SIMULATOR
 export const simulateCampaign = asyncHandler(async (req: Request, res: Response) => {
-  const { campaignName = "Mega Flash Sale", discountPercent = 15, durationDays = 7, targetSegment = "all" } = req.body;
+  const ctx = await getAuthenticatedSellerContext(req);
+  const { campaignName = "Campaign", discountPercent = 10, durationDays = 7 } = req.body;
 
-  const estimatedReach = Math.round(18000 + Number(discountPercent) * 1200);
-  const conversionRate = Math.min(8.5, Math.max(2.1, 2.8 + (Number(discountPercent) / 10) * 1.4));
-  const expectedOrders = Math.round((estimatedReach * (conversionRate / 100)));
-  const avgOrderValue = 2100;
-  const grossRevenue = Math.round(expectedOrders * avgOrderValue);
-  const discountCost = Math.round(grossRevenue * (Number(discountPercent) / 100));
+  const orders = await Order.find({ "items.storeId": ctx.storeId, status: "delivered" });
+  const avgOrderValue = orders.length > 0
+    ? Math.round(orders.reduce((s, o) => s + o.totalAmount, 0) / orders.length)
+    : null;
+
+  if (!avgOrderValue) {
+    return sendSuccess(res, {
+      hasEnoughData: false,
+      message: "Not enough order data to simulate a campaign. Need at least 1 completed order.",
+    });
+  }
+
+  const baseDailyOrders = orders.length / 30;
+  const discountBoost = 1 + (discountPercent / 100) * 1.5;
+  const estimatedDailyOrders = Math.round(baseDailyOrders * discountBoost);
+  const estimatedOrders = estimatedDailyOrders * durationDays;
+  const grossRevenue = estimatedOrders * avgOrderValue;
+  const discountCost = Math.round(grossRevenue * (discountPercent / 100));
   const netRevenue = grossRevenue - discountCost;
 
   sendSuccess(res, {
+    hasEnoughData: true,
     campaignName,
     discountPercent,
     durationDays,
-    targetSegment,
-    estimatedReach: estimatedReach.toLocaleString(),
-    estimatedConversionRate: `${conversionRate.toFixed(1)}%`,
-    expectedOrders: expectedOrders.toLocaleString(),
-    grossRevenue: `৳${grossRevenue.toLocaleString()}`,
-    discountCost: `৳${discountCost.toLocaleString()}`,
-    netRevenue: `৳${netRevenue.toLocaleString()}`,
-    recommendedDuration: `${durationDays} Days (Optimal urgency window)`,
-    riskScore: discountPercent > 30 ? "High Discount Risk" : "Low / Healthy Margin",
+    currentBaseline: {
+      avgDailyOrders: Math.round(baseDailyOrders * 10) / 10,
+      avgOrderValue,
+    },
+    simulation: {
+      estimatedOrders,
+      grossRevenue,
+      discountCost,
+      netRevenue,
+    },
+    isSimulation: true,
+    disclaimer: "Simulation based on your store's actual order history. Actual campaign results will vary.",
   });
 });
 
-// 16. CUSTOMER SEGMENT BUILDER
+// 16. CUSTOMER SEGMENTS
 export const getCustomerSegments = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
 
-  const orders = await Order.find({ "items.storeId": store.id });
-  const uniqueBuyers = Array.from(new Set(orders.map((o) => o.userId)));
-  const totalCustomersTracked = uniqueBuyers.length;
+  const orders = await Order.find({ "items.storeId": ctx.storeId });
+
+  if (orders.length === 0) {
+    return sendSuccess(res, {
+      hasEnoughData: false,
+      message: "No customer purchase history available yet.",
+      totalCustomersTracked: 0,
+      segments: [],
+    });
+  }
+
+  const customerMap: Record<string, { orders: number; totalSpent: number; lastOrder: Date }> = {};
+  orders.forEach((o) => {
+    const buyerId = o.userId;
+    if (!customerMap[buyerId]) {
+      customerMap[buyerId] = { orders: 0, totalSpent: 0, lastOrder: o.createdAt };
+    }
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    customerMap[buyerId].orders += 1;
+    customerMap[buyerId].totalSpent += sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
+    if (o.createdAt > customerMap[buyerId].lastOrder) {
+      customerMap[buyerId].lastOrder = o.createdAt;
+    }
+  });
+
+  const customers = Object.values(customerMap);
+  const totalCustomers = customers.length;
+
+  const segments = [
+    {
+      name: "One-Time Buyers",
+      count: customers.filter((c) => c.orders === 1).length,
+      percentage: Math.round((customers.filter((c) => c.orders === 1).length / totalCustomers) * 100),
+      description: "Customers who made a single purchase",
+    },
+    {
+      name: "Returning Customers",
+      count: customers.filter((c) => c.orders >= 2 && c.orders < 5).length,
+      percentage: Math.round((customers.filter((c) => c.orders >= 2 && c.orders < 5).length / totalCustomers) * 100),
+      description: "Customers with 2-4 orders",
+    },
+    {
+      name: "Loyal Customers",
+      count: customers.filter((c) => c.orders >= 5).length,
+      percentage: Math.round((customers.filter((c) => c.orders >= 5).length / totalCustomers) * 100),
+      description: "Customers with 5+ orders",
+    },
+  ];
 
   sendSuccess(res, {
-    totalCustomersTracked,
-    segments: totalCustomersTracked === 0 ? [] : [
-      { name: "Active Store Buyers", percentage: 100, customerCount: totalCustomersTracked, avgOrderValue: `৳${Math.round(orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0) / totalCustomersTracked).toLocaleString()}`, repeatFrequency: `${(orders.length / totalCustomersTracked).toFixed(1)}x`, recommendedAction: "Deliver exceptional fulfillment to encourage repeat purchases." },
-    ],
+    hasEnoughData: true,
+    totalCustomersTracked: totalCustomers,
+    totalOrders: orders.length,
+    segments,
   });
 });
 
 // 17. SELLER CHURN PREDICTOR
 export const getChurnPredictor = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
 
-  const orders = await Order.find({ "items.storeId": store.id });
-  const uniqueBuyers = Array.from(new Set(orders.map((o) => o.userId)));
-  const total = uniqueBuyers.length;
+  const orders = await Order.find({ "items.storeId": ctx.storeId });
+
+  if (orders.length === 0) {
+    return sendSuccess(res, {
+      hasEnoughData: false,
+      message: "No customer data available for churn analysis.",
+      riskTiers: { highRisk: { count: 0, percentage: 0 }, mediumRisk: { count: 0, percentage: 0 }, lowRisk: { count: 0, percentage: 0 } },
+    });
+  }
+
+  const customerMap: Record<string, { lastOrder: Date; orderCount: number }> = {};
+  orders.forEach((o) => {
+    if (!customerMap[o.userId] || o.createdAt > customerMap[o.userId].lastOrder) {
+      customerMap[o.userId] = { lastOrder: o.createdAt, orderCount: (customerMap[o.userId]?.orderCount || 0) + 1 };
+    }
+  });
+
+  const now = Date.now();
+  const INACTIVE_THRESHOLD = 60 * 24 * 60 * 60 * 1000; // 60 days
+
+  const customers = Object.values(customerMap);
+  const highRisk = customers.filter((c) => now - c.lastOrder.getTime() > INACTIVE_THRESHOLD && c.orderCount >= 2);
+  const mediumRisk = customers.filter((c) => now - c.lastOrder.getTime() > INACTIVE_THRESHOLD / 2 && now - c.lastOrder.getTime() <= INACTIVE_THRESHOLD);
+  const lowRisk = customers.filter((c) => now - c.lastOrder.getTime() <= INACTIVE_THRESHOLD / 2);
+
+  const total = customers.length;
 
   sendSuccess(res, {
+    hasEnoughData: true,
     riskTiers: {
-      highRisk: { percentage: 0, count: 0, description: "No high-risk churn detected." },
-      mediumRisk: { percentage: 0, count: 0, description: "No medium-risk churn detected." },
-      lowRisk: { percentage: total > 0 ? 100 : 0, count: total, description: "Active engagement with recent store orders." },
+      highRisk: { count: highRisk.length, percentage: Math.round((highRisk.length / total) * 100), description: "No purchase in 60+ days after previous orders" },
+      mediumRisk: { count: mediumRisk.length, percentage: Math.round((mediumRisk.length / total) * 100), description: "No purchase in 30+ days" },
+      lowRisk: { count: lowRisk.length, percentage: Math.round((lowRisk.length / total) * 100), description: "Active within last 30 days" },
     },
-    retentionTriggers: [
-      { trigger: "Personalized 10% Loyalty Voucher", targetCount: total, projectedWinBack: "30% repeat rate" },
-      { trigger: "Automated Restock Alert on Saved Items", targetCount: total, projectedWinBack: "36% recovery rate" },
-    ],
+    inactiveThresholdDays: 60,
   });
 });
 
 // 18. PRODUCT PROFITABILITY ANALYZER
 export const getProfitabilityAnalysis = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
 
-  const orders = await Order.find({ "items.storeId": store.id });
-  const revenue = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-  const cogs = Math.round(revenue * 0.65); // Cost of Goods Sold ~65%
-  const deliveryCost = Math.round(revenue * 0.05);
-  const marketingCost = Math.round(revenue * 0.04);
-  const returnLosses = 0;
+  const orders = await Order.find({ "items.storeId": ctx.storeId, status: { $in: ["delivered", "shipped", "out_for_delivery"] } });
+  const products = await Product.find({ storeId: ctx.storeId, isDeleted: false });
 
-  const grossProfit = revenue - cogs;
-  const estimatedNetProfit = grossProfit - deliveryCost - marketingCost;
-  const netMarginPercent = revenue > 0 ? Math.round((estimatedNetProfit / revenue) * 100) : 0;
+  const revenue = orders.reduce((sum, o) => {
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    return sum + sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
+  }, 0);
 
-  const products = await Product.find({ $or: [{ storeId: store.id }, { sellerId: userId }], isDeleted: false });
+  // Check if we have cost data
+  const productsWithCost = products.filter((p) => (p as any).costPrice !== undefined);
+  const hasCostData = productsWithCost.length > 0;
+
+  if (!hasCostData) {
+    return sendSuccess(res, {
+      hasEnoughData: false,
+      message: "Profitability cannot be calculated because product cost data is unavailable. Add cost price to your products to enable profit tracking.",
+      revenue,
+      orderCount: orders.length,
+      hasCostData: false,
+    });
+  }
+
+  // Calculate real profit from cost data
+  let totalCost = 0;
+  orders.forEach((o) => {
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    sellerItems.forEach((item) => {
+      const product = products.find((p) => p._id.toString() === item.productId);
+      const costPrice = product ? (product as any).costPrice || 0 : 0;
+      totalCost += costPrice * item.quantity;
+    });
+  });
+
+  const grossProfit = revenue - totalCost;
+  const netMarginPercent = revenue > 0 ? Math.round((grossProfit / revenue) * 100) : 0;
 
   sendSuccess(res, {
+    hasEnoughData: true,
+    hasCostData: true,
     summary: {
       revenue,
-      cogs,
-      deliveryCost,
-      marketingCost,
-      returnLosses,
+      totalCost,
       grossProfit,
-      estimatedNetProfit,
       netMarginPercent: `${netMarginPercent}%`,
     },
-    topProfitableProducts: products.map((p) => ({
-      title: p.title,
-      revenue: (p.sold || 0) * (p.discountPrice || p.price),
-      marginPercent: 35,
-      netProfit: Math.round(((p.sold || 0) * (p.discountPrice || p.price)) * 0.35),
-    })),
+    orderCount: orders.length,
+    productCount: products.length,
   });
 });
 
 // 19. SELLER GOALS & KPI SYSTEM
 export const getSellerGoals = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
 
-  const orders = await Order.find({ "items.storeId": store.id });
-  const realRevenue = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const orders = await Order.find({ "items.storeId": ctx.storeId });
+  const realRevenue = orders.reduce((sum, o) => {
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    return sum + sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
+  }, 0);
   const realDelivered = orders.filter((o) => o.status === "delivered").length;
 
-  let goals = await SellerGoal.find({ storeId: store.id });
+  const goals = await SellerGoal.find({ storeId: ctx.storeId });
 
-  if (goals.length === 0) {
-    const seeded = await SellerGoal.create([
-      {
-        sellerId: userId,
-        storeId: store.id,
-        title: "Monthly Revenue Target",
-        metricType: "revenue",
-        targetValue: 100000,
-        currentValue: realRevenue,
-        unit: "৳",
-        period: "monthly",
-        deadline: new Date(Date.now() + 30 * 24 * 3600 * 1000),
-        status: "in_progress",
-        recommendations: ["Fulfill pending orders to increase completed revenue."],
-      },
-      {
-        sellerId: userId,
-        storeId: store.id,
-        title: "Orders Fulfillment Target",
-        metricType: "orders",
-        targetValue: 20,
-        currentValue: realDelivered,
-        unit: "orders",
-        period: "monthly",
-        deadline: new Date(Date.now() + 30 * 24 * 3600 * 1000),
-        status: "in_progress",
-        recommendations: ["Ensure fast dispatch to meet courier pickup timelines."],
-      },
-    ]);
-    goals = seeded;
-  } else {
-    // Keep goal current values synced to live database metrics
-    for (const g of goals) {
-      if (g.metricType === "revenue") g.currentValue = realRevenue;
-      if (g.metricType === "orders") g.currentValue = realDelivered;
-    }
-  }
+  // Sync current values with real data
+  const syncedGoals = goals.map((g) => {
+    if (g.metricType === "revenue") g.currentValue = realRevenue;
+    if (g.metricType === "orders") g.currentValue = realDelivered;
+    return g;
+  });
 
-  sendSuccess(res, goals);
+  sendSuccess(res, syncedGoals);
 });
 
 export const createSellerGoal = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
   const { title, metricType, targetValue, unit, deadline, period } = req.body;
 
   const goal = await SellerGoal.create({
-    sellerId: userId,
-    storeId: store.id,
+    sellerId: ctx.sellerId,
+    storeId: ctx.storeId,
     title,
     metricType,
     targetValue: Number(targetValue),
@@ -362,29 +474,29 @@ export const createSellerGoal = asyncHandler(async (req: Request, res: Response)
 });
 
 export const deleteSellerGoal = asyncHandler(async (req: Request, res: Response) => {
+  const ctx = await getAuthenticatedSellerContext(req);
   const { id } = req.params;
-  await SellerGoal.findByIdAndDelete(id);
+
+  const goal = await SellerGoal.findOneAndDelete({ _id: id, storeId: ctx.storeId });
+  if (!goal) throw ApiError.notFound("Goal not found");
+
   sendSuccess(res, { deleted: true }, "Goal removed");
 });
 
 // 20. SELLER A/B TESTING
 export const getAbExperiments = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
-
-  const experiments = await AbExperiment.find({ storeId: store.id });
-
+  const ctx = await getAuthenticatedSellerContext(req);
+  const experiments = await AbExperiment.find({ storeId: ctx.storeId });
   sendSuccess(res, experiments);
 });
 
 export const createAbExperiment = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
   const { productId, productTitle, testType, variantAValue, variantBValue } = req.body;
 
   const experiment = await AbExperiment.create({
-    sellerId: userId,
-    storeId: store.id,
+    sellerId: ctx.sellerId,
+    storeId: ctx.storeId,
     productId,
     productTitle,
     testType,
@@ -397,195 +509,164 @@ export const createAbExperiment = asyncHandler(async (req: Request, res: Respons
   sendSuccess(res, experiment.toJSON(), "A/B Experiment launched", 201);
 });
 
-// 21. ADVANCED SELLER ANALYTICS WITH TIME-RANGE FILTERS
+// 21. ADVANCED SELLER ANALYTICS
 export const getSellerAnalytics = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
   const { range = "30d" } = req.query as { range?: string };
 
-  const products = await Product.find({ $or: [{ storeId: store.id }, { sellerId: userId }], isDeleted: false });
-  const orders = await Order.find({ "items.storeId": store.id });
+  const rangeDays = range === "7d" ? 7 : range === "90d" ? 90 : 30;
+  const startDate = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
 
-  // Base metrics from real database orders
-  const totalRevenue = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const products = await Product.find({ storeId: ctx.storeId, isDeleted: false });
+  const orders = await Order.find({ "items.storeId": ctx.storeId, createdAt: { $gte: startDate } });
+
+  const totalRevenue = orders.reduce((sum, o) => {
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    return sum + sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
+  }, 0);
+
   const totalOrders = orders.length;
-  const productsSold = orders.reduce((sum, o) => sum + (o.items?.reduce((q: number, it: any) => q + (it.quantity || 1), 0) || 0), 0);
+  const productsSold = orders.reduce((sum, o) => {
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    return sum + sellerItems.reduce((s, i) => s + i.quantity, 0);
+  }, 0);
   const avgOrderValue = totalOrders > 0 ? Math.round(totalRevenue / totalOrders) : 0;
-  const conversionRate = totalOrders > 0 ? Number(((totalOrders / Math.max(1, totalOrders * 8)) * 100).toFixed(2)) : 0;
-  const customerGrowth = totalOrders > 0 ? `+${Math.min(100, totalOrders * 12)}%` : "0%";
 
-  // Real timeline points from actual orders
-  const trendMap: Record<string, { revenue: number; orders: number; visitors: number }> = {};
+  // Real timeline points
+  const trendMap: Record<string, { revenue: number; orders: number }> = {};
   orders.forEach((o) => {
     const d = new Date(o.createdAt);
-    const label = range === "7d" ? d.toLocaleDateString("default", { weekday: "short" }) : d.toLocaleDateString("default", { month: "short" });
-    if (!trendMap[label]) trendMap[label] = { revenue: 0, orders: 0, visitors: 0 };
-    trendMap[label].revenue += o.totalAmount || 0;
+    const label = rangeDays <= 7 ? d.toLocaleDateString("default", { weekday: "short" }) : d.toLocaleDateString("default", { month: "short", day: "numeric" });
+    if (!trendMap[label]) trendMap[label] = { revenue: 0, orders: 0 };
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    trendMap[label].revenue += sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
     trendMap[label].orders += 1;
-    trendMap[label].visitors += 5;
   });
 
   const trendPoints = Object.entries(trendMap).map(([label, data]) => ({
     label,
     revenue: data.revenue,
     orders: data.orders,
-    visitors: data.visitors,
   }));
 
-  // Real product performance from database
-  const topProducts = products.map((p: any) => {
-    const soldCount = p.sold || 0;
-    const price = p.discountPrice || p.price || 0;
-    return {
-      id: p.id || p._id,
-      title: p.title,
-      price,
-      sold: soldCount,
-      revenue: soldCount * price,
-      conversion: soldCount > 0 ? `${Math.min(15, (soldCount * 2.5)).toFixed(1)}%` : "0%",
-    };
-  }).sort((a, b) => b.sold - a.sold).slice(0, 5);
-
-  const lowPerformingProducts = products
-    .filter((p: any) => (p.sold || 0) <= 2)
-    .map((p: any) => ({
-      id: p.id || p._id,
-      title: p.title,
-      price: p.discountPrice || p.price || 0,
-      stock: p.stock || 0,
-      sold: p.sold || 0,
-      views: p.viewsCount || 0,
-      issue: p.stock <= 5 ? "Low stock inventory" : "Low order traction",
-      action: p.stock <= 5 ? "Restock item units" : "Launch discount coupon or optimize listing tags",
-    }))
-    .slice(0, 4);
-
-  // Real category share from actual products
-  const categoryCountMap: Record<string, number> = {};
-  products.forEach((p: any) => {
-    const cat = p.category || "General";
-    categoryCountMap[cat] = (categoryCountMap[cat] || 0) + (p.price || 0);
-  });
-
-  const totalCatVal = Object.values(categoryCountMap).reduce((s, v) => s + v, 0) || 1;
-  const categoryPerformance = Object.entries(categoryCountMap).map(([category, catRev]) => ({
-    category,
-    revenue: catRev,
-    share: Math.round((catRev / totalCatVal) * 100),
-    growth: "Active",
-  }));
+  // Real product performance
+  const topProducts = products.map((p) => ({
+    id: p._id.toString(),
+    title: p.title,
+    price: p.discountPrice || p.price,
+    sold: p.sold || 0,
+    revenue: (p.sold || 0) * (p.discountPrice || p.price),
+  })).sort((a, b) => b.sold - a.sold).slice(0, 5);
 
   sendSuccess(res, {
     range,
+    hasEnoughData: totalOrders > 0,
     kpis: {
       totalRevenue,
       totalOrders,
       productsSold,
-      conversionRate,
-      customerGrowth,
       avgOrderValue,
     },
     trendPoints,
     topProducts,
-    lowPerformingProducts,
-    categoryPerformance,
+    productCount: products.length,
   });
 });
 
 // 22. SMART INVENTORY INTELLIGENCE
 export const getInventoryIntelligence = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
+  const products = await Product.find({ storeId: ctx.storeId, isDeleted: false });
 
-  const products = await Product.find({ $or: [{ storeId: store.id }, { sellerId: userId }], isDeleted: false });
+  if (products.length === 0) {
+    return sendSuccess(res, {
+      hasEnoughData: false,
+      message: "No products found. Add products to see inventory intelligence.",
+      inventoryHealthScore: null,
+      items: [],
+    });
+  }
 
-  const inventoryItems = products.map((p: any, idx: number) => {
-    const stock = typeof p.stock === "number" ? p.stock : 0;
+  const inventoryItems = products.map((p) => {
+    const stock = p.stock || 0;
+    const sold = p.sold || 0;
     const isOut = stock === 0;
     const isLow = stock > 0 && stock <= 10;
-    const isOver = stock > 100;
-
-    const demandTrend = stock > 20 ? "High" : "Medium";
-    const stockOutRisk = isOut ? "Critical" as const : isLow ? "High" as const : isOver ? "Low" as const : "Medium" as const;
-    const restockPriority = isOut ? "Immediate Action Required" : isLow ? "Restock within 48h" : isOver ? "Promote to clear excess" : "Healthy Stock";
-    const velocity = isOver ? "Slow-moving" : stock < 20 ? "Fast-moving" : "Normal";
 
     return {
-      id: p.id || p._id || `inv-${idx}`,
+      id: p._id.toString(),
       title: p.title,
       currentStock: stock,
-      price: p.discountPrice || p.price || 0,
-      category: p.category || "General",
-      demandTrend,
-      stockOutRisk,
-      restockPriority,
-      velocity,
-      estimatedDaysRemaining: isOut ? 0 : Math.max(2, Math.round(stock / 2)),
+      price: p.discountPrice || p.price,
+      category: p.category,
+      sold,
+      stockOutRisk: isOut ? "Critical" : isLow ? "High" : stock > 100 ? "Low" : "Medium",
+      restockPriority: isOut ? "Immediate Action Required" : isLow ? "Restock within 48h" : "Healthy Stock",
+      estimatedDaysRemaining: isOut ? 0 : sold > 0 ? Math.max(1, Math.round(stock / (sold / 30))) : null,
     };
   });
 
   const lowStockCount = inventoryItems.filter((i) => i.currentStock <= 10 && i.currentStock > 0).length;
   const outOfStockCount = inventoryItems.filter((i) => i.currentStock === 0).length;
-  const overstockCount = inventoryItems.filter((i) => i.currentStock > 100).length;
   const totalItems = inventoryItems.length;
 
   const inventoryHealthScore = totalItems > 0
-    ? Math.max(20, Math.min(100, 100 - (lowStockCount * 8 + outOfStockCount * 25 + overstockCount * 4)))
-    : 100;
+    ? Math.max(20, Math.min(100, 100 - (lowStockCount * 8 + outOfStockCount * 25)))
+    : null;
 
   sendSuccess(res, {
+    hasEnoughData: true,
     inventoryHealthScore,
     summary: {
       totalItems,
-      healthyStockCount: totalItems - (lowStockCount + outOfStockCount + overstockCount),
+      healthyStockCount: totalItems - (lowStockCount + outOfStockCount),
       lowStockCount,
       outOfStockCount,
-      overstockCount,
     },
     items: inventoryItems,
-    alerts: [
-      outOfStockCount > 0 ? `${outOfStockCount} product(s) are out of stock.` : "Zero stockouts currently recorded.",
-      lowStockCount > 0 ? `${lowStockCount} item(s) have low stock (<= 10 units).` : "All active products have adequate reserves.",
-    ],
   });
 });
 
-// 23. CUSTOMER INSIGHTS & RETENTION TELEMETRY
+// 23. CUSTOMER INSIGHTS
 export const getCustomerInsights = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
-  const store = await getSellerStore(userId);
+  const ctx = await getAuthenticatedSellerContext(req);
+  const orders = await Order.find({ "items.storeId": ctx.storeId });
 
-  const orders = await Order.find({ "items.storeId": store.id });
-  const uniqueCustomerIds = new Set(orders.map((o) => o.userId));
+  if (orders.length === 0) {
+    return sendSuccess(res, {
+      hasEnoughData: false,
+      message: "No customer purchase history available yet.",
+      overview: { totalCustomers: 0, totalOrders: 0 },
+    });
+  }
 
-  const totalCustomers = uniqueCustomerIds.size;
-  const newCustomers = totalCustomers;
-  const returningCustomers = 0;
-  const repeatPurchaseRate = totalCustomers > 0 ? "0%" : "0%";
-  const customerSatisfaction = `${store.rating || 5.0} / 5.0`;
+  const customerMap: Record<string, { orders: number; totalSpent: number; lastOrder: Date }> = {};
+  orders.forEach((o) => {
+    if (!customerMap[o.userId]) {
+      customerMap[o.userId] = { orders: 0, totalSpent: 0, lastOrder: o.createdAt };
+    }
+    const sellerItems = o.items.filter((i) => i.storeId === ctx.storeId);
+    customerMap[o.userId].orders += 1;
+    customerMap[o.userId].totalSpent += sellerItems.reduce((s, i) => s + i.price * i.quantity, 0);
+    if (o.createdAt > customerMap[o.userId].lastOrder) {
+      customerMap[o.userId].lastOrder = o.createdAt;
+    }
+  });
 
-  const topCustomerSegments = totalCustomers > 0
-    ? [{ segment: "Verified Store Shoppers", count: totalCustomers, avgSpend: "৳0", ltv: "৳0" }]
-    : [];
-
-  const recentActivity = orders.slice(0, 5).map((o) => ({
-    customer: `Customer (${o.userId.slice(-4)})`,
-    action: `Placed Order #${o._id?.toString().slice(-6) || "ORD"}`,
-    time: new Date(o.createdAt).toLocaleTimeString(),
-    amount: `৳${(o.totalAmount || 0).toLocaleString()}`,
-  }));
+  const customers = Object.values(customerMap);
+  const totalCustomers = customers.length;
+  const totalRevenue = customers.reduce((s, c) => s + c.totalSpent, 0);
+  const returningCustomers = customers.filter((c) => c.orders >= 2).length;
 
   sendSuccess(res, {
+    hasEnoughData: true,
     overview: {
       totalCustomers,
-      newCustomers,
+      totalOrders: orders.length,
+      totalRevenue,
       returningCustomers,
-      repeatPurchaseRate,
-      customerSatisfaction,
-      averageLifetimeValue: totalCustomers > 0 ? `৳${Math.round(orders.reduce((s, o) => s + (o.totalAmount || 0), 0) / totalCustomers)}` : "৳0",
+      repeatPurchaseRate: totalCustomers > 0 ? Math.round((returningCustomers / totalCustomers) * 100) : 0,
+      averageOrderValue: Math.round(totalRevenue / orders.length),
     },
-    topCustomerSegments,
-    recentActivity,
   });
 });
-

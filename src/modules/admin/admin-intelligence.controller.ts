@@ -10,6 +10,7 @@ import { AnomalyLog, SystemTelemetry } from "./admin-intelligence.model";
 import { SecurityIncident } from "../security/security-incident.model";
 import { AuditLog } from "../security/auditLog.model";
 import { SecurityLog } from "../security/securityLog.model";
+import { getRuleMetrics, detectSuspiciousOrders, calculateFinancialRisk, detectFraudAlerts } from "./risk.service";
 
 // 27. MARKETPLACE COMMAND CENTER
 // 27. MARKETPLACE COMMAND CENTER
@@ -151,35 +152,259 @@ export const getMarketplaceHealthIndex = asyncHandler(async (_req: Request, res:
 
 // 31. REVENUE LEAKAGE DETECTOR
 export const getRevenueLeakage = asyncHandler(async (_req: Request, res: Response) => {
-  const cancelledOrders = await Order.find({ status: { $in: ["cancelled", "refunded", "returned"] } });
-  const totalLeakage = cancelledOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const allOrders = await Order.find({});
+  const totalRevenue = allOrders
+    .filter((o) => ["delivered", "shipped", "out_for_delivery", "processing", "confirmed"].includes(o.status))
+    .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
 
-  const leakageCategories = [
-    { type: "Cancelled Orders", amount: totalLeakage, severity: totalLeakage > 0 ? "medium" : "low", details: "Cancelled or returned customer transactions" },
-  ];
+  const cancelledOrders = allOrders.filter((o) => o.status === "cancelled");
+  const refundedOrders = allOrders.filter((o) => o.status === "refunded" || o.status === "returned");
+
+  const cancelledValue = cancelledOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const refundValue = refundedOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+
+  const totalDiscount = allOrders.reduce((sum, o) => sum + (o.discount || 0), 0);
+
+  const couponOrders = allOrders.filter((o) => o.couponCode);
+  const couponImpact = couponOrders.reduce((sum, o) => sum + (o.discount || 0), 0);
+
+  const unpaidOrders = allOrders.filter((o) => o.paymentStatus === "unpaid" && o.status !== "cancelled");
+  const unpaidValue = unpaidOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+
+  const totalPotentialLeakage = cancelledValue + refundValue + unpaidValue;
+
+  const leakageCategories = [];
+
+  if (cancelledValue > 0) {
+    leakageCategories.push({
+      type: "Cancelled Orders",
+      amount: cancelledValue,
+      count: cancelledOrders.length,
+      severity: cancelledValue > totalRevenue * 0.1 ? "high" : cancelledValue > totalRevenue * 0.05 ? "medium" : "low",
+      details: `${cancelledOrders.length} cancelled orders totaling ৳${cancelledValue.toLocaleString()}`,
+    });
+  }
+
+  if (refundValue > 0) {
+    leakageCategories.push({
+      type: "Refunded/Returned Orders",
+      amount: refundValue,
+      count: refundedOrders.length,
+      severity: refundValue > totalRevenue * 0.1 ? "high" : refundValue > totalRevenue * 0.05 ? "medium" : "low",
+      details: `${refundedOrders.length} refunded/returned orders totaling ৳${refundValue.toLocaleString()}`,
+    });
+  }
+
+  if (unpaidValue > 0) {
+    leakageCategories.push({
+      type: "Unpaid Orders",
+      amount: unpaidValue,
+      count: unpaidOrders.length,
+      severity: "medium",
+      details: `${unpaidOrders.length} unpaid orders totaling ৳${unpaidValue.toLocaleString()}`,
+    });
+  }
+
+  if (totalDiscount > 0) {
+    leakageCategories.push({
+      type: "Discount Impact",
+      amount: totalDiscount,
+      count: allOrders.filter((o) => (o.discount || 0) > 0).length,
+      severity: totalDiscount > totalRevenue * 0.2 ? "high" : totalDiscount > totalRevenue * 0.1 ? "medium" : "low",
+      details: `Total discounts given: ৳${totalDiscount.toLocaleString()}`,
+    });
+  }
+
+  if (couponImpact > 0) {
+    leakageCategories.push({
+      type: "Coupon Impact",
+      amount: couponImpact,
+      count: couponOrders.length,
+      severity: couponImpact > totalRevenue * 0.15 ? "high" : couponImpact > totalRevenue * 0.05 ? "medium" : "low",
+      details: `${couponOrders.length} orders used coupons totaling ৳${couponImpact.toLocaleString()}`,
+    });
+  }
+
+  if (leakageCategories.length === 0) {
+    leakageCategories.push({
+      type: "No Leakage Detected",
+      amount: 0,
+      count: 0,
+      severity: "low",
+      details: "No financial leakage detected from the currently available transaction data.",
+    });
+  }
 
   sendSuccess(res, {
-    totalPotentialLeakage: totalLeakage,
-    leakageFormatted: `৳${totalLeakage.toLocaleString()}`,
+    totalRevenue,
+    totalPotentialLeakage,
+    leakageFormatted: `৳${totalPotentialLeakage.toLocaleString()}`,
+    leakagePercentage: totalRevenue > 0 ? Math.round((totalPotentialLeakage / totalRevenue) * 100) : 0,
     recoveredThisMonth: "৳0",
     leakageCategories,
-    automatedRemediation: "Zero unintended revenue leakage detected.",
+    orderSummary: {
+      total: allOrders.length,
+      completed: allOrders.filter((o) => o.status === "delivered").length,
+      cancelled: cancelledOrders.length,
+      refunded: refundedOrders.length,
+    },
+    automatedRemediation: totalPotentialLeakage > 0
+      ? "Review flagged transactions and verify refund/cancellation legitimacy."
+      : "No automated remediation required. All transactions appear normal.",
   });
 });
 
 // 32. SELLER RISK RANKING
 export const getSellerRiskRanking = asyncHandler(async (_req: Request, res: Response) => {
-  const stores = await Store.find({ status: "approved" });
-  const total = stores.length;
+  const stores = await Store.find({});
+  const allOrders = await Order.find({});
+  const products = await Product.find({ isDeleted: false });
+
+  const sellerRisks = stores.map((store) => {
+    const storeId = store._id?.toString() || "";
+    const sellerProducts = products.filter((p) => p.storeId === storeId);
+    const storeOrders = allOrders.filter((o) =>
+      o.items?.some((item: any) => item.storeId === storeId)
+    );
+
+    const totalOrders = storeOrders.length;
+    const cancelledOrders = storeOrders.filter((o) => o.status === "cancelled");
+    const refundedOrders = storeOrders.filter((o) => o.status === "refunded" || o.status === "returned");
+    const deliveredOrders = storeOrders.filter((o) => o.status === "delivered");
+
+    const cancellationRate = totalOrders > 0 ? (cancelledOrders.length / totalOrders) * 100 : 0;
+    const returnRate = totalOrders > 0 ? (refundedOrders.length / totalOrders) * 100 : 0;
+    const deliveryRate = totalOrders > 0 ? (deliveredOrders.length / totalOrders) * 100 : 0;
+
+    const avgRating = store.rating || 0;
+    const trustScore = store.trustScore || 50;
+
+    const rejectedProducts = sellerProducts.filter((p) => p.status === "rejected").length;
+    const totalProducts = sellerProducts.length;
+
+    const riskFactors: string[] = [];
+    let riskScore = 0;
+
+    if (cancellationRate > 20) {
+      riskScore += 25;
+      riskFactors.push(`High cancellation rate (${cancellationRate.toFixed(1)}%)`);
+    } else if (cancellationRate > 10) {
+      riskScore += 15;
+      riskFactors.push(`Moderate cancellation rate (${cancellationRate.toFixed(1)}%)`);
+    } else if (cancellationRate > 5) {
+      riskScore += 5;
+      riskFactors.push(`Low cancellation rate (${cancellationRate.toFixed(1)}%)`);
+    }
+
+    if (returnRate > 15) {
+      riskScore += 20;
+      riskFactors.push(`High return/refund rate (${returnRate.toFixed(1)}%)`);
+    } else if (returnRate > 8) {
+      riskScore += 10;
+      riskFactors.push(`Moderate return/refund rate (${returnRate.toFixed(1)}%)`);
+    } else if (returnRate > 3) {
+      riskScore += 5;
+      riskFactors.push(`Low return/refund rate (${returnRate.toFixed(1)}%)`);
+    }
+
+    if (avgRating > 0 && avgRating < 3.0) {
+      riskScore += 20;
+      riskFactors.push(`Low rating (${avgRating.toFixed(1)}/5)`);
+    } else if (avgRating > 0 && avgRating < 3.5) {
+      riskScore += 10;
+      riskFactors.push(`Below average rating (${avgRating.toFixed(1)}/5)`);
+    } else if (avgRating > 0 && avgRating < 4.0) {
+      riskScore += 5;
+      riskFactors.push(`Average rating (${avgRating.toFixed(1)}/5)`);
+    }
+
+    if (trustScore < 40) {
+      riskScore += 20;
+      riskFactors.push(`Low trust score (${trustScore}/100)`);
+    } else if (trustScore < 60) {
+      riskScore += 10;
+      riskFactors.push(`Moderate trust score (${trustScore}/100)`);
+    } else if (trustScore < 75) {
+      riskScore += 5;
+      riskFactors.push(`Trust score (${trustScore}/100)`);
+    }
+
+    if (rejectedProducts > 0) {
+      riskScore += Math.min(15, rejectedProducts * 5);
+      riskFactors.push(`${rejectedProducts} rejected product(s)`);
+    }
+
+    if (totalProducts === 0) {
+      riskScore += 10;
+      riskFactors.push("No active products");
+    }
+
+    if (totalOrders === 0) {
+      riskScore += 5;
+      riskFactors.push("No order history");
+    }
+
+    riskScore = Math.min(100, Math.max(0, riskScore));
+
+    let riskLevel: "low" | "medium" | "high" | "critical" = "low";
+    if (riskScore >= 76) riskLevel = "critical";
+    else if (riskScore >= 51) riskLevel = "high";
+    else if (riskScore >= 26) riskLevel = "medium";
+
+    return {
+      sellerId: store.ownerId,
+      storeId,
+      storeName: store.storeName || "Unknown Store",
+      rating: avgRating,
+      trustScore,
+      totalOrders,
+      completedOrders: deliveredOrders.length,
+      cancelledOrders: cancelledOrders.length,
+      returnedOrders: refundedOrders.length,
+      cancellationRate: Math.round(cancellationRate * 10) / 10,
+      returnRate: Math.round(returnRate * 10) / 10,
+      totalProducts,
+      rejectedProducts,
+      riskScore,
+      riskLevel,
+      riskFactors,
+      status: store.status,
+      lastActivity: store.updatedAt || store.createdAt,
+    };
+  });
+
+  const total = sellerRisks.length;
+  const lowRisk = sellerRisks.filter((s) => s.riskLevel === "low");
+  const mediumRisk = sellerRisks.filter((s) => s.riskLevel === "medium");
+  const highRisk = sellerRisks.filter((s) => s.riskLevel === "high");
+  const criticalRisk = sellerRisks.filter((s) => s.riskLevel === "critical");
+  const avgRiskScore = total > 0 ? Math.round(sellerRisks.reduce((s, r) => s + r.riskScore, 0) / total) : 0;
+
+  const flaggedSellers = sellerRisks
+    .filter((s) => s.riskLevel === "high" || s.riskLevel === "critical")
+    .sort((a, b) => b.riskScore - a.riskScore)
+    .slice(0, 10)
+    .map((s) => ({
+      sellerId: s.sellerId,
+      storeId: s.storeId,
+      storeName: s.storeName,
+      riskScore: s.riskScore,
+      riskLevel: s.riskLevel,
+      reason: s.riskFactors[0] || "Multiple risk factors detected",
+      actionRequired: s.riskLevel === "critical" ? "Immediate Review" : "Review Required",
+    }));
 
   sendSuccess(res, {
     riskDistribution: {
-      low: { count: total, percentage: 100, label: "Low Risk (Verified & Good Standing)" },
-      medium: { count: 0, percentage: 0, label: "Medium Risk" },
-      high: { count: 0, percentage: 0, label: "High Risk" },
-      critical: { count: 0, percentage: 0, label: "Critical" },
+      low: { count: lowRisk.length, percentage: total > 0 ? Math.round((lowRisk.length / total) * 100) : 0, label: "Low Risk (Verified & Good Standing)" },
+      medium: { count: mediumRisk.length, percentage: total > 0 ? Math.round((mediumRisk.length / total) * 100) : 0, label: "Medium Risk" },
+      high: { count: highRisk.length, percentage: total > 0 ? Math.round((highRisk.length / total) * 100) : 0, label: "High Risk" },
+      critical: { count: criticalRisk.length, percentage: total > 0 ? Math.round((criticalRisk.length / total) * 100) : 0, label: "Critical" },
     },
-    flaggedSellers: [],
+    averageRiskScore: avgRiskScore,
+    totalSellers: total,
+    flaggedSellers,
+    allSellers: sellerRisks.sort((a, b) => b.riskScore - a.riskScore),
   });
 });
 
@@ -215,31 +440,134 @@ export const getMarketplaceForecast = asyncHandler(async (_req: Request, res: Re
 });
 
 // 34. CATEGORY INTELLIGENCE
-export const getCategoryIntelligence = asyncHandler(async (_req: Request, res: Response) => {
-  const products = await Product.find({ isDeleted: false, status: "approved" });
-  const categoryCountMap: Record<string, number> = {};
+export const getCategoryIntelligence = asyncHandler(async (req: Request, res: Response) => {
+  const { range = "30d" } = req.query as { range?: string };
 
+  const now = new Date();
+  const rangeMs = {
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+    "3m": 90 * 24 * 60 * 60 * 1000,
+    "6m": 180 * 24 * 60 * 60 * 1000,
+    "1y": 365 * 24 * 60 * 60 * 1000,
+  }[range] || 30 * 24 * 60 * 60 * 1000;
+
+  const startDate = new Date(now.getTime() - rangeMs);
+  const prevStartDate = new Date(startDate.getTime() - rangeMs);
+
+  const products = await Product.find({ isDeleted: false });
+  const currentOrders = await Order.find({ createdAt: { $gte: startDate } });
+  const prevOrders = await Order.find({ createdAt: { $gte: prevStartDate, $lt: startDate } });
+
+  const productCategoryMap = new Map<string, string>();
   products.forEach((p) => {
-    const cat = p.category || "General";
-    categoryCountMap[cat] = (categoryCountMap[cat] || 0) + 1;
+    productCategoryMap.set(p._id?.toString() || "", p.category || "General");
   });
 
-  const totalProds = products.length || 1;
-  const categories = Object.entries(categoryCountMap).map(([name, count]) => ({
-    name,
-    growthRate: "+10%",
-    revenueShare: Math.round((count / totalProds) * 100),
-    orderVolume: `${count} item(s)`,
-    activeSellers: 1,
-    avgOrderValue: "৳3,500",
-  }));
+  const categoryStats: Record<string, {
+    revenue: number;
+    prevRevenue: number;
+    orders: Set<string>;
+    prevOrders: Set<string>;
+    unitsSold: number;
+    sellers: Set<string>;
+    ratings: number[];
+    ratingCount: number;
+  }> = {};
+
+  const validStatuses = ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"];
+
+  currentOrders.forEach((order) => {
+    if (!validStatuses.includes(order.status)) return;
+    const orderId = order._id?.toString() || "";
+
+    order.items?.forEach((item: any) => {
+      const productId = item.productId?.toString() || "";
+      const category = productCategoryMap.get(productId) || "General";
+      const itemRevenue = (item.price || 0) * (item.quantity || 1);
+
+      if (!categoryStats[category]) {
+        categoryStats[category] = {
+          revenue: 0, prevRevenue: 0, orders: new Set(), prevOrders: new Set(),
+          unitsSold: 0, sellers: new Set(), ratings: [], ratingCount: 0,
+        };
+      }
+
+      categoryStats[category].revenue += itemRevenue;
+      categoryStats[category].orders.add(orderId);
+      categoryStats[category].unitsSold += item.quantity || 1;
+      if (item.sellerId) categoryStats[category].sellers.add(item.sellerId);
+    });
+  });
+
+  prevOrders.forEach((order) => {
+    if (!validStatuses.includes(order.status)) return;
+    const orderId = order._id?.toString() || "";
+
+    order.items?.forEach((item: any) => {
+      const productId = item.productId?.toString() || "";
+      const category = productCategoryMap.get(productId) || "General";
+      const itemRevenue = (item.price || 0) * (item.quantity || 1);
+
+      if (!categoryStats[category]) {
+        categoryStats[category] = {
+          revenue: 0, prevRevenue: 0, orders: new Set(), prevOrders: new Set(),
+          unitsSold: 0, sellers: new Set(), ratings: [], ratingCount: 0,
+        };
+      }
+
+      categoryStats[category].prevRevenue += itemRevenue;
+      categoryStats[category].prevOrders.add(orderId);
+    });
+  });
+
+  products.forEach((p) => {
+    const category = p.category || "General";
+    if (!categoryStats[category]) {
+      categoryStats[category] = {
+        revenue: 0, prevRevenue: 0, orders: new Set(), prevOrders: new Set(),
+        unitsSold: 0, sellers: new Set(), ratings: [], ratingCount: 0,
+      };
+    }
+    if (p.sellerId) categoryStats[category].sellers.add(p.sellerId);
+    if (p.ratingAvg > 0) {
+      categoryStats[category].ratings.push(p.ratingAvg);
+      categoryStats[category].ratingCount += p.ratingCount || 1;
+    }
+  });
+
+  const totalRevenue = Object.values(categoryStats).reduce((sum, s) => sum + s.revenue, 0);
+
+  const categories = Object.entries(categoryStats).map(([name, stats]) => {
+    const avgOrderValue = stats.orders.size > 0 ? Math.round(stats.revenue / stats.orders.size) : 0;
+    const revenueShare = totalRevenue > 0 ? Math.round((stats.revenue / totalRevenue) * 1000) / 10 : 0;
+    const growthRate = stats.prevRevenue > 0
+      ? Math.round(((stats.revenue - stats.prevRevenue) / stats.prevRevenue) * 1000) / 10
+      : stats.revenue > 0 ? 100 : 0;
+    const avgRating = stats.ratings.length > 0
+      ? Math.round((stats.ratings.reduce((a, b) => a + b, 0) / stats.ratings.length) * 10) / 10
+      : 0;
+
+    return {
+      name,
+      products: products.filter((p) => (p.category || "General") === name).length,
+      activeSellers: stats.sellers.size,
+      orders: stats.orders.size,
+      unitsSold: stats.unitsSold,
+      revenue: stats.revenue,
+      avgOrderValue,
+      revenueShare,
+      growthRate,
+      avgRating,
+      ratingCount: stats.ratingCount,
+    };
+  }).sort((a, b) => b.revenue - a.revenue);
 
   sendSuccess(res, {
-    categories: categories.length > 0 ? categories : [
-      { name: "Electronics", growthRate: "0%", revenueShare: 100, orderVolume: "0 orders", activeSellers: 1, avgOrderValue: "৳0" }
-    ],
-    topPerformer: categories[0]?.name || "Electronics",
-    fastestExpandingCatalog: `${totalProds} Active Products`,
+    categories,
+    topPerformer: categories[0]?.name || "N/A",
+    fastestExpandingCatalog: `${categories.length} Categories`,
+    totalRevenue,
   });
 });
 
@@ -267,22 +595,53 @@ export const getSystemTelemetry = asyncHandler(async (_req: Request, res: Respon
 export const getPlatformAnalytics = asyncHandler(async (req: Request, res: Response) => {
   const { range = "30d" } = req.query as { range?: string };
 
+  const now = new Date();
+  const rangeMs = {
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+    "3m": 90 * 24 * 60 * 60 * 1000,
+    "6m": 180 * 24 * 60 * 60 * 1000,
+    "1y": 365 * 24 * 60 * 60 * 1000,
+  }[range] || 30 * 24 * 60 * 60 * 1000;
+
+  const startDate = new Date(now.getTime() - rangeMs);
+  const prevStartDate = new Date(startDate.getTime() - rangeMs);
+
   const db = mongoose.connection.db;
-  const realOrders = await Order.find({});
-  const realProducts = await Product.find({ isDeleted: false });
   const totalUsers = (await db?.collection("user").countDocuments()) || 0;
   const totalSellers = (await db?.collection("user").countDocuments({ role: "seller" })) || 0;
 
-  const totalRevenue = realOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-  const totalOrders = realOrders.length;
+  const currentOrders = await Order.find({ createdAt: { $gte: startDate } });
+  const prevOrders = await Order.find({ createdAt: { $gte: prevStartDate, $lt: startDate } });
+  const allOrders = await Order.find({});
 
-  // Real timeline aggregation from actual orders
+  const validStatuses = ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"];
+  const currentValidOrders = currentOrders.filter((o) => validStatuses.includes(o.status));
+  const prevValidOrders = prevOrders.filter((o) => validStatuses.includes(o.status));
+
+  const totalRevenue = currentValidOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const prevTotalRevenue = prevValidOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+  const totalOrders = currentValidOrders.length;
+
+  const revenueGrowth = prevTotalRevenue > 0
+    ? Math.round(((totalRevenue - prevTotalRevenue) / prevTotalRevenue) * 1000) / 10
+    : totalRevenue > 0 ? 100 : 0;
+
+  const products = await Product.find({ isDeleted: false });
+  const productCategoryMap = new Map<string, string>();
+  products.forEach((p) => productCategoryMap.set(p._id?.toString() || "", p.category || "General"));
+
   const timelineMap: Record<string, { revenue: number; orders: number }> = {};
-  realOrders.forEach((o) => {
+  currentValidOrders.forEach((o) => {
     const d = new Date(o.createdAt);
-    const label = range === "7d"
-      ? d.toLocaleDateString("default", { weekday: "short" })
-      : d.toLocaleDateString("default", { month: "short" });
+    let label: string;
+    if (range === "7d") {
+      label = d.toLocaleDateString("default", { weekday: "short" });
+    } else if (range === "30d") {
+      label = d.toLocaleDateString("default", { month: "short", day: "numeric" });
+    } else {
+      label = d.toLocaleDateString("default", { month: "short" });
+    }
     if (!timelineMap[label]) timelineMap[label] = { revenue: 0, orders: 0 };
     timelineMap[label].revenue += o.totalAmount || 0;
     timelineMap[label].orders += 1;
@@ -296,37 +655,102 @@ export const getPlatformAnalytics = asyncHandler(async (req: Request, res: Respo
     sellers: Math.max(1, totalSellers),
   }));
 
-  // Real category performance from actual products
-  const categoryMap: Record<string, number> = {};
-  realProducts.forEach((p) => {
-    const cat = p.category || "General";
-    categoryMap[cat] = (categoryMap[cat] || 0) + (p.price || 0);
+  const categoryRevenueMap: Record<string, number> = {};
+  const categoryOrderMap: Record<string, Set<string>> = {};
+
+  currentValidOrders.forEach((order) => {
+    const orderId = order._id?.toString() || "";
+    order.items?.forEach((item: any) => {
+      const productId = item.productId?.toString() || "";
+      const category = productCategoryMap.get(productId) || "General";
+      const itemRevenue = (item.price || 0) * (item.quantity || 1);
+
+      categoryRevenueMap[category] = (categoryRevenueMap[category] || 0) + itemRevenue;
+      if (!categoryOrderMap[category]) categoryOrderMap[category] = new Set();
+      categoryOrderMap[category].add(orderId);
+    });
   });
 
-  const totalCatalogValue = Object.values(categoryMap).reduce((s, v) => s + v, 0) || 1;
-  const categoryPerformance = Object.entries(categoryMap).map(([category, catRev]) => ({
-    category,
-    revenue: catRev,
-    share: Math.round((catRev / totalCatalogValue) * 100),
-    growth: "Active",
-  }));
+  const totalCategoryRevenue = Object.values(categoryRevenueMap).reduce((s, v) => s + v, 0) || 1;
+  const categoryPerformance = Object.entries(categoryRevenueMap)
+    .map(([category, revenue]) => ({
+      category,
+      revenue,
+      share: Math.round((revenue / totalCategoryRevenue) * 1000) / 10,
+      orders: categoryOrderMap[category]?.size || 0,
+    }))
+    .sort((a, b) => b.revenue - a.revenue);
 
-  // Real seller ranking from active stores
-  const stores = await Store.find({}).limit(10);
-  const topSellersRanking = stores.map((s, idx) => ({
-    rank: idx + 1,
-    name: s.storeName || (s as any).name || "Store",
-    gmv: `৳${totalRevenue.toLocaleString()}`,
-    orders: totalOrders,
-    rating: s.rating || 5.0,
-    returnRate: "0.0%",
-  }));
+  const sellerStats: Record<string, {
+    gmv: number;
+    orders: Set<string>;
+    returnedOrders: Set<string>;
+    rating: number;
+    storeName: string;
+    productCount: number;
+  }> = {};
+
+  currentValidOrders.forEach((order) => {
+    const orderId = order._id?.toString() || "";
+    order.items?.forEach((item: any) => {
+      const storeId = item.storeId?.toString() || "";
+      if (!sellerStats[storeId]) {
+        sellerStats[storeId] = { gmv: 0, orders: new Set(), returnedOrders: new Set(), rating: 0, storeName: "", productCount: 0 };
+      }
+      sellerStats[storeId].gmv += (item.price || 0) * (item.quantity || 1);
+      sellerStats[storeId].orders.add(orderId);
+    });
+  });
+
+  allOrders.forEach((order) => {
+    if (order.status === "returned" || order.status === "refunded") {
+      const orderId = order._id?.toString() || "";
+      order.items?.forEach((item: any) => {
+        const storeId = item.storeId?.toString() || "";
+        if (sellerStats[storeId]) {
+          sellerStats[storeId].returnedOrders.add(orderId);
+        }
+      });
+    }
+  });
+
+  const stores = await Store.find({});
+  stores.forEach((store) => {
+    const storeId = store._id?.toString() || "";
+    if (sellerStats[storeId]) {
+      sellerStats[storeId].rating = store.rating || 0;
+      sellerStats[storeId].storeName = store.storeName || "Unknown Store";
+    }
+  });
+
+  products.forEach((p) => {
+    const storeId = p.storeId?.toString() || "";
+    if (sellerStats[storeId]) {
+      sellerStats[storeId].productCount += 1;
+    }
+  });
+
+  const topSellersRanking = Object.entries(sellerStats)
+    .map(([storeId, stats]) => ({
+      rank: 0,
+      storeId,
+      name: stats.storeName || "Unknown Store",
+      gmv: stats.gmv,
+      gmvFormatted: `৳${stats.gmv.toLocaleString()}`,
+      orders: stats.orders.size,
+      rating: stats.rating,
+      returnRate: stats.orders.size > 0 ? Math.round((stats.returnedOrders.size / stats.orders.size) * 1000) / 10 : 0,
+      products: stats.productCount,
+    }))
+    .sort((a, b) => b.gmv - a.gmv)
+    .slice(0, 10)
+    .map((s, idx) => ({ ...s, rank: idx + 1 }));
 
   sendSuccess(res, {
     range,
     kpis: {
       totalRevenue,
-      revenueGrowth: totalRevenue > 0 ? "+100%" : "0%",
+      revenueGrowth,
       totalUsers,
       userGrowth: totalUsers > 0 ? `+${totalUsers}` : "0",
       totalSellers,
@@ -341,10 +765,24 @@ export const getPlatformAnalytics = asyncHandler(async (req: Request, res: Respo
 });
 
 // 37. RULE-BASED FRAUD & RISK DETECTION MATRIX
-export const getRiskMatrix = asyncHandler(async (_req: Request, res: Response) => {
-  const incidents = await SecurityIncident.find({}).sort({ createdAt: -1 }).limit(10);
+export const getRiskMatrix = asyncHandler(async (req: Request, res: Response) => {
+  const { range = "30d" } = req.query as { range?: string };
+
+  const rangeMs = {
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+    "90d": 90 * 24 * 60 * 60 * 1000,
+  }[range] || 30 * 24 * 60 * 60 * 1000;
+
+  const startDate = new Date(Date.now() - rangeMs);
+
+  const [incidents, ruleMetrics] = await Promise.all([
+    SecurityIncident.find({ createdAt: { $gte: startDate } }).sort({ createdAt: -1 }).limit(50),
+    getRuleMetrics(rangeMs),
+  ]);
+
   const riskEvents = incidents.map((inc) => ({
-    id: inc.id,
+    id: inc._id?.toString() || "",
     user: inc.entityName,
     event: inc.title,
     riskScore: inc.riskScore,
@@ -352,7 +790,9 @@ export const getRiskMatrix = asyncHandler(async (_req: Request, res: Response) =
     timestamp: inc.createdAt.toISOString(),
     status: inc.status.toUpperCase(),
     signals: inc.signals,
-    recommendation: "Review incident and take appropriate action.",
+    recommendation: inc.signals?.length > 0
+      ? `Review: ${inc.signals.slice(0, 2).join(", ")}`
+      : "Review incident and take appropriate action.",
   }));
 
   const overallPlatformRiskScore = riskEvents.length > 0
@@ -362,6 +802,7 @@ export const getRiskMatrix = asyncHandler(async (_req: Request, res: Response) =
   const overallRiskLevel = overallPlatformRiskScore >= 70 ? "HIGH" : overallPlatformRiskScore >= 40 ? "MEDIUM" : "LOW";
 
   sendSuccess(res, {
+    range,
     overallPlatformRiskScore,
     overallRiskLevel,
     riskDistribution: {
@@ -370,15 +811,64 @@ export const getRiskMatrix = asyncHandler(async (_req: Request, res: Response) =
       medium: riskEvents.filter((e) => e.riskLevel === "MEDIUM").length,
       low: riskEvents.filter((e) => e.riskLevel === "LOW").length,
     },
-    ruleMetrics: {
-      failedLoginDetections: 0,
-      unusualOrderFrequency: 0,
-      abnormalBasketValues: 0,
-      couponAbuseAttempts: 0,
-      suspiciousRefundBehaviors: 0,
-    },
+    ruleMetrics,
     disclaimer: "Risk scores are heuristic probability indicators generated by rules engine, NOT definitive fraud determinations.",
     events: riskEvents,
+  });
+});
+
+// 37b. SUSPICIOUS ORDERS DETECTION
+export const getSuspiciousOrders = asyncHandler(async (req: Request, res: Response) => {
+  const { range = "30d", page = 1, limit = 20 } = req.query as { range?: string; page?: string; limit?: string };
+
+  const rangeMs = {
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+    "90d": 90 * 24 * 60 * 60 * 1000,
+  }[range] || 30 * 24 * 60 * 60 * 1000;
+
+  const allSuspicious = await detectSuspiciousOrders(rangeMs);
+  const skip = (Number(page) - 1) * Number(limit);
+  const paginated = allSuspicious.slice(skip, skip + Number(limit));
+
+  sendSuccess(res, {
+    orders: paginated,
+    pagination: {
+      total: allSuspicious.length,
+      page: Number(page),
+      limit: Number(limit),
+      totalPages: Math.ceil(allSuspicious.length / Number(limit)),
+    },
+  });
+});
+
+// 37c. FINANCIAL RISK EXPOSURE
+export const getFinancialRisk = asyncHandler(async (_req: Request, res: Response) => {
+  const financialData = await calculateFinancialRisk();
+  sendSuccess(res, financialData);
+});
+
+// 37d. FRAUD ALERTS
+export const getFraudAlerts = asyncHandler(async (req: Request, res: Response) => {
+  const { range = "30d" } = req.query as { range?: string };
+
+  const rangeMs = {
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+    "90d": 90 * 24 * 60 * 60 * 1000,
+  }[range] || 30 * 24 * 60 * 60 * 1000;
+
+  const alerts = await detectFraudAlerts(rangeMs);
+
+  sendSuccess(res, {
+    alerts,
+    total: alerts.length,
+    byRiskLevel: {
+      critical: alerts.filter((a) => a.riskLevel === "critical").length,
+      high: alerts.filter((a) => a.riskLevel === "high").length,
+      medium: alerts.filter((a) => a.riskLevel === "medium").length,
+      low: alerts.filter((a) => a.riskLevel === "low").length,
+    },
   });
 });
 

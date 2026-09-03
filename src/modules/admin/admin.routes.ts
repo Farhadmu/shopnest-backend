@@ -23,6 +23,7 @@ router.use("/order-risk", orderRiskRoutes);
 // Core admin routes
 router.get("/dashboard", ctrl.getDashboardMetrics);
 router.get("/sellers", ctrl.listSellersForModeration);
+router.get("/sellers/:id", ctrl.getSellerDetailsForAdmin);
 router.patch("/sellers/:id/status", ctrl.updateSellerStatus);
 router.get("/reviews/reported", ctrl.listReportedReviews);
 

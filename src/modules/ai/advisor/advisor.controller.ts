@@ -35,18 +35,21 @@ async function findCandidateProducts(message: string) {
 
 export const chat = asyncHandler(async (req: Request, res: Response) => {
   const { message, conversationId } = req.body as { message: string; conversationId?: string };
+  const userId = req.user?.id;
 
-  let conversation = conversationId
-    ? await AiConversation.findOne({ _id: conversationId, userId: req.user!.id })
-    : null;
-  if (!conversation) conversation = await AiConversation.create({ userId: req.user!.id, messages: [] });
-
-  conversation.messages.push({ role: "user", content: message, at: new Date() });
+  let conversation = null;
+  if (userId) {
+    conversation = conversationId
+      ? await AiConversation.findOne({ _id: conversationId, userId })
+      : null;
+    if (!conversation) conversation = await AiConversation.create({ userId, messages: [] });
+    conversation.messages.push({ role: "user", content: message, at: new Date() });
+  }
 
   const candidates = await findCandidateProducts(message);
   const context = buildProductContext(candidates);
 
-  const history = conversation.messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
+  const history = conversation ? conversation.messages.slice(-10).map((m) => ({ role: m.role, content: m.content })) : [];
 
   let reply: string;
   let isFallback = false;
@@ -58,21 +61,25 @@ export const chat = asyncHandler(async (req: Request, res: Response) => {
     reply = result.content;
     isFallback = result.isFallback;
   } catch (err) {
-    await logAiIncident({
-      type: "PROVIDER_ERROR",
-      userId: req.user!.id,
-      endpoint: "/ai/chat",
-      input: message,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    if (userId) {
+      await logAiIncident({
+        type: "PROVIDER_ERROR",
+        userId,
+        endpoint: "/ai/chat",
+        input: message,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     throw err;
   }
 
-  conversation.messages.push({ role: "assistant", content: reply, at: new Date() });
-  await conversation.save();
+  if (conversation) {
+    conversation.messages.push({ role: "assistant", content: reply, at: new Date() });
+    await conversation.save();
+  }
 
   sendSuccess(res, {
-    conversationId: conversation.id,
+    conversationId: conversation?.id,
     reply,
     suggestedProducts: candidates.slice(0, 5),
     isFallback,

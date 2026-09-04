@@ -2,9 +2,46 @@ import { Request, Response } from "express";
 import { FilterQuery } from "mongoose";
 import { Product, IProduct } from "./product.model";
 import { Store } from "../sellers/store.model";
+import { Category } from "../categories/category.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+
+/** Resolves a category name to itself plus the names of every descendant
+ * category, so filtering by a parent (e.g. "Electronics") also returns
+ * products filed under its subcategories (e.g. "Phones", "Laptops").
+ * Falls back to just the given name if it isn't a known category. */
+async function resolveCategoryNames(categoryName: string): Promise<string[]> {
+  const root = await Category.findOne({
+    $or: [
+      { name: { $regex: `^${categoryName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } },
+      { slug: categoryName.toLowerCase() },
+    ],
+  })
+    .select("_id name")
+    .lean();
+  if (!root) return [categoryName];
+
+  const allCategories = await Category.find().select("_id name parent").lean();
+  const byParent = new Map<string, { _id: unknown; name: string }[]>();
+  allCategories.forEach((c) => {
+    const parentId = c.parent ? String(c.parent) : "";
+    if (!byParent.has(parentId)) byParent.set(parentId, []);
+    byParent.get(parentId)!.push(c);
+  });
+
+  const names = [root.name];
+  const queue = [String(root._id)];
+  while (queue.length) {
+    const id = queue.shift()!;
+    const children = byParent.get(id) || [];
+    for (const child of children) {
+      names.push(child.name);
+      queue.push(String(child._id));
+    }
+  }
+  return names;
+}
 
 /** GET /products - public catalog, filterable + paginated. Returns a raw array to match the frontend's Product[] contract, with pagination metadata in headers. */
 export const listProducts = asyncHandler(async (req: Request, res: Response) => {
@@ -26,7 +63,9 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   filter.status = req.user?.role === "admin" || req.user?.role === "seller" ? status ?? "approved" : "approved";
   
   if (category) {
-    filter.category = category;
+    const names = await resolveCategoryNames(category);
+    const regexes = names.map((n) => new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"));
+    filter.category = regexes.length > 1 ? { $in: regexes } : regexes[0];
   }
 
   if (storeId) filter.storeId = storeId;
@@ -65,6 +104,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   res.setHeader("X-Total-Count", String(total));
   res.setHeader("X-Page", String(page));
   res.setHeader("X-Limit", String(limit));
+  res.setHeader("Access-Control-Expose-Headers", "X-Total-Count, X-Page, X-Limit");
   res.status(200).json(items);
 });
 

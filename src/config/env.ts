@@ -41,7 +41,6 @@ if (!parsed.success) {
 const aiKeysPresent = parsed.data.ANTHROPIC_API_KEY.length > 0 || parsed.data.GEMINI_API_KEY.length > 0;
 
 if (!aiKeysPresent && parsed.data.NODE_ENV === "production") {
-  // eslint-disable-next-line no-console
   console.warn("⚠️  WARNING: No AI API key configured (ANTHROPIC_API_KEY or GEMINI_API_KEY).");
   // eslint-disable-next-line no-console
   console.warn("⚠️  All AI features will use rule-based fallback responses.");

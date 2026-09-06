@@ -38,6 +38,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       title: product.title,
       quantity: item.quantity,
       price,
+      image: product.images?.[0] ?? undefined,
     });
   }
   subtotal = Math.round(subtotal * 100) / 100;

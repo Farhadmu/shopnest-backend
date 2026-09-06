@@ -43,7 +43,7 @@ export function errorMiddleware(
   if (statusCode >= 500) {
     logger.error(`${req.method} ${req.originalUrl} -> ${statusCode}`, err);
   } else {
-    logger.warn(`${req.method} ${req.originalUrl} -> ${statusCode}: ${message}`);
+    logger.warn(`${req.method} ${req.originalUrl} -> ${statusCode}: ${message}`, details || err);
   }
 
   res.status(statusCode).json({

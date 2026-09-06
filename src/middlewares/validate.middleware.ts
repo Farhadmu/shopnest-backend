@@ -18,6 +18,7 @@ export function validate(schemas: ValidationTargets) {
       next();
     } catch (err) {
       if (err instanceof ZodError) {
+        console.error("❌ [Zod Validation Error]:", JSON.stringify(err.flatten()));
         return next(ApiError.badRequest("Validation failed", err.flatten()));
       }
       next(err);

@@ -1,3 +1,7 @@
+import dns from 'node:dns'
+dns.setServers(['8.8.8.8','8.8.4.4'])
+
+
 import { createApp } from "./app";
 import { connectDB } from "./config/db";
 import { env } from "./config/env";
@@ -35,3 +39,4 @@ bootstrap().catch((err) => {
   console.error("Failed to start server:", err);
   process.exit(1);
 });
+ 

@@ -21,6 +21,7 @@ router.post(
   "/",
   ...requireAuth,
   requireRole("seller", "admin"),
+  (req, _res, next) => { console.log("📥 [POST /products] Body:", JSON.stringify(req.body)); next(); },
   validate({ body: createProductSchema }),
   ctrl.createProduct
 );

@@ -1,15 +1,15 @@
 import { z } from "zod";
 
 export const createProductSchema = z.object({
-  title: z.string().min(3, "Title must be at least 3 characters").max(200),
-  description: z.string().min(10, "Description must be at least 10 characters"),
-  price: z.number().positive("Price must be greater than 0"),
+  title: z.string().min(1, "Title is required").max(200),
+  description: z.string().min(1, "Description is required"),
+  price: z.coerce.number().positive("Price must be greater than 0"),
   category: z.string().min(1, "Category is required"),
-  stock: z.number().int().nonnegative("Stock cannot be negative"),
-  images: z.array(z.string().url()).optional(),
-  discountPrice: z.number().positive().optional(),
-  tags: z.array(z.string()).optional(),
-  specifications: z.record(z.string(), z.string()).optional(),
+  stock: z.coerce.number().int().nonnegative("Stock cannot be negative").default(0),
+  images: z.array(z.string()).optional().default([]),
+  discountPrice: z.coerce.number().nonnegative().optional().nullable(),
+  tags: z.array(z.string()).optional().default([]),
+  specifications: z.record(z.string(), z.any()).optional().default({}),
 });
 
 export const updateProductSchema = createProductSchema.partial();

@@ -12,6 +12,7 @@ const envSchema = z.object({
   API_PREFIX: z.string().default("/api/v1"),
 
   MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
+  DB_NAME: z.string().default("shopnest"),
 
   BETTER_AUTH_SECRET: z.string().min(1, "BETTER_AUTH_SECRET is required"),
   BETTER_AUTH_COOKIE_NAME: z.string().default("better-auth.session_token"),

@@ -141,9 +141,21 @@ export const createProduct = asyncHandler(async (req: Request, res: Response) =>
     throw ApiError.forbidden(`Your store is ${store.status} and cannot list products`);
   }
 
+  const productData = { ...req.body };
+  if (productData.discountPrice !== undefined && (productData.discountPrice <= 0 || productData.discountPrice >= productData.price)) {
+    delete productData.discountPrice;
+  }
+  if (productData.specifications && typeof productData.specifications === "object") {
+    const stringSpecs: Record<string, string> = {};
+    for (const [key, val] of Object.entries(productData.specifications)) {
+      stringSpecs[key] = typeof val === "string" ? val : JSON.stringify(val);
+    }
+    productData.specifications = stringSpecs;
+  }
+
   const product = await Product.create({
-    ...req.body,
-    storeId: store.id,
+    ...productData,
+    storeId: store.id || String(store._id),
     sellerId: req.user!.id,
     status: "approved",
   });

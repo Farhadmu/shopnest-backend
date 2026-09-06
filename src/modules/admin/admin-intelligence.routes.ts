@@ -1,57 +1,72 @@
 import { Router } from "express";
-import * as ctrl from "./admin-intelligence.controller";
+import * as commandCenter from "./features/command-center.controller";
+import * as marketplaceMap from "./features/marketplace-map.controller";
+import * as anomalies from "./features/anomalies.controller";
+import * as healthIndex from "./features/health-index.controller";
+import * as revenueLeakage from "./features/revenue-leakage.controller";
+import * as sellerRiskRanking from "./features/seller-risk-ranking.controller";
+import * as marketplaceForecast from "./features/marketplace-forecast.controller";
+import * as categoryIntelligence from "./features/category-intelligence.controller";
+import * as systemTelemetry from "./features/system-telemetry.controller";
+import * as platformAnalytics from "./features/platform-analytics.controller";
+import * as riskMatrix from "./features/risk-matrix.controller";
+import * as suspiciousOrders from "./features/suspicious-orders.controller";
+import * as financialRisk from "./features/financial-risk.controller";
+import * as fraudAlerts from "./features/fraud-alerts.controller";
+import * as securityIncidents from "./features/security-incidents.controller";
+import * as auditLogs from "./features/audit-logs.controller";
 
 const router = Router();
 
 // 27. Command Center Metrics
-router.get("/command-center", ctrl.getCommandCenterMetrics);
+router.get("/command-center", commandCenter.getCommandCenterMetrics);
 
 // 28. Marketplace Activity Map
-router.get("/marketplace-map", ctrl.getMarketplaceMap);
+router.get("/marketplace-map", marketplaceMap.getMarketplaceMap);
 
 // 29. Anomalies
-router.get("/anomalies", ctrl.getAnomalies);
-router.patch("/anomalies/:id/resolve", ctrl.resolveAnomaly);
+router.get("/anomalies", anomalies.getAnomalies);
+router.patch("/anomalies/:id/resolve", anomalies.resolveAnomaly);
 
 // 30. Marketplace Health Index
-router.get("/marketplace-health", ctrl.getMarketplaceHealthIndex);
+router.get("/marketplace-health", healthIndex.getMarketplaceHealthIndex);
 
 // 31. Revenue Leakage
-router.get("/revenue-leakage", ctrl.getRevenueLeakage);
+router.get("/revenue-leakage", revenueLeakage.getRevenueLeakage);
 
 // 32. Seller Risk Ranking
-router.get("/seller-risk-ranking", ctrl.getSellerRiskRanking);
+router.get("/seller-risk-ranking", sellerRiskRanking.getSellerRiskRanking);
 
 // 33. Marketplace Forecast
-router.get("/marketplace-forecast", ctrl.getMarketplaceForecast);
+router.get("/marketplace-forecast", marketplaceForecast.getMarketplaceForecast);
 
 // 34. Category Intelligence
-router.get("/category-intelligence", ctrl.getCategoryIntelligence);
+router.get("/category-intelligence", categoryIntelligence.getCategoryIntelligence);
 
 // 35. System Telemetry & Bottleneck Detector
-router.get("/system-telemetry", ctrl.getSystemTelemetry);
+router.get("/system-telemetry", systemTelemetry.getSystemTelemetry);
 
 // 36. Platform Analytics with Date Filters
-router.get("/platform-analytics", ctrl.getPlatformAnalytics);
+router.get("/platform-analytics", platformAnalytics.getPlatformAnalytics);
 
 // 37. Rule-Based Fraud & Risk Detection Matrix
-router.get("/risk-matrix", ctrl.getRiskMatrix);
+router.get("/risk-matrix", riskMatrix.getRiskMatrix);
 
 // 37b. Suspicious Orders Detection
-router.get("/suspicious-orders", ctrl.getSuspiciousOrders);
+router.get("/suspicious-orders", suspiciousOrders.getSuspiciousOrders);
 
 // 37c. Financial Risk Exposure
-router.get("/financial-risk", ctrl.getFinancialRisk);
+router.get("/financial-risk", financialRisk.getFinancialRisk);
 
 // 37d. Fraud Alerts
-router.get("/fraud-alerts", ctrl.getFraudAlerts);
+router.get("/fraud-alerts", fraudAlerts.getFraudAlerts);
 
 // 38. Security Incident Management
-router.get("/incidents", ctrl.getSecurityIncidents);
-router.patch("/incidents/:id", ctrl.updateSecurityIncident);
-router.post("/incidents/:id/notes", ctrl.addIncidentNote);
+router.get("/incidents", securityIncidents.getSecurityIncidents);
+router.patch("/incidents/:id", securityIncidents.updateSecurityIncident);
+router.post("/incidents/:id/notes", securityIncidents.addIncidentNote);
 
 // 39. Admin Audit Log
-router.get("/audit-logs", ctrl.getAuditLogs);
+router.get("/audit-logs", auditLogs.getAuditLogs);
 
 export default router;

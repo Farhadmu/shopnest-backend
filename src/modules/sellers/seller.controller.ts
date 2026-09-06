@@ -1,14 +1,15 @@
 import { Request, Response } from "express";
-import mongoose from "mongoose";
 import { Store } from "./store.model";
 import { Product } from "../products/product.model";
 import { Order } from "../orders/order.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
-import { logger } from "../../utils/logger";
 
-function slugify(input: string) {
+/**
+ * Helper: Converts any string into a URL-friendly slug.
+ */
+function slugify(input: string): string {
   return input
     .toLowerCase()
     .trim()
@@ -16,7 +17,18 @@ function slugify(input: string) {
     .replace(/(^-|-$)/g, "");
 }
 
-/** Promotes the authenticated customer to a seller and creates their store. */
+/**
+ * Controller: Register Store (Seller Application / Re-submission)
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated user ID (owner)
+ *    - req.body: storeName, description, logo, banner, businessInfo
+ * 2. Database Operation:
+ *    - Store.findOne({ ownerId }) to check if store already exists or was rejected
+ *    - Store.create(...) to register new store application
+ * 3. Response Sent:
+ *    - HTTP 201 (or 200 on resubmit): Created/updated store JSON object
+ */
 export const registerStore = asyncHandler(async (req: Request, res: Response) => {
   const existing = await Store.findOne({ ownerId: req.user!.id });
   const { storeName, description, logo, banner, businessInfo } = req.body;
@@ -54,20 +66,33 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
   sendSuccess(res, store.toJSON(), "Store created, pending admin approval", 201);
 });
 
-function safeObjectId(id: string) {
-  try {
-    return new mongoose.Types.ObjectId(id);
-  } catch {
-    return new mongoose.Types.ObjectId();
-  }
-}
-
+/**
+ * Controller: Get Logged-In User's Store
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated seller ID
+ * 2. Database Operation:
+ *    - Store.findOne({ ownerId })
+ * 3. Response Sent:
+ *    - HTTP 200: Store JSON object (or 404 if not registered yet)
+ */
 export const getMyStore = asyncHandler(async (req: Request, res: Response) => {
   const store = await Store.findOne({ ownerId: req.user!.id });
   if (!store) throw ApiError.notFound("You do not have a store yet");
   sendSuccess(res, store.toJSON());
 });
 
+/**
+ * Controller: Update Logged-In User's Store
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated seller ID
+ *    - req.body: storeName, description, logo, banner, businessInfo, resubmit
+ * 2. Database Operation:
+ *    - Store.findOne({ ownerId }), updates properties, store.save()
+ * 3. Response Sent:
+ *    - HTTP 200: Updated Store JSON object with "Store updated" message
+ */
 export const updateMyStore = asyncHandler(async (req: Request, res: Response) => {
   const store = await Store.findOne({ ownerId: req.user!.id });
   if (!store) throw ApiError.notFound("You do not have a store yet");
@@ -87,14 +112,25 @@ export const updateMyStore = asyncHandler(async (req: Request, res: Response) =>
     store.status = "pending";
     store.rejectionReason = undefined;
   }
+
   await store.save();
   sendSuccess(res, store.toJSON(), "Store updated");
 });
 
-/** Public store page: GET /sellers/stores/:storeId */
+/**
+ * Controller: Get Public Store Details By ID
+ *
+ * 1. Inputs Extracted:
+ *    - req.params.storeId: Store ID
+ * 2. Database Operation:
+ *    - Store.findById(storeId)
+ * 3. Response Sent:
+ *    - HTTP 200: Public storefront profile { id, storeName, description, trustScore, logo, banner, rating, ... }
+ */
 export const getStoreById = asyncHandler(async (req: Request, res: Response) => {
   const store = await Store.findById(req.params.storeId);
   if (!store || store.status === "rejected") throw ApiError.notFound("Store not found");
+
   sendSuccess(res, {
     id: store.id,
     storeName: store.storeName,
@@ -109,7 +145,18 @@ export const getStoreById = asyncHandler(async (req: Request, res: Response) => 
   });
 });
 
-/** GET /sellers/metrics - dashboard summary for the authenticated seller */
+/**
+ * Controller: Get Seller Dashboard Metrics
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated seller ID
+ * 2. Database Operation:
+ *    - Store.findOne({ ownerId })
+ *    - Product.countDocuments({ storeId, isDeleted: false })
+ *    - Order.aggregate(...) to compute total revenue and total orders for this store
+ * 3. Response Sent:
+ *    - HTTP 200: { totalSales, totalOrders, totalProducts }
+ */
 export const getSellerMetrics = asyncHandler(async (req: Request, res: Response) => {
   const store = await Store.findOne({ ownerId: req.user!.id });
   if (!store) {
@@ -137,6 +184,16 @@ export const getSellerMetrics = asyncHandler(async (req: Request, res: Response)
   sendSuccess(res, { totalSales, totalOrders, totalProducts });
 });
 
+/**
+ * Controller: List All Stores (Public / Admin Filterable)
+ *
+ * 1. Inputs Extracted:
+ *    - req.query.status: Optional store status filter
+ * 2. Database Operation:
+ *    - Store.find(filter).sort({ createdAt: -1 })
+ * 3. Response Sent:
+ *    - HTTP 200: Raw array of Store documents (Store[])
+ */
 export const listStores = asyncHandler(async (req: Request, res: Response) => {
   const { status } = req.query as { status?: string };
   const filter = status ? { status } : {};

@@ -1,43 +1,37 @@
 import { Request, Response } from "express";
-import mongoose from "mongoose";
+import { Notification } from "./notification.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { ApiError } from "../../utils/api-error";
 
-function getCollection() {
-  const db = mongoose.connection.db;
-  if (!db) throw ApiError.internal("Database is not connected");
-  return db.collection("notifications");
-}
-
-function mapNotification(doc: any) {
-  return {
-    id: String(doc._id),
-    userId: String(doc.userId),
-    type: doc.type,
-    title: doc.title,
-    message: doc.message,
-    isRead: Boolean(doc.isRead),
-    link: doc.link,
-    relatedId: doc.relatedId,
-    createdAt: new Date(doc.createdAt).toISOString(),
-    updatedAt: new Date(doc.updatedAt ?? doc.createdAt).toISOString(),
-  };
-}
-
+/**
+ * Controller: List Notifications For Logged-In User
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated user ID
+ *    - req.query: page (default 1), limit (default 20, max 50)
+ * 2. Database Operation:
+ *    - Notification.find({ userId }).sort({ createdAt: -1 }).skip(...).limit(...)
+ *    - Notification.countDocuments({ userId })
+ * 3. Response Sent:
+ *    - HTTP 200: { success: true, items: [...], total, page, limit, totalPages }
+ */
 export const listNotifications = asyncHandler(async (req: Request, res: Response) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
   const userId = req.user!.id;
-  const collection = getCollection();
   const filter = { userId };
+
   const [docs, total] = await Promise.all([
-    collection.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray(),
-    collection.countDocuments(filter),
+    Notification.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    Notification.countDocuments(filter),
   ]);
 
-  res.json({
+  res.status(200).json({
     success: true,
-    items: docs.map(mapNotification),
+    items: docs.map((d) => d.toJSON()),
     total,
     page,
     limit,
@@ -45,26 +39,59 @@ export const listNotifications = asyncHandler(async (req: Request, res: Response
   });
 });
 
+/**
+ * Controller: Get Count of Unread Notifications
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated user ID
+ * 2. Database Operation:
+ *    - Notification.countDocuments({ userId, isRead: false })
+ * 3. Response Sent:
+ *    - HTTP 200: { success: true, count: number }
+ */
 export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
-  const count = await getCollection().countDocuments({ userId: req.user!.id, isRead: { $ne: true } });
-  res.json({ success: true, count });
+  const count = await Notification.countDocuments({ userId: req.user!.id, isRead: false });
+  res.status(200).json({ success: true, count });
 });
 
+/**
+ * Controller: Mark Single Notification as Read
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated user ID
+ *    - req.params.id: Notification ID
+ * 2. Database Operation:
+ *    - Notification.findOneAndUpdate({ _id: id, userId }, { isRead: true }, { new: true })
+ * 3. Response Sent:
+ *    - HTTP 200: { success: true, ...notificationDetails }
+ */
 export const markRead = asyncHandler(async (req: Request, res: Response) => {
-  const id = new mongoose.Types.ObjectId(req.params.id);
-  const result = await getCollection().findOneAndUpdate(
-    { _id: id, userId: req.user!.id },
-    { $set: { isRead: true, updatedAt: new Date() } },
-    { returnDocument: "after" }
+  const notification = await Notification.findOneAndUpdate(
+    { _id: req.params.id, userId: req.user!.id },
+    { isRead: true },
+    { new: true }
   );
-  if (!result) throw ApiError.notFound("Notification not found");
-  res.json({ success: true, ...mapNotification(result) });
+
+  if (!notification) throw ApiError.notFound("Notification not found");
+
+  res.status(200).json({ success: true, ...notification.toJSON() });
 });
 
+/**
+ * Controller: Mark All Notifications as Read
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated user ID
+ * 2. Database Operation:
+ *    - Notification.updateMany({ userId, isRead: false }, { isRead: true })
+ * 3. Response Sent:
+ *    - HTTP 200: { success: true }
+ */
 export const markAllRead = asyncHandler(async (req: Request, res: Response) => {
-  await getCollection().updateMany(
-    { userId: req.user!.id, isRead: { $ne: true } },
-    { $set: { isRead: true, updatedAt: new Date() } }
+  await Notification.updateMany(
+    { userId: req.user!.id, isRead: false },
+    { isRead: true }
   );
-  res.json({ success: true });
+
+  res.status(200).json({ success: true });
 });

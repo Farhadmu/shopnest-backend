@@ -333,42 +333,7 @@ export const getProductBundle = asyncHandler(async (req: Request, res: Response)
   let bundle = await ProductBundle.findOne({ mainProductId: productId });
 
   if (!bundle) {
-    // Construct dynamic complementary bundle from related category items
-    const complementaryItems = await Product.find({
-      _id: { $ne: product._id },
-      category: product.category,
-      isDeleted: false,
-      status: "approved",
-    }).limit(3);
-
-    const items = [
-      {
-        productId: product.id,
-        title: product.title,
-        price: product.price,
-        role: "main" as const,
-      },
-      ...complementaryItems.map((c) => ({
-        productId: c.id,
-        title: c.title,
-        price: c.price,
-        role: "complementary" as const,
-      })),
-    ];
-
-    const originalTotal = items.reduce((sum, item) => sum + item.price, 0);
-    const bundlePrice = Math.round(originalTotal * 0.88); // 12% bundle discount
-
-    bundle = await ProductBundle.create({
-      bundleName: `${product.title} Power Bundle`,
-      mainProductId: product.id,
-      category: product.category,
-      items,
-      originalTotal,
-      bundlePrice,
-      savingsPercentage: 12,
-      compatibilityNote: "Verified complementary accessory package.",
-    });
+    return sendSuccess(res, null);
   }
 
   sendSuccess(res, bundle.toJSON());
@@ -458,11 +423,10 @@ export const getPriceHistory = asyncHandler(async (req: Request, res: Response) 
   const product = await Product.findById(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
-  let priceRecord = await PriceHistory.findOne({ productId });
+  const currentPrice = product.discountPrice || product.price;
+  let priceRecord: any = await PriceHistory.findOne({ productId });
 
   if (!priceRecord) {
-    // Generate realistic 30-day price trend anchored on actual product price
-    const currentPrice = product.discountPrice || product.price;
     const basePrice = product.price;
     const historyPoints = [];
 
@@ -487,7 +451,7 @@ export const getPriceHistory = asyncHandler(async (req: Request, res: Response) 
         ? `🔥 Current price (৳${currentPrice.toLocaleString()}) is ৳${(averagePrice - currentPrice).toLocaleString()} lower than the 30-day average!`
         : `Current price is near regular retail average of ৳${averagePrice.toLocaleString()}.`;
 
-    priceRecord = await PriceHistory.create({
+    return sendSuccess(res, {
       productId,
       history: historyPoints,
       lowestPrice,

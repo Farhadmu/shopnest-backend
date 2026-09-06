@@ -130,7 +130,7 @@ export const getPriceIntelligence = asyncHandler(async (req: Request, res: Respo
   const product = await Product.findById(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
-  let priceRecord = await PriceHistory.findOne({ productId });
+  let priceRecord: any = await PriceHistory.findOne({ productId });
 
   if (!priceRecord) {
     const currentPrice = product.discountPrice || product.price;
@@ -147,11 +147,11 @@ export const getPriceIntelligence = asyncHandler(async (req: Request, res: Respo
     const averagePrice = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
     const trend = currentPrice <= lowestPrice ? "dropping" : currentPrice >= highestPrice ? "rising" : "stable";
 
-    priceRecord = await PriceHistory.create({
+    priceRecord = {
       productId, history: historyPoints, lowestPrice, highestPrice, averagePrice, currentPrice, trend,
       insight: currentPrice < averagePrice ? `Good time to buy! Price is ৳${(averagePrice - currentPrice).toLocaleString()} below average.` :
         currentPrice > averagePrice ? `Price is ৳${(currentPrice - averagePrice).toLocaleString()} above average. Consider waiting.` : "Price is stable near average.",
-    });
+    } as any;
   }
 
   const currentPrice = product.discountPrice || product.price;

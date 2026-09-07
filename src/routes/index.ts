@@ -16,6 +16,7 @@ import notificationRoutes from "../modules/notifications/notification.routes";
 import customerRoutes from "../modules/customer/customer.routes";
 import customerFeaturesRoutes from "../modules/customer/customer-features.routes";
 import spendingAnalyticsRoutes from "../modules/customer/spending-analytics.routes";
+import heroBannerRoutes from "../modules/hero-banners/hero-banner.routes";
 
 const router = Router();
 
@@ -38,5 +39,6 @@ router.use("/notifications", notificationRoutes);
 router.use("/customer", customerRoutes);
 router.use("/customer/features", customerFeaturesRoutes);
 router.use("/customer/spending", spendingAnalyticsRoutes);
+router.use("/hero-banners", heroBannerRoutes);
 
 export default router;

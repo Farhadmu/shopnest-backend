@@ -4,7 +4,7 @@ import { sendSuccess } from "../../../utils/api-response";
 import { Store } from "../../sellers/store.model";
 import { Product } from "../../products/product.model";
 import { Order } from "../../orders/order.model";
-import { clampScore } from "@/utils/clampScore";
+import { clampScore } from "../../../utils/clampScore";
 
 
 export const getSellerRiskRanking = asyncHandler(async (_req: Request, res: Response) => {

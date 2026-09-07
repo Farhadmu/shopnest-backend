@@ -4,12 +4,13 @@ dns.setServers(["8.8.8.8", "8.8.4.4"]);
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import path from "path";
+import { DB_NAME } from "../config/db";
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 async function main() {
   const uri = process.env.MONGODB_URI;
-  await mongoose.connect(uri!);
+  await mongoose.connect(uri!, { dbName: DB_NAME });
   const db = mongoose.connection.db!;
 
   const users = await db.collection("user").find({}).toArray();

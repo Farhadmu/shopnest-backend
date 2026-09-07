@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import path from "path";
+import { DB_NAME } from "../config/db";
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
@@ -25,7 +26,7 @@ async function main() {
     process.exit(1);
   }
 
-  await mongoose.connect(uri);
+  await mongoose.connect(uri, { dbName: DB_NAME });
   const db = mongoose.connection.db;
   if (!db) {
     console.error("Failed to get database handle");

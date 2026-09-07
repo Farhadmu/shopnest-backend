@@ -14,6 +14,8 @@ import adminRoutes from "../modules/admin/admin.routes";
 import aiRoutes from "../modules/ai/ai.routes";
 import notificationRoutes from "../modules/notifications/notification.routes";
 import customerRoutes from "../modules/customer/customer.routes";
+import customerFeaturesRoutes from "../modules/customer/customer-features.routes";
+import spendingAnalyticsRoutes from "../modules/customer/spending-analytics.routes";
 
 const router = Router();
 
@@ -34,5 +36,7 @@ router.use("/admin", adminRoutes);
 router.use("/ai", aiRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/customer", customerRoutes);
+router.use("/customer/features", customerFeaturesRoutes);
+router.use("/customer/spending", spendingAnalyticsRoutes);
 
 export default router;

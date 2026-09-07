@@ -15,7 +15,17 @@ export interface IStore {
     ownerName?: string;
     contactPhone?: string;
     businessAddress?: string;
+    nidOrTradeLicense?: string;
+    taxId?: string;
+    category?: string;
+    payoutMethod?: "bank" | "bkash" | "nagad" | "rocket" | string;
+    payoutAccountNumber?: string;
+    payoutAccountName?: string;
+    bankBranch?: string;
   };
+  rejectionReason?: string;
+  verifiedAt?: Date;
+  verifiedBy?: string;
   status: StoreStatus;
   trustScore: number;
   rating: number;
@@ -37,7 +47,17 @@ const storeSchema = new Schema<IStore>(
       ownerName: String,
       contactPhone: String,
       businessAddress: String,
+      nidOrTradeLicense: String,
+      taxId: String,
+      category: String,
+      payoutMethod: String,
+      payoutAccountNumber: String,
+      payoutAccountName: String,
+      bankBranch: String,
     },
+    rejectionReason: { type: String },
+    verifiedAt: { type: Date },
+    verifiedBy: { type: String },
     status: { type: String, enum: ["pending", "approved", "rejected", "suspended"], default: "pending" },
     trustScore: { type: Number, default: 60, min: 0, max: 100 },
     rating: { type: Number, default: 0, min: 0, max: 5 },

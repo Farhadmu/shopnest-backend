@@ -19,9 +19,23 @@ function slugify(input: string) {
 /** Promotes the authenticated customer to a seller and creates their store. */
 export const registerStore = asyncHandler(async (req: Request, res: Response) => {
   const existing = await Store.findOne({ ownerId: req.user!.id });
-  if (existing) throw ApiError.conflict("You already have a store");
-
   const { storeName, description, logo, banner, businessInfo } = req.body;
+
+  if (existing) {
+    if (existing.status === "rejected") {
+      existing.storeName = storeName || existing.storeName;
+      existing.description = description || existing.description;
+      if (logo !== undefined) existing.logo = logo;
+      if (banner !== undefined) existing.banner = banner;
+      if (businessInfo) existing.businessInfo = { ...(existing.businessInfo || {}), ...businessInfo };
+      existing.status = "pending";
+      existing.rejectionReason = undefined;
+      await existing.save();
+      return sendSuccess(res, existing.toJSON(), "Application resubmitted, pending admin approval", 200);
+    }
+    throw ApiError.conflict("You already have a store");
+  }
+
   let slug = slugify(storeName);
   const dup = await Store.findOne({ slug });
   if (dup) slug = `${slug}-${Date.now().toString(36)}`;
@@ -36,20 +50,6 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
     businessInfo,
     status: "pending",
   });
-
-  // Best-effort: flip the user's role to "seller" directly in better-auth's
-  // `user` collection, since this backend does not own the identity store.
-  try {
-    const db = mongoose.connection.db;
-    if (db) {
-      await db.collection("user").updateOne(
-        { $or: [{ id: req.user!.id }, { _id: safeObjectId(req.user!.id) }] },
-        { $set: { role: "seller" } }
-      );
-    }
-  } catch (err) {
-    logger.warn("Could not sync role=seller back to better-auth user collection", err);
-  }
 
   sendSuccess(res, store.toJSON(), "Store created, pending admin approval", 201);
 });
@@ -69,8 +69,25 @@ export const getMyStore = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const updateMyStore = asyncHandler(async (req: Request, res: Response) => {
-  const store = await Store.findOneAndUpdate({ ownerId: req.user!.id }, req.body, { new: true });
+  const store = await Store.findOne({ ownerId: req.user!.id });
   if (!store) throw ApiError.notFound("You do not have a store yet");
+
+  const { storeName, description, logo, banner, businessInfo, resubmit } = req.body;
+  if (storeName) store.storeName = storeName;
+  if (description) store.description = description;
+  if (logo !== undefined) store.logo = logo;
+  if (banner !== undefined) store.banner = banner;
+  if (businessInfo) {
+    store.businessInfo = {
+      ...(store.businessInfo || {}),
+      ...businessInfo,
+    };
+  }
+  if (resubmit && (store.status === "rejected" || store.status === "pending")) {
+    store.status = "pending";
+    store.rejectionReason = undefined;
+  }
+  await store.save();
   sendSuccess(res, store.toJSON(), "Store updated");
 });
 

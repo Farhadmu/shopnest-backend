@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as ctrl from "./ai.controller";
 import advisorRoutes from "./advisor/advisor.routes";
+import adminCopilotRoutes from "./admin-copilot/admin-copilot.routes";
 import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
@@ -63,5 +64,8 @@ router.post("/detect-intent", attachUserIfPresent, ctrl.detectShoppingIntent);
 
 // 39. Multi-Role AI Commerce Copilot
 router.post("/copilot", attachUserIfPresent, ctrl.commerceCopilot);
+
+// 40. Admin Copilot - AI-powered marketplace intelligence (ADMIN ONLY)
+router.use("/admin-copilot", adminCopilotRoutes);
 
 export default router;

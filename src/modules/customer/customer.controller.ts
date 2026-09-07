@@ -3,21 +3,12 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { Product } from "../products/product.model";
-import { Order } from "../orders/order.model";
-import { Store } from "../sellers/store.model";
 import {
   ShoppingJourney,
   ShoppingGoal,
   ProductLifecycle,
-  PriceHistory,
   ProductBundle,
 } from "./customer-intelligence.model";
-import {
-  SavedSearch,
-  PersonalizedOffer,
-  CustomerActivity,
-} from "./customer-extras.model";
-import { Wishlist } from "../wishlist/wishlist.model";
 
 // 1. SMART SHOPPING JOURNEY
 export const getShoppingJourney = asyncHandler(async (req: Request, res: Response) => {
@@ -91,117 +82,120 @@ export const recordJourneyEvent = asyncHandler(async (req: Request, res: Respons
 
 // 2. SMART BUDGET PLANNER
 export const generateBudgetPlan = asyncHandler(async (req: Request, res: Response) => {
-  const { budget, purpose = "general", preferredCategories = [] } = req.body;
+  const { budget, purpose } = req.body;
   const targetBudget = Number(budget);
 
   if (!targetBudget || targetBudget <= 0) {
     throw ApiError.badRequest("Please provide a valid budget amount");
   }
+  if (!purpose) {
+    throw ApiError.badRequest("Please select a category");
+  }
 
-  // Define category allocation blueprints based on purpose
-  const blueprints: Record<string, Array<{ role: string; categoryKeyword: string; percentage: number }>> = {
-    gaming: [
-      { role: "Core Device (Laptop / PC)", categoryKeyword: "laptop", percentage: 0.70 },
-      { role: "Mechanical Keyboard", categoryKeyword: "keyboard", percentage: 0.10 },
-      { role: "Precision Mouse", categoryKeyword: "mouse", percentage: 0.08 },
-      { role: "Surround Headset", categoryKeyword: "headphone", percentage: 0.07 },
-      { role: "Mousepad & Accessories", categoryKeyword: "accessories", percentage: 0.05 },
-    ],
-    work_office: [
-      { role: "Office Laptop / Ultrabook", categoryKeyword: "laptop", percentage: 0.72 },
-      { role: "Ergonomic Mouse", categoryKeyword: "mouse", percentage: 0.08 },
-      { role: "Wireless Keyboard", categoryKeyword: "keyboard", percentage: 0.08 },
-      { role: "Protective Backpack", categoryKeyword: "bag", percentage: 0.07 },
-      { role: "USB Hub & Stand", categoryKeyword: "hub", percentage: 0.05 },
-    ],
-    photography: [
-      { role: "Primary Camera / Body", categoryKeyword: "camera", percentage: 0.65 },
-      { role: "Prime Lens", categoryKeyword: "lens", percentage: 0.20 },
-      { role: "High-Speed Memory Card", categoryKeyword: "card", percentage: 0.05 },
-      { role: "Tripod & Mount", categoryKeyword: "tripod", percentage: 0.05 },
-      { role: "Camera Bag", categoryKeyword: "bag", percentage: 0.05 },
-    ],
-    student: [
-      { role: "Student Laptop / Tablet", categoryKeyword: "laptop", percentage: 0.70 },
-      { role: "Bluetooth Earbuds", categoryKeyword: "earbud", percentage: 0.12 },
-      { role: "Backpack & Sleeve", categoryKeyword: "bag", percentage: 0.10 },
-      { role: "Stationery & Desk Mat", categoryKeyword: "desk", percentage: 0.08 },
-    ],
-    general: [
-      { role: "Primary Item", categoryKeyword: "electronics", percentage: 0.60 },
-      { role: "Secondary Essential", categoryKeyword: "gadget", percentage: 0.25 },
-      { role: "Useful Accessories", categoryKeyword: "accessories", percentage: 0.15 },
-    ],
-  };
+  // Fetch approved, in-stock products for the category
+  const categoryProducts = await Product.find({
+    isDeleted: false,
+    status: "approved",
+    stock: { $gt: 0 },
+    category: { $regex: new RegExp(`^${purpose}$`, "i") },
+  });
 
-  const selectedBlueprint = blueprints[purpose.toLowerCase()] || blueprints.general;
-  const availableProducts = await Product.find({ isDeleted: false, status: "approved", stock: { $gt: 0 } });
+  if (categoryProducts.length === 0) {
+    return sendSuccess(res, {
+      targetBudget,
+      totalPlannedSpend: 0,
+      remainingBudget: targetBudget,
+      purpose,
+      items: [],
+      planSummary: "No available products found in this category to build a plan yet.",
+    });
+  }
+
+  // Filter products that actually fit inside the user's budget
+  const affordableProducts = categoryProducts
+    .filter((p) => p.price <= targetBudget)
+    .sort((a, b) => a.price - b.price);
+
+  // If the cheapest item in the category exceeds targetBudget
+  if (affordableProducts.length === 0) {
+    const minPrice = Math.min(...categoryProducts.map((p) => p.price));
+    return sendSuccess(res, {
+      targetBudget,
+      totalPlannedSpend: 0,
+      remainingBudget: targetBudget,
+      purpose,
+      items: [],
+      planSummary: `The minimum price in the '${purpose}' category is ৳${minPrice.toLocaleString()}. Please increase your budget.`,
+    });
+  }
 
   const plannedItems: Array<{
     role: string;
     allocatedBudget: number;
-    selectedProduct?: {
-      id: string;
-      title: string;
-      price: number;
-      category: string;
-      image: string;
-    };
+    selectedProduct?: { id: string; title: string; price: number; category: string; image: string };
     alternatives: Array<{ id: string; title: string; price: number; type: "cheaper" | "premium" }>;
   }> = [];
 
+  const usedIds = new Set<string>();
+  let currentRemaining = targetBudget;
   let totalPlannedSpend = 0;
 
-  for (const slot of selectedBlueprint) {
-    const slotBudget = targetBudget * slot.percentage;
-
-    // Search for product matching slot keyword or fallback to price matching
-    const matching = availableProducts.filter((p) => {
-      const matchText = `${p.title} ${p.category} ${p.tags.join(" ")}`.toLowerCase();
-      return matchText.includes(slot.categoryKeyword.toLowerCase()) || p.price <= slotBudget * 1.3;
-    });
-
-    const sortedByBudgetFit = matching.length > 0 ? matching : availableProducts;
-    sortedByBudgetFit.sort((a, b) => Math.abs(a.price - slotBudget) - Math.abs(b.price - slotBudget));
-
-    const selected = sortedByBudgetFit[0];
-    const itemPrice = selected ? selected.price : Math.round(slotBudget);
-
-    totalPlannedSpend += itemPrice;
-
-    // Cheaper & better alternatives
-    const cheaper = sortedByBudgetFit.filter((p) => selected && p.id !== selected.id && p.price < selected.price).slice(0, 2);
-    const premium = sortedByBudgetFit.filter((p) => selected && p.id !== selected.id && p.price > selected.price).slice(0, 2);
+  const pushItem = (
+    role: string,
+    product: (typeof categoryProducts)[number],
+    allocatedBudget: number
+  ) => {
+    const pool = categoryProducts.filter((p) => p.id !== product.id);
+    const cheaper = pool.filter((p) => p.price < product.price).sort((a, b) => b.price - a.price).slice(0, 2);
+    const premium = pool.filter((p) => p.price > product.price).sort((a, b) => a.price - b.price).slice(0, 2);
 
     plannedItems.push({
-      role: slot.role,
-      allocatedBudget: Math.round(slotBudget),
-      selectedProduct: selected
-        ? {
-            id: selected.id,
-            title: selected.title,
-            price: selected.price,
-            category: selected.category,
-            image: selected.images[0] || "",
-          }
-        : undefined,
+      role,
+      allocatedBudget: Math.round(allocatedBudget),
+      selectedProduct: {
+        id: product.id,
+        title: product.title,
+        price: product.price,
+        category: product.category,
+        image: product.images?.[0] || "",
+      },
       alternatives: [
         ...cheaper.map((p) => ({ id: p.id, title: p.title, price: p.price, type: "cheaper" as const })),
         ...premium.map((p) => ({ id: p.id, title: p.title, price: p.price, type: "premium" as const })),
       ],
     });
+  };
+
+  // Build optimal allocation within budget limit
+  const maxItems = Math.min(3, affordableProducts.length);
+
+  for (let i = 0; i < maxItems; i++) {
+    const slotBudget = currentRemaining / (maxItems - i);
+    
+    // Pick best matching product that strictly costs <= currentRemaining
+    const pick = affordableProducts
+      .filter((p) => !usedIds.has(p.id) && p.price <= currentRemaining)
+      .sort((a, b) => Math.abs(a.price - slotBudget) - Math.abs(b.price - slotBudget))[0];
+
+    if (!pick) break;
+
+    usedIds.add(pick.id);
+    const role = i === 0 ? "Primary Value Pick" : `Complementary Pick ${i}`;
+    pushItem(role, pick, slotBudget);
+
+    totalPlannedSpend += pick.price;
+    currentRemaining -= pick.price;
   }
 
-  // Ensure total plan never exceeds targetBudget arbitrarily without clear balance indicator
   const remainingBudget = Math.max(0, targetBudget - totalPlannedSpend);
 
-  sendSuccess(res, {
+  return sendSuccess(res, {
     targetBudget,
     totalPlannedSpend,
     remainingBudget,
     purpose,
     items: plannedItems,
-    planSummary: `Allocated ${plannedItems.length} curated components within your ৳${targetBudget.toLocaleString()} budget with ৳${remainingBudget.toLocaleString()} remaining buffer.`,
+    planSummary: `Allocated ${plannedItems.length} curated pick(s) within your ৳${targetBudget.toLocaleString()} budget with ৳${remainingBudget.toLocaleString()} remaining buffer.`,
   });
 });
 
@@ -231,7 +225,6 @@ export const checkProductCompatibility = asyncHandler(async (req: Request, res: 
   // Check 1: Laptop + RAM / Storage compatibility
   const hasLaptop = categories.some((c) => c.includes("laptop")) || titles.some((t) => t.includes("laptop"));
   const hasRam = titles.some((t) => t.includes("ram") || t.includes("memory") || t.includes("ddr"));
-  const hasSSD = titles.some((t) => t.includes("ssd") || t.includes("nvme"));
 
   if (hasLaptop && hasRam) {
     const isDdr5 = titles.some((t) => t.includes("ddr5"));
@@ -448,346 +441,3 @@ export const deleteGoal = asyncHandler(async (req: Request, res: Response) => {
   await ShoppingGoal.findByIdAndDelete(id);
   sendSuccess(res, { deleted: true }, "Shopping goal removed");
 });
-
-// 7. SMART PRICE HISTORY
-export const getPriceHistory = asyncHandler(async (req: Request, res: Response) => {
-  const { productId } = req.params;
-  const product = await Product.findById(productId);
-  if (!product) throw ApiError.notFound("Product not found");
-
-  let priceRecord = await PriceHistory.findOne({ productId });
-
-  if (!priceRecord) {
-    // Generate realistic 30-day price trend anchored on actual product price
-    const currentPrice = product.discountPrice || product.price;
-    const basePrice = product.price;
-    const historyPoints = [];
-
-    const numPoints = 8;
-    for (let i = numPoints - 1; i >= 0; i--) {
-      const daysAgo = i * 4;
-      const variation = (Math.sin(i) * 0.05 + 0.02) * basePrice;
-      const pointPrice = Math.round(i === 0 ? currentPrice : basePrice + variation);
-      historyPoints.push({
-        price: pointPrice,
-        recordedAt: new Date(Date.now() - daysAgo * 24 * 3600 * 1000),
-      });
-    }
-
-    const prices = historyPoints.map((p) => p.price);
-    const lowestPrice = Math.min(...prices);
-    const highestPrice = Math.max(...prices);
-    const averagePrice = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
-    const trend = currentPrice <= lowestPrice ? "dropping" : currentPrice >= highestPrice ? "rising" : "stable";
-    const insight =
-      currentPrice < averagePrice
-        ? `🔥 Current price (৳${currentPrice.toLocaleString()}) is ৳${(averagePrice - currentPrice).toLocaleString()} lower than the 30-day average!`
-        : `Current price is near regular retail average of ৳${averagePrice.toLocaleString()}.`;
-
-    priceRecord = await PriceHistory.create({
-      productId,
-      history: historyPoints,
-      lowestPrice,
-      highestPrice,
-      averagePrice,
-      currentPrice,
-      trend,
-      insight,
-    });
-  }
-
-  sendSuccess(res, priceRecord.toJSON());
-});
-
-// 8. PURCHASE DECISION SCORE
-export const getPurchaseDecisionScore = asyncHandler(async (req: Request, res: Response) => {
-  const { productId } = req.params;
-  const product = await Product.findById(productId);
-  if (!product) throw ApiError.notFound("Product not found");
-
-  const store = await Store.findById(product.storeId);
-
-  // Compute 4 key dimensions from real metrics
-  // 1. Value (Discount ratio & competitive pricing)
-  const discountRatio = product.discountPrice ? (product.price - product.discountPrice) / product.price : 0.05;
-  const valueScore = Math.min(98, Math.max(70, Math.round(80 + discountRatio * 80)));
-
-  // 2. Quality (Rating average & sentiment)
-  const ratingAvg = product.ratingAvg || 4.5;
-  const qualityScore = Math.min(99, Math.max(65, Math.round((ratingAvg / 5) * 95 + (product.sentiment?.positive || 3))));
-
-  // 3. Popularity (Sold count & views)
-  const sold = product.sold || 12;
-  const popularityScore = Math.min(96, Math.max(60, Math.round(65 + Math.log10(sold + 1) * 15)));
-
-  // 4. Reliability (Seller trust & stock stability)
-  const sellerTrust = store?.trustScore || 88;
-  const inStockBonus = product.stock > 5 ? 5 : 0;
-  const reliabilityScore = Math.min(98, Math.max(70, Math.round(sellerTrust * 0.95 + inStockBonus)));
-
-  // Overall Weighted Score
-  const overallScore = Math.round(valueScore * 0.35 + qualityScore * 0.30 + popularityScore * 0.15 + reliabilityScore * 0.20);
-
-  sendSuccess(res, {
-    productId,
-    overallScore,
-    dimensions: {
-      value: { score: valueScore, label: "Price / Value Ratio", note: `${Math.round(discountRatio * 100)}% discount advantage` },
-      quality: { score: qualityScore, label: "Verified Quality", note: `${ratingAvg.toFixed(1)}/5 user rating score` },
-      popularity: { score: popularityScore, label: "Market Popularity", note: `${sold} units ordered recently` },
-      reliability: { score: reliabilityScore, label: "Seller Reliability", note: `${store?.storeName || "Verified"} high fulfillment standard` },
-    },
-    recommendation:
-      overallScore >= 85
-        ? "🌟 Excellent purchase decision! High value and verified seller reliability."
-        : overallScore >= 70
-        ? "👍 Good purchase choice. Solid performance within its price tier."
-        : "Fair choice. Consider comparing with alternative options.",
-  });
-});
-
-// 9. PRODUCT AUTHENTICITY / TRUST CHECKER
-export const getProductTrustChecker = asyncHandler(async (req: Request, res: Response) => {
-  const { productId } = req.params;
-  const product = await Product.findById(productId);
-  if (!product) throw ApiError.notFound("Product not found");
-
-  const store = await Store.findById(product.storeId);
-
-  const signals = [
-    { name: "Verified Seller Track Record", passed: (store?.trustScore || 85) >= 75, details: `Seller rating: ${store?.rating || 4.8}★ with verified business credentials.` },
-    { name: "Price Anomaly Guard", passed: true, details: "Price matches platform market benchmarks with no suspicious undercutting." },
-    { name: "Specification Integrity", passed: product.description.length > 20, details: "Product specifications, warranty terms and model codes fully listed." },
-    { name: "Review Authenticity Filter", passed: true, details: "Zero duplicate review patterns or bot review surges detected." },
-    { name: "Secure Escrow & Delivery", passed: true, details: "Covered by ShopNest 100% money-back guarantee and verified shipping." },
-  ];
-
-  const passedCount = signals.filter((s) => s.passed).length;
-  const trustScore = Math.round((passedCount / signals.length) * 100);
-
-  sendSuccess(res, {
-    productId,
-    trustScore,
-    badge: trustScore >= 90 ? "ShopNest Verified Authentic" : "Platform Standard Verified",
-    signals,
-    disclaimer: "Trust Score is an automated multi-signal platform risk evaluation and does not constitute a legal warranty.",
-  });
-});
-
-// 10. SMART RETURN RISK PREVIEW
-export const getReturnRiskPreview = asyncHandler(async (req: Request, res: Response) => {
-  const { productId } = req.params;
-  const product = await Product.findById(productId);
-  if (!product) throw ApiError.notFound("Product not found");
-
-  const category = product.category.toLowerCase();
-  const isFashion = category.includes("fashion") || category.includes("clothing") || category.includes("shoe");
-
-  const riskLevel = isFashion ? "medium" : "low";
-  const returnRate = isFashion ? "6.8%" : "1.9%";
-
-  const adviceList = isFashion
-    ? [
-        "Check accurate bust/waist measurement chart before choosing size.",
-        "Fabric color may show slight shade variation under natural sunlight.",
-        "Free 7-day size exchange supported across Bangladesh.",
-      ]
-    : [
-        "Ensure power compatibility (220V/50Hz standard in BD).",
-        "Retain original packaging and seals for warranty claim eligibility.",
-        "Fast doorstep pickup on verified technical defects.",
-      ];
-
-  sendSuccess(res, {
-    productId,
-    riskLevel,
-    historicalReturnRate: returnRate,
-    topReturnReasons: isFashion ? ["Size/fit mismatch", "Color preference"] : ["Compatibility misunderstanding", "Accidental duplicate order"],
-    proactiveAdvice: adviceList,
-    guaranteeNotice: "Eligible for ShopNest 7-Day Hassle-Free Return Policy.",
-  });
-});
-
-// 11. PERSONAL SHOPPING INSIGHTS & SPENDING ANALYTICS
-export const getSpendingAnalytics = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-user";
-
-  const orders = await Order.find({ userId }).sort({ createdAt: -1 });
-
-  // Calculate real metrics from orders
-  const totalSpend = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-  const orderCount = orders.length;
-  const avgOrderValue = orderCount > 0 ? Math.round(totalSpend / orderCount) : 0;
-
-  // Real monthly aggregation from actual orders
-  const monthMap: Record<string, { amount: number; orders: number }> = {};
-  const categoryMap: Record<string, number> = {};
-  const productMap: Record<string, { title: string; purchases: number; totalSpent: number; category: string }> = {};
-
-  orders.forEach((o) => {
-    const d = new Date(o.createdAt);
-    const monthKey = d.toLocaleString("default", { month: "short" });
-    if (!monthMap[monthKey]) monthMap[monthKey] = { amount: 0, orders: 0 };
-    monthMap[monthKey].amount += o.totalAmount || 0;
-    monthMap[monthKey].orders += 1;
-
-    (o.items || []).forEach((item: any) => {
-      const cat = item.category || "General";
-      categoryMap[cat] = (categoryMap[cat] || 0) + (item.price * (item.quantity || 1));
-
-      const pId = item.productId || item.title;
-      if (!productMap[pId]) {
-        productMap[pId] = {
-          title: item.title,
-          purchases: 0,
-          totalSpent: 0,
-          category: cat,
-        };
-      }
-      productMap[pId].purchases += item.quantity || 1;
-      productMap[pId].totalSpent += item.price * (item.quantity || 1);
-    });
-  });
-
-  const monthlySpending = Object.entries(monthMap).map(([month, data]) => ({
-    month,
-    amount: data.amount,
-    orders: data.orders,
-  }));
-
-  const categorySpending = Object.entries(categoryMap).map(([category, amount]) => ({
-    category,
-    amount,
-    percentage: totalSpend > 0 ? Math.round((amount / totalSpend) * 100) : 0,
-  }));
-
-  const mostPurchasedProducts = Object.entries(productMap)
-    .map(([id, data]) => ({ id, ...data }))
-    .sort((a, b) => b.purchases - a.purchases)
-    .slice(0, 5);
-
-  const topCategory = categorySpending.length > 0
-    ? `${categorySpending[0].category} (${categorySpending[0].percentage}% of spend)`
-    : "None yet";
-
-  const streak = orderCount > 0 ? `${orderCount} order${orderCount > 1 ? "s" : ""} placed` : "No orders yet";
-
-  sendSuccess(res, {
-    overview: {
-      totalSpend,
-      monthlySpend: monthlySpending.length > 0 ? monthlySpending[monthlySpending.length - 1].amount : 0,
-      orderFrequency: orderCount > 0 ? `${(orderCount / Math.max(1, monthlySpending.length)).toFixed(1)} orders / month` : "0 orders",
-      orderCount,
-      avgOrderValue,
-      favoriteCategory: topCategory,
-      shoppingStreak: streak,
-    },
-    monthlySpending,
-    categorySpending,
-    mostPurchasedProducts,
-  });
-});
-
-// 12. WISHLIST ANALYTICS & PRICE-DROP OPPORTUNITIES
-export const getWishlistAnalytics = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-user";
-
-  const wishlist = await Wishlist.findOne({ userId });
-  const productIds = (wishlist?.items || []).map((i) => i.productId);
-
-  const products = await Product.find({ _id: { $in: productIds }, isDeleted: false });
-
-  const items = products.map((p) => {
-    const originalPrice = p.price;
-    const currentPrice = p.discountPrice || p.price;
-    const hasDiscount = originalPrice > currentPrice;
-    const priceDrop = hasDiscount ? originalPrice - currentPrice : 0;
-    const priceDropPercent = hasDiscount && originalPrice > 0 ? Math.round((priceDrop / originalPrice) * 100) : 0;
-
-    return {
-      id: p.id,
-      title: p.title,
-      currentPrice,
-      originalPrice,
-      hasDiscount,
-      priceDrop,
-      priceDropPercent,
-      category: p.category,
-      images: p.images || [],
-      ratingAvg: p.ratingAvg || 0,
-      stock: p.stock,
-      viewsCount: p.views || (p as any).viewsCount || 0,
-    };
-  });
-
-  const priceDropOpportunities = items.filter((i) => i.hasDiscount);
-  const totalPotentialSavings = items.reduce((sum, i) => sum + i.priceDrop, 0);
-
-  sendSuccess(res, {
-    totalWishlistCount: items.length,
-    totalPotentialSavings,
-    items,
-    priceDropOpportunities,
-  });
-});
-
-// 13. SAVED SEARCHES
-export const getSavedSearches = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-user";
-  const searches = await SavedSearch.find({ userId }).sort({ createdAt: -1 });
-  sendSuccess(res, searches);
-});
-
-export const createSavedSearch = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-user";
-  const { query, category, minPrice, maxPrice, sort } = req.body;
-
-  if (!query) throw ApiError.badRequest("Search query is required");
-
-  // Count matching products
-  const filter: Record<string, unknown> = { isDeleted: false, status: "approved" };
-  if (category) filter.category = category;
-  if (minPrice || maxPrice) {
-    filter.price = {};
-    if (minPrice) (filter.price as any).$gte = Number(minPrice);
-    if (maxPrice) (filter.price as any).$lte = Number(maxPrice);
-  }
-  const resultCount = await Product.countDocuments(filter);
-
-  const search = await SavedSearch.create({
-    userId,
-    query,
-    category,
-    minPrice,
-    maxPrice,
-    sort,
-    resultCount,
-  });
-
-  sendSuccess(res, search, "Search saved successfully", 201);
-});
-
-export const deleteSavedSearch = asyncHandler(async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const userId = req.user?.id || "demo-user";
-
-  const search = await SavedSearch.findOneAndDelete({ _id: id, userId });
-  if (!search) throw ApiError.notFound("Saved search not found");
-
-  sendSuccess(res, { id }, "Saved search removed");
-});
-
-// 14. PERSONALIZED OFFERS
-export const getPersonalizedOffers = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-user";
-  const offers = await PersonalizedOffer.find({ userId, isClaimed: false });
-  sendSuccess(res, offers);
-});
-
-// 15. CUSTOMER ACTIVITY TIMELINE
-export const getCustomerActivityTimeline = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-user";
-  const activities = await CustomerActivity.find({ userId }).sort({ createdAt: -1 }).limit(30);
-  sendSuccess(res, activities);
-});
-

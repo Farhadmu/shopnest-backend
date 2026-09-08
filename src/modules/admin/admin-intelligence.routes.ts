@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { requireAuth } from "../../middlewares/auth.middleware";
+import { requireRole } from "../../middlewares/role.middleware";
 import * as commandCenter from "./features/command-center.controller";
 import * as marketplaceMap from "./features/marketplace-map.controller";
 import * as anomalies from "./features/anomalies.controller";
@@ -63,8 +65,22 @@ router.get("/fraud-alerts", fraudAlerts.getFraudAlerts);
 
 // 38. Security Incident Management
 router.get("/incidents", securityIncidents.getSecurityIncidents);
-router.patch("/incidents/:id", securityIncidents.updateSecurityIncident);
-router.post("/incidents/:id/notes", securityIncidents.addIncidentNote);
+router.get("/incidents/stats", securityIncidents.getIncidentStatsRoute);
+router.post("/incidents", ...requireAuth, requireRole("admin"), securityIncidents.createSecurityIncident);
+router.get("/incidents/:id", securityIncidents.getSecurityIncidentById);
+router.patch("/incidents/:id", ...requireAuth, requireRole("admin"), securityIncidents.updateSecurityIncident);
+router.patch("/incidents/:id/status", ...requireAuth, requireRole("admin"), securityIncidents.updateIncidentStatusRoute);
+router.patch("/incidents/:id/severity", ...requireAuth, requireRole("admin"), securityIncidents.updateIncidentSeverityRoute);
+router.patch("/incidents/:id/assign", ...requireAuth, requireRole("admin"), securityIncidents.assignIncidentRoute);
+router.patch("/incidents/:id/unassign", ...requireAuth, requireRole("admin"), securityIncidents.unassignIncidentRoute);
+router.post("/incidents/:id/notes", ...requireAuth, requireRole("admin"), securityIncidents.addIncidentNoteRoute);
+router.post("/incidents/:id/evidence", ...requireAuth, requireRole("admin"), securityIncidents.addEvidenceRoute);
+router.post("/incidents/:id/resolve", ...requireAuth, requireRole("admin"), securityIncidents.resolveIncidentRoute);
+router.post("/incidents/:id/close", ...requireAuth, requireRole("admin"), securityIncidents.closeIncidentRoute);
+router.post("/incidents/:id/reopen", ...requireAuth, requireRole("admin"), securityIncidents.reopenIncidentRoute);
+router.get("/incidents/:id/timeline", securityIncidents.getIncidentTimelineRoute);
+router.get("/incidents/:id/security-events", securityIncidents.getRelatedSecurityEventsRoute);
+router.get("/incidents/:id/risk-signals", securityIncidents.getRelatedRiskSignalsRoute);
 
 // 39. Admin Audit Log
 router.get("/audit-logs", auditLogs.getAuditLogs);

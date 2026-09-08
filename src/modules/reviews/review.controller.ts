@@ -5,6 +5,7 @@ import { Order } from "../orders/order.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+import mongoose from "mongoose";
 
 /**
  * Helper: Recalculates the average rating and review count for a product
@@ -121,4 +122,141 @@ export const listAllReviewsForModeration = asyncHandler(async (req: Request, res
   const filter = reported === "true" ? { reported: true } : {};
   const reviews = await Review.find(filter).sort({ createdAt: -1 }).limit(200);
   res.status(200).json(reviews);
+});
+
+export const getReviewStats = asyncHandler(async (_req: Request, res: Response) => {
+  const [
+    totalReviews,
+    avgRatingAgg,
+    verifiedReviews,
+    reportedReviews,
+    ratingDistribution,
+  ] = await Promise.all([
+    Review.countDocuments({}),
+    Review.aggregate([
+      { $group: { _id: null, avg: { $avg: "$rating" } } },
+    ]),
+    Review.countDocuments({ verifiedPurchase: true }),
+    Review.countDocuments({ reported: true }),
+    Review.aggregate([
+      { $group: { _id: "$rating", count: { $sum: 1 } } },
+      { $sort: { _id: -1 } },
+    ]),
+  ]);
+
+  const avgRating = avgRatingAgg[0]?.avg ?? 0;
+
+  const distribution: Record<number, number> = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+  for (const r of ratingDistribution) {
+    distribution[r._id as number] = r.count;
+  }
+
+  sendSuccess(res, {
+    totalReviews,
+    avgRating: Math.round(avgRating * 10) / 10,
+    verifiedReviews,
+    reportedReviews,
+    distribution,
+  });
+});
+
+export const searchAdminReviews = asyncHandler(async (req: Request, res: Response) => {
+  const {
+    q,
+    reported,
+    verified,
+    rating,
+    productId,
+    userId,
+    sortBy = "createdAt",
+    sortDir = "-1",
+    page = "1",
+    limit = "20",
+  } = req.query as {
+    q?: string;
+    reported?: string;
+    verified?: string;
+    rating?: string;
+    productId?: string;
+    userId?: string;
+    sortBy?: string;
+    sortDir?: string;
+    page?: string;
+    limit?: string;
+  };
+
+  const filter: Record<string, unknown> = {};
+
+  if (reported === "true") filter.reported = true;
+  if (reported === "false") filter.reported = false;
+  if (verified === "true") filter.verifiedPurchase = true;
+  if (verified === "false") filter.verifiedPurchase = false;
+  if (rating) filter.rating = Number(rating);
+  if (productId) filter.productId = productId;
+  if (userId) filter.userId = userId;
+
+  if (q) {
+    const regex = new RegExp(q.trim(), "i");
+    filter.$or = [
+      { comment: regex },
+      { userName: regex },
+      { productId: regex },
+      { userId: regex },
+    ];
+  }
+
+  const sortField = ["createdAt", "updatedAt", "rating", "helpfulCount"].includes(sortBy) ? sortBy : "createdAt";
+  const sortOrder = sortDir === "1" ? 1 : -1;
+
+  const skip = (Number(page) - 1) * Number(limit);
+
+  const [reviews, total] = await Promise.all([
+    Review.find(filter).sort({ [sortField]: sortOrder }).skip(skip).limit(Number(limit)),
+    Review.countDocuments(filter),
+  ]);
+
+  sendSuccess(res, {
+    reviews,
+    pagination: {
+      total,
+      page: Number(page),
+      limit: Number(limit),
+      totalPages: Math.ceil(total / Number(limit)),
+    },
+  });
+});
+
+export const dismissReport = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const review = await Review.findById(id);
+  if (!review) throw ApiError.notFound("Review not found");
+
+  review.reported = false;
+  await review.save();
+
+  sendSuccess(res, review.toJSON(), "Report dismissed");
+});
+
+export const hideReview = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const review = await Review.findById(id);
+  if (!review) throw ApiError.notFound("Review not found");
+
+  review.reported = true;
+  await review.save();
+
+  sendSuccess(res, review.toJSON(), "Review hidden");
+});
+
+export const removeReviewAdmin = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const review = await Review.findById(id);
+  if (!review) throw ApiError.notFound("Review not found");
+
+  const productId = review.productId;
+  await Review.findByIdAndDelete(id);
+
+  await recalcProductRating(productId);
+
+  sendSuccess(res, { success: true }, "Review permanently removed");
 });

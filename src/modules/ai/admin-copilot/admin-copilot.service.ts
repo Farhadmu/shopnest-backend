@@ -97,6 +97,10 @@ function generateActions(intent: CopilotIntent): CopilotAction[] {
     case CopilotIntent.SECURITY_ANALYSIS:
       actions.push({ label: "Security Center", action: "navigate", targetUrl: "/dashboard/admin/security" });
       break;
+    case CopilotIntent.INCIDENT_ANALYSIS:
+      actions.push({ label: "View Incidents", action: "navigate", targetUrl: "/dashboard/admin/security/incidents" });
+      actions.push({ label: "Security Center", action: "navigate", targetUrl: "/dashboard/admin/security" });
+      break;
     case CopilotIntent.ANOMALY_ANALYSIS:
       actions.push({ label: "View Anomalies", action: "navigate", targetUrl: "/dashboard/admin?tab=anomalies" });
       break;

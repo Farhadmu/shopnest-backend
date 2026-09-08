@@ -46,8 +46,8 @@ export const getSecurityOverview = asyncHandler(async (_req: Request, res: Respo
     SecurityLog.countDocuments({ resolved: false, severity: { $in: ["high", "critical"] } }),
     SecurityLog.countDocuments({ type: "LOGIN_ANOMALY", createdAt: { $gte: oneDayAgo } }),
     AnomalyLog.countDocuments({ status: { $in: ["detected", "under_review"] } }),
-    SecurityIncident.countDocuments({ status: { $in: ["new", "investigating"] } }),
-    SecurityIncident.countDocuments({ status: { $in: ["new", "investigating"] }, severity: "critical" }),
+    SecurityIncident.countDocuments({ status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } }),
+    SecurityIncident.countDocuments({ status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] }, severity: "critical" }),
     SecurityLog.countDocuments({ type: "RATE_LIMIT_BREACH", createdAt: { $gte: sevenDaysAgo } }),
     SecurityLog.countDocuments({ type: "RATE_LIMIT_BREACH", createdAt: { $gte: thirtyDaysAgo } }),
     SecurityLog.countDocuments({ createdAt: { $gte: sevenDaysAgo } }),
@@ -55,6 +55,29 @@ export const getSecurityOverview = asyncHandler(async (_req: Request, res: Respo
 
   const totalActiveUsers = totalUsers - suspendedUsers - blockedUsers;
   const highRiskSellers = await Store.countDocuments({ trustScore: { $lt: 40 }, status: "approved" });
+
+  const [incidentByType, incidentBySource, recentlyResolved] = await Promise.all([
+    SecurityIncident.aggregate([
+      { $match: { status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } } },
+      { $group: { _id: "$type", count: { $sum: 1 } } },
+    ]),
+    SecurityIncident.aggregate([
+      { $match: { status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } } },
+      { $group: { _id: "$source", count: { $sum: 1 } } },
+    ]),
+    SecurityIncident.find({ status: "resolved", resolvedAt: { $gte: thirtyDaysAgo } })
+      .sort({ resolvedAt: -1 })
+      .limit(5)
+      .then((incidents) =>
+        incidents.map((i) => ({
+          id: i._id?.toString(),
+          incidentCode: i.incidentCode,
+          title: i.title,
+          severity: i.severity,
+          resolvedAt: i.resolvedAt,
+        }))
+      ),
+  ]);
 
   sendSuccess(res, {
     securityHealth: calculateSecurityHealth({
@@ -79,5 +102,14 @@ export const getSecurityOverview = asyncHandler(async (_req: Request, res: Respo
     highRiskSellers,
     openIncidents,
     criticalIncidents,
+    incidentByType: incidentByType.reduce(
+      (acc, item) => ({ ...acc, [item._id]: item.count }),
+      {} as Record<string, number>
+    ),
+    incidentBySource: incidentBySource.reduce(
+      (acc, item) => ({ ...acc, [item._id]: item.count }),
+      {} as Record<string, number>
+    ),
+    recentlyResolved,
   });
 });

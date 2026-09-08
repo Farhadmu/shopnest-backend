@@ -6,7 +6,6 @@ import * as suspiciousActivityCtrl from "./features/security-center/suspicious-a
 import * as accountSecurityCtrl from "./features/security-center/account-security.controller";
 import * as sellerSecurityCtrl from "./features/security-center/seller-security.controller";
 import * as apiSecurityCtrl from "./features/security-center/api-security.controller";
-import * as incidentsCtrl from "./features/security-center/incidents.controller";
 import * as alertsCtrl from "./features/security-center/alerts.controller";
 import * as auditLogsCtrl from "./features/security-center/audit-logs.controller";
 import * as analyticsCtrl from "./features/security-center/analytics.controller";
@@ -36,21 +35,17 @@ router.get("/sellers", sellerSecurityCtrl.getSellerSecurity);
 // 7. API & Request Security
 router.get("/api-security", apiSecurityCtrl.getApiSecurity);
 
-// 8. Security Incidents
-router.get("/incidents", incidentsCtrl.getSecurityIncidents);
-router.patch("/incidents/:id", incidentsCtrl.updateIncidentStatus);
-
-// 9. Security Alerts
+// 8. Security Alerts
 router.get("/alerts", alertsCtrl.getSecurityAlerts);
 router.patch("/alerts/:id/resolve", alertsCtrl.resolveAlert);
 
-// 10. Audit Log
+// 9. Audit Log
 router.get("/audit-logs", auditLogsCtrl.getSecurityAuditLogs);
 
-// 11. Security Analytics
+// 10. Security Analytics
 router.get("/analytics", analyticsCtrl.getSecurityAnalytics);
 
-// 12. Security Recommendations
+// 11. Security Recommendations
 router.get("/recommendations", recommendationsCtrl.getSecurityRecommendations);
 
 export default router;

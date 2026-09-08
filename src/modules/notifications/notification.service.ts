@@ -1,7 +1,8 @@
 import type { Response } from "express";
-import { Notification, type INotification, type NotificationType } from "./notification.model";
+import mongoose from "mongoose";
+import { Notification, type INotification, type NotificationType, type NotificationCategory, type NotificationPriority, type NotificationSource, type RecipientType } from "./notification.model";
 
-type NotificationInput = Pick<INotification, "userId" | "type" | "title" | "message" | "link" | "relatedId">;
+type NotificationInput = Pick<INotification, "userId" | "recipientType" | "type" | "category" | "priority" | "source" | "title" | "message" | "link" | "relatedId" | "relatedType">;
 
 const subscribers = new Map<string, Set<Response>>();
 
@@ -31,9 +32,32 @@ function emit(userId: string, event: string, payload: unknown) {
 
 /** Creates a MongoDB notification and immediately pushes it to open SSE clients. */
 export async function createNotification(input: NotificationInput) {
-  const notification = await Notification.create({ ...input, isRead: false });
+  const notification = await Notification.create({
+    ...input,
+    recipientType: input.recipientType ?? "user",
+    category: input.category ?? "system",
+    priority: input.priority ?? "info",
+    source: input.source ?? "system",
+  });
   emit(input.userId, "notification", toPayload(notification));
   return notification;
+}
+
+/** Creates an admin notification without requiring a specific admin userId. */
+export async function createAdminNotification(input: Omit<NotificationInput, "userId" | "recipientType">) {
+  const adminUsers = await mongoose.connection.db?.collection("user").find({ role: "admin" }).toArray();
+  if (!adminUsers || adminUsers.length === 0) return null;
+
+  const promises = adminUsers.map((admin) => {
+    const userId = String(admin.id ?? admin._id);
+    return createNotification({
+      ...input,
+      userId,
+      recipientType: "admin",
+    });
+  });
+
+  return Promise.all(promises);
 }
 
 /** Opens a same-origin Server-Sent Events connection for one authenticated user. */
@@ -67,4 +91,4 @@ export function subscribeToNotifications(userId: string, response: Response) {
   });
 }
 
-export type { NotificationType };
+export type { NotificationType, NotificationCategory, NotificationPriority, NotificationSource, RecipientType };

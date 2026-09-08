@@ -1,6 +1,10 @@
 import { Schema, model, Types } from "mongoose";
 import { applyToJSON } from "../../utils/model-plugins";
 
+export type CouponScope = "all-products" | "specific-category" | "specific-products";
+export type CouponPlacement = "store" | "homepage" | "private";
+export type CouponApprovalStatus = "approved" | "pending" | "rejected";
+
 export interface ICoupon {
   _id: Types.ObjectId;
   code: string;
@@ -8,11 +12,35 @@ export interface ICoupon {
   value: number;
   minPurchase: number;
   maxDiscount?: number;
+
+  /** What the discount applies to. */
+  scope: CouponScope;
   category?: string;
-  productId?: string;
+  categories?: string[];
+  productIds: string[];
+
+  /**
+   * Where the coupon is allowed to surface:
+   *  - "store"    -> shown on the seller's own store page, live instantly
+   *  - "homepage" -> requested for the marketplace homepage, needs admin approval
+   *  - "private"  -> shown nowhere; only usable if the seller shares the code directly
+   */
+  placement: CouponPlacement;
+  approvalStatus: CouponApprovalStatus;
+  rejectionNote?: string;
+
   createdBy: string;
+  createdByRole: "seller" | "admin";
+
+  /** Used for "store"/"private" placement. */
   startsAt?: Date;
   expiresAt?: Date;
+
+  /** Used for "homepage" placement instead of a fixed end date. */
+  promoStartDate?: Date;
+  durationDays?: number;
+  approvedAt?: Date;
+
   usageLimit?: number;
   usedCount: number;
   isActive: boolean;
@@ -27,11 +55,30 @@ const couponSchema = new Schema<ICoupon>(
     value: { type: Number, required: true, min: 0 },
     minPurchase: { type: Number, default: 0 },
     maxDiscount: { type: Number },
+
+    scope: {
+      type: String,
+      enum: ["all-products", "specific-category", "specific-products"],
+      default: "all-products",
+    },
     category: { type: String },
-    productId: { type: String },
-    createdBy: { type: String, required: true },
+    categories: { type: [String], default: [] },
+    productIds: { type: [String], default: [] },
+
+    placement: { type: String, enum: ["store", "homepage", "private"], default: "store", index: true },
+    approvalStatus: { type: String, enum: ["approved", "pending", "rejected"], default: "approved", index: true },
+    rejectionNote: { type: String },
+
+    createdBy: { type: String, required: true, index: true },
+    createdByRole: { type: String, enum: ["seller", "admin"], default: "seller" },
+
     startsAt: { type: Date },
     expiresAt: { type: Date },
+
+    promoStartDate: { type: Date },
+    durationDays: { type: Number },
+    approvedAt: { type: Date },
+
     usageLimit: { type: Number },
     usedCount: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
@@ -46,6 +93,7 @@ export const Coupon = model<ICoupon>("Coupon", couponSchema);
 /** Computes the discount amount for a subtotal; throws-free, returns 0 if invalid/inapplicable. */
 export function computeDiscount(coupon: ICoupon, subtotal: number): number {
   if (!coupon.isActive) return 0;
+  if (coupon.approvalStatus !== "approved") return 0;
   if (coupon.startsAt && coupon.startsAt > new Date()) return 0;
   if (coupon.expiresAt && coupon.expiresAt < new Date()) return 0;
   if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) return 0;

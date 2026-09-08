@@ -99,6 +99,40 @@ export interface SecuritySummary {
   }>;
 }
 
+export interface IncidentSummary {
+  total: number;
+  open: number;
+  investigating: number;
+  mitigated: number;
+  resolved: number;
+  closed: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  avgResolutionHours: number | null;
+  monthResolved: number;
+  byType: Array<{ type: string; count: number }>;
+  bySource: Array<{ source: string; count: number }>;
+  recent: Array<{
+    id: string;
+    incidentCode: string;
+    title: string;
+    severity: string;
+    status: string;
+    createdAt: Date;
+  }>;
+  topPriority: Array<{
+    id: string;
+    incidentCode: string;
+    title: string;
+    severity: string;
+    status: string;
+    riskScore: number;
+    createdAt: Date;
+  }>;
+}
+
 export interface TelemetrySummary {
   overallStatus: string;
   uptime: string;
@@ -493,4 +527,81 @@ export async function getSellerRiskMetrics(startDate: Date, endDate: Date) {
   });
 
   return sellerMetrics.sort((a, b) => b.riskScore - a.riskScore);
+}
+
+export async function getIncidentSummary(): Promise<IncidentSummary> {
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  const [total, open, investigating, mitigated, resolved, closed, critical, high, medium, low, avgResolution, monthResolved, byType, bySource, recent, topPriority] =
+    await Promise.all([
+      SecurityIncident.countDocuments({}),
+      SecurityIncident.countDocuments({ status: { $in: ["new", "open", "acknowledged"] } }),
+      SecurityIncident.countDocuments({ status: "investigating" }),
+      SecurityIncident.countDocuments({ status: "mitigated" }),
+      SecurityIncident.countDocuments({ status: "resolved" }),
+      SecurityIncident.countDocuments({ status: "closed" }),
+      SecurityIncident.countDocuments({ severity: "critical", status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } }),
+      SecurityIncident.countDocuments({ severity: "high", status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } }),
+      SecurityIncident.countDocuments({ severity: "medium", status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } }),
+      SecurityIncident.countDocuments({ severity: "low", status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } }),
+      SecurityIncident.aggregate([
+        { $match: { resolvedAt: { $exists: true, $ne: null }, detectedAt: { $exists: true, $ne: null } } },
+        { $project: { duration: { $subtract: ["$resolvedAt", "$detectedAt"] } } },
+        { $group: { _id: null, avgMs: { $avg: "$duration" } } },
+      ]),
+      SecurityIncident.countDocuments({ status: "resolved", resolvedAt: { $gte: thirtyDaysAgo } }),
+      SecurityIncident.aggregate([
+        { $match: { status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } } },
+        { $group: { _id: "$type", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      SecurityIncident.aggregate([
+        { $match: { status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } } },
+        { $group: { _id: "$source", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      SecurityIncident.find({ createdAt: { $gte: thirtyDaysAgo } }).sort({ createdAt: -1 }).limit(5),
+      SecurityIncident.find({ status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } })
+        .sort({ riskScore: -1, createdAt: -1 })
+        .limit(5),
+    ]);
+
+  const avgResolutionHours = avgResolution[0]?.avgMs && avgResolution[0].avgMs > 0
+    ? Math.round(avgResolution[0].avgMs / (1000 * 3600))
+    : null;
+
+  return {
+    total,
+    open: open + investigating + mitigated,
+    investigating,
+    mitigated,
+    resolved,
+    closed,
+    critical,
+    high,
+    medium,
+    low,
+    avgResolutionHours,
+    monthResolved,
+    byType: byType.map((t) => ({ type: t._id, count: t.count })),
+    bySource: bySource.map((s) => ({ source: s._id, count: s.count })),
+    recent: recent.map((i) => ({
+      id: i._id?.toString() || "",
+      incidentCode: i.incidentCode,
+      title: i.title,
+      severity: i.severity,
+      status: i.status,
+      createdAt: i.createdAt,
+    })),
+    topPriority: topPriority.map((i) => ({
+      id: i._id?.toString() || "",
+      incidentCode: i.incidentCode,
+      title: i.title,
+      severity: i.severity,
+      status: i.status,
+      riskScore: i.riskScore,
+      createdAt: i.createdAt,
+    })),
+  };
 }

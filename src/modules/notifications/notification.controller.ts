@@ -1,37 +1,48 @@
 import { Request, Response } from "express";
-import { Notification } from "./notification.model";
+import mongoose from "mongoose";
 import { asyncHandler } from "../../utils/async-handler";
 import { ApiError } from "../../utils/api-error";
 
-/**
- * Controller: List Notifications For Logged-In User
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Authenticated user ID
- *    - req.query: page (default 1), limit (default 20, max 50)
- * 2. Database Operation:
- *    - Notification.find({ userId }).sort({ createdAt: -1 }).skip(...).limit(...)
- *    - Notification.countDocuments({ userId })
- * 3. Response Sent:
- *    - HTTP 200: { success: true, items: [...], total, page, limit, totalPages }
- */
+function getCollection() {
+  const db = mongoose.connection.db;
+  if (!db) throw ApiError.internal("Database is not connected");
+  return db.collection("notifications");
+}
+
+function mapNotification(doc: any) {
+  return {
+    id: String(doc._id),
+    userId: String(doc.userId),
+    recipientType: doc.recipientType,
+    type: doc.type,
+    category: doc.category,
+    priority: doc.priority,
+    source: doc.source,
+    title: doc.title,
+    message: doc.message,
+    isRead: Boolean(doc.isRead),
+    link: doc.link,
+    relatedId: doc.relatedId,
+    relatedType: doc.relatedType,
+    createdAt: new Date(doc.createdAt).toISOString(),
+    updatedAt: new Date(doc.updatedAt ?? doc.createdAt).toISOString(),
+  };
+}
+
 export const listNotifications = asyncHandler(async (req: Request, res: Response) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
   const userId = req.user!.id;
+  const collection = getCollection();
   const filter = { userId };
-
   const [docs, total] = await Promise.all([
-    Notification.find(filter)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit),
-    Notification.countDocuments(filter),
+    collection.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray(),
+    collection.countDocuments(filter),
   ]);
 
-  res.status(200).json({
+  res.json({
     success: true,
-    items: docs.map((d) => d.toJSON()),
+    items: docs.map(mapNotification),
     total,
     page,
     limit,
@@ -39,59 +50,166 @@ export const listNotifications = asyncHandler(async (req: Request, res: Response
   });
 });
 
-/**
- * Controller: Get Count of Unread Notifications
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Authenticated user ID
- * 2. Database Operation:
- *    - Notification.countDocuments({ userId, isRead: false })
- * 3. Response Sent:
- *    - HTTP 200: { success: true, count: number }
- */
 export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
-  const count = await Notification.countDocuments({ userId: req.user!.id, isRead: false });
-  res.status(200).json({ success: true, count });
+  const count = await getCollection().countDocuments({ userId: req.user!.id, isRead: { $ne: true } });
+  res.json({ success: true, count });
 });
 
-/**
- * Controller: Mark Single Notification as Read
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Authenticated user ID
- *    - req.params.id: Notification ID
- * 2. Database Operation:
- *    - Notification.findOneAndUpdate({ _id: id, userId }, { isRead: true }, { new: true })
- * 3. Response Sent:
- *    - HTTP 200: { success: true, ...notificationDetails }
- */
 export const markRead = asyncHandler(async (req: Request, res: Response) => {
-  const notification = await Notification.findOneAndUpdate(
-    { _id: req.params.id, userId: req.user!.id },
-    { isRead: true },
-    { new: true }
+  const id = new mongoose.Types.ObjectId(req.params.id);
+  const result = await getCollection().findOneAndUpdate(
+    { _id: id, userId: req.user!.id },
+    { $set: { isRead: true, updatedAt: new Date() } },
+    { returnDocument: "after" }
   );
-
-  if (!notification) throw ApiError.notFound("Notification not found");
-
-  res.status(200).json({ success: true, ...notification.toJSON() });
+  if (!result) throw ApiError.notFound("Notification not found");
+  res.json({ success: true, ...mapNotification(result) });
 });
 
-/**
- * Controller: Mark All Notifications as Read
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Authenticated user ID
- * 2. Database Operation:
- *    - Notification.updateMany({ userId, isRead: false }, { isRead: true })
- * 3. Response Sent:
- *    - HTTP 200: { success: true }
- */
 export const markAllRead = asyncHandler(async (req: Request, res: Response) => {
-  await Notification.updateMany(
-    { userId: req.user!.id, isRead: false },
-    { isRead: true }
+  await getCollection().updateMany(
+    { userId: req.user!.id, isRead: { $ne: true } },
+    { $set: { isRead: true, updatedAt: new Date() } }
   );
+  res.json({ success: true });
+});
 
-  res.status(200).json({ success: true });
+function ensureAdmin(req: Request) {
+  if (req.user?.role !== "admin") {
+    throw ApiError.forbidden("Admin access required");
+  }
+}
+
+export const listAdminNotifications = asyncHandler(async (req: Request, res: Response) => {
+  ensureAdmin(req);
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+  const { status, priority, category, source, search, sortBy = "createdAt", sortDir = "-1" } = req.query as {
+    status?: string;
+    priority?: string;
+    category?: string;
+    source?: string;
+    search?: string;
+    sortBy?: string;
+    sortDir?: string;
+  };
+
+  const collection = getCollection();
+  const filter: Record<string, unknown> = {};
+
+  if (status === "unread") filter.isRead = false;
+  else if (status === "read") filter.isRead = true;
+
+  if (priority) filter.priority = priority;
+  if (category) filter.category = category;
+  if (source) filter.source = source;
+
+  if (search) {
+    const regex = new RegExp(search.trim(), "i");
+    filter.$or = [
+      { title: regex },
+      { message: regex },
+      { type: regex },
+    ];
+  }
+
+  const sortField = sortBy || "createdAt";
+  const sortOrder = sortDir === "1" ? 1 : -1;
+
+  const [docs, total] = await Promise.all([
+    collection.find(filter).sort({ [sortField]: sortOrder }).skip((page - 1) * limit).limit(limit).toArray(),
+    collection.countDocuments(filter),
+  ]);
+
+  res.json({
+    success: true,
+    items: docs.map(mapNotification),
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+  });
+});
+
+export const getAdminNotificationStats = asyncHandler(async (_req: Request, res: Response) => {
+  ensureAdmin(_req);
+  const collection = getCollection();
+
+  const [total, unread, critical, high, today, byCategory, byPriority] = await Promise.all([
+    collection.countDocuments({}),
+    collection.countDocuments({ isRead: false }),
+    collection.countDocuments({ priority: "critical", isRead: false }),
+    collection.countDocuments({ priority: "high", isRead: false }),
+    collection.countDocuments({ createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) } }),
+    collection.aggregate([
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+    ]).toArray(),
+    collection.aggregate([
+      { $group: { _id: "$priority", count: { $sum: 1 } } },
+    ]).toArray(),
+  ]);
+
+  res.json({
+    success: true,
+    total,
+    unread,
+    critical,
+    high,
+    today,
+    byCategory: byCategory.reduce((acc: Record<string, number>, item: any) => ({ ...acc, [item._id || "unknown"]: item.count }), {}),
+    byPriority: byPriority.reduce((acc: Record<string, number>, item: any) => ({ ...acc, [item._id || "info"]: item.count }), {}),
+  });
+});
+
+export const getAdminUnreadCount = asyncHandler(async (req: Request, res: Response) => {
+  ensureAdmin(req);
+  const count = await getCollection().countDocuments({ isRead: false });
+  res.json({ success: true, count });
+});
+
+export const markAdminNotificationRead = asyncHandler(async (req: Request, res: Response) => {
+  ensureAdmin(req);
+  const id = new mongoose.Types.ObjectId(req.params.id);
+  const result = await getCollection().findOneAndUpdate(
+    { _id: id },
+    { $set: { isRead: true, updatedAt: new Date() } },
+    { returnDocument: "after" }
+  );
+  if (!result) throw ApiError.notFound("Notification not found");
+  res.json({ success: true, ...mapNotification(result) });
+});
+
+export const markAdminNotificationUnread = asyncHandler(async (req: Request, res: Response) => {
+  ensureAdmin(req);
+  const id = new mongoose.Types.ObjectId(req.params.id);
+  const result = await getCollection().findOneAndUpdate(
+    { _id: id },
+    { $set: { isRead: false, updatedAt: new Date() } },
+    { returnDocument: "after" }
+  );
+  if (!result) throw ApiError.notFound("Notification not found");
+  res.json({ success: true, ...mapNotification(result) });
+});
+
+export const markAllAdminNotificationsRead = asyncHandler(async (req: Request, res: Response) => {
+  ensureAdmin(req);
+  await getCollection().updateMany(
+    { isRead: { $ne: true } },
+    { $set: { isRead: true, updatedAt: new Date() } }
+  );
+  res.json({ success: true });
+});
+
+export const bulkMarkAdminNotificationsRead = asyncHandler(async (req: Request, res: Response) => {
+  ensureAdmin(req);
+  const { ids } = req.body as { ids: string[] };
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw ApiError.badRequest("ids array is required");
+  }
+  const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id)).filter(Boolean);
+  await getCollection().updateMany(
+    { _id: { $in: objectIds } },
+    { $set: { isRead: true, updatedAt: new Date() } }
+  );
+  res.json({ success: true, modified: objectIds.length });
 });

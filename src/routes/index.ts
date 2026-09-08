@@ -17,10 +17,21 @@ import customerRoutes from "../modules/customer/customer.routes";
 import customerFeaturesRoutes from "../modules/customer/customer-features.routes";
 import spendingAnalyticsRoutes from "../modules/customer/spending-analytics.routes";
 import heroBannerRoutes from "../modules/hero-banners/hero-banner.routes";
+import stripeRoutes from "../payments/stripe/stripe.routes";
 
 const router = Router();
 
-router.get("/health", (_req, res) => res.status(200).json({ success: true, message: "OK", service: "shopnest-api", version: "1.0.0", timestamp: new Date().toISOString() }));
+router.get("/health", (_req, res) =>
+  res
+    .status(200)
+    .json({
+      success: true,
+      message: "OK",
+      service: "shopnest-api",
+      version: "1.0.0",
+      timestamp: new Date().toISOString(),
+    }),
+);
 
 router.use("/users", userRoutes);
 router.use("/categories", categoryRoutes);
@@ -40,5 +51,6 @@ router.use("/customer", customerRoutes);
 router.use("/customer/features", customerFeaturesRoutes);
 router.use("/customer/spending", spendingAnalyticsRoutes);
 router.use("/hero-banners", heroBannerRoutes);
+router.use("/payment/stripe", stripeRoutes);
 
 export default router;

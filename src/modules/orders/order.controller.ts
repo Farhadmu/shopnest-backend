@@ -8,6 +8,7 @@ import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { flagSuspiciousOrder } from "../security/security.service";
 import { recomputeStoreTrustScore } from "../trust/trust.service";
+import { PaymentRecord } from "../customer/customer-features.model";
 
 /**
  * Controller: Create New Order (Checkout)
@@ -111,6 +112,18 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   cart.items = [];
   await cart.save();
 
+  // For Cash on Delivery, record an initial pending payment record
+  if (paymentMethod === "cod" || paymentMethod === "cash_on_delivery") {
+    await PaymentRecord.create({
+      userId: req.user!.id,
+      orderId: order._id.toString(),
+      amount: order.totalAmount,
+      method: "cash_on_delivery",
+      status: "pending",
+      description: `Cash on Delivery for Order #${order._id.toString().slice(-6).toUpperCase()}`,
+    }).catch((err) => console.error("Failed to create COD payment record:", err));
+  }
+
   // Background non-blocking notifications / risk checks
   flagSuspiciousOrder(order).catch(() => undefined);
   const storeIds = [...new Set(orderItems.map((i) => i.storeId))];
@@ -202,6 +215,12 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
   if (status === "delivered") {
     order.paymentStatus = "paid";
+    if (order.paymentMethod === "cod" || order.paymentMethod === "cash_on_delivery") {
+      await PaymentRecord.findOneAndUpdate(
+        { orderId: order._id.toString(), method: "cash_on_delivery" },
+        { status: "successful" }
+      ).catch((err) => console.error("Failed to update COD payment record to successful:", err));
+    }
   }
 
   await order.save();

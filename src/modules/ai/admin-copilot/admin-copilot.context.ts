@@ -12,6 +12,7 @@ import {
   getCustomerMetrics,
   getProductMetrics,
   getSellerRiskMetrics,
+  getIncidentSummary,
 } from "./admin-copilot.tools";
 
 export interface BuiltContext {
@@ -179,6 +180,52 @@ export async function buildCopilotContext(
         ],
         data: security,
       });
+      break;
+    }
+
+    case CopilotIntent.INCIDENT_ANALYSIS: {
+      const incidents = await getIncidentSummary();
+      sources.push({ name: "Security Incidents", type: "security" });
+
+      sections.push({
+        title: "Incident Overview",
+        metrics: [
+          { label: "Open Incidents", value: incidents.open, formatted: String(incidents.open) },
+          { label: "Critical", value: incidents.critical, formatted: String(incidents.critical) },
+          { label: "High", value: incidents.high, formatted: String(incidents.high) },
+          { label: "Investigating", value: incidents.investigating, formatted: String(incidents.investigating) },
+          { label: "Resolved (30d)", value: incidents.monthResolved, formatted: String(incidents.monthResolved) },
+        ],
+        data: incidents,
+      });
+
+      if (incidents.critical > 0) {
+        sections.push({
+          title: "Critical Incidents",
+          insights: [{
+            severity: "critical" as const,
+            title: `${incidents.critical} Critical Incident${incidents.critical > 1 ? "s" : ""}`,
+            description: "Critical incidents require immediate attention",
+            evidence: incidents.topPriority.filter((i) => i.severity === "critical").slice(0, 3).map((i) => ({
+              fact: i.incidentCode,
+              value: i.title,
+            })),
+          }],
+        });
+      }
+
+      if (incidents.avgResolutionHours !== null) {
+        sections.push({
+          title: "Resolution Performance",
+          insights: [{
+            severity: incidents.avgResolutionHours > 48 ? "high" : "low" as const,
+            title: `Avg Resolution: ${incidents.avgResolutionHours}h`,
+            description: incidents.avgResolutionHours > 48
+              ? "Resolution time is above target — consider more automation"
+              : "Good resolution time within SLA",
+          }],
+        });
+      }
       break;
     }
 

@@ -9,25 +9,60 @@ import { Order } from "../../orders/order.model";
 export const getCommandCenterMetrics = asyncHandler(async (_req: Request, res: Response) => {
   const db = mongoose.connection.db;
 
-  const [totalUsers, totalSellers, totalProducts, totalOrders, revenueAgg, pendingSellers, pendingProducts] =
-    await Promise.all([
-      db ? db.collection("user").countDocuments() : 0,
-      Store.countDocuments({ status: "approved" }),
-      Product.countDocuments({ isDeleted: false }),
-      Order.countDocuments(),
-      Order.aggregate([
-        { $match: { status: { $ne: "cancelled" } } },
-        { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-      ]),
-      Store.countDocuments({ status: "pending" }),
-      Product.countDocuments({ status: "pending" }),
-    ]);
+  const [
+    totalUsers,
+    totalSellers,
+    totalProducts,
+    totalOrders,
+    revenueAgg,
+    pendingSellers,
+    pendingProducts,
+  ] = await Promise.all([
+    db ? db.collection("user").countDocuments() : 0,
+    Store.countDocuments({ status: "approved" }),
+    Product.countDocuments({ isDeleted: false }),
+    Order.countDocuments(),
+    Order.aggregate([
+      { $match: { status: { $ne: "cancelled" } } },
+      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+    ]),
+    Store.countDocuments({ status: "pending" }),
+    Product.countDocuments({ status: "pending" }),
+  ]);
 
   const realGmv = revenueAgg[0]?.total || 0;
   const activeUsers = Number(totalUsers) || 0;
   const activeSellers = Number(totalSellers) || 0;
   const catalogCount = Number(totalProducts) || 0;
   const orderCount = Number(totalOrders) || 0;
+
+  const SecurityIncident = mongoose.model("SecurityIncident");
+
+  const [
+    openIncidents,
+    criticalIncidents,
+    highIncidents,
+    activeAnomalies,
+  ] = await Promise.all([
+    SecurityIncident.countDocuments({ status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] } }),
+    SecurityIncident.countDocuments({ status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] }, severity: "critical" }),
+    SecurityIncident.countDocuments({ status: { $in: ["new", "open", "acknowledged", "investigating", "mitigated"] }, severity: "high" }),
+    mongoose.model("AnomalyLog").countDocuments({ status: { $in: ["detected", "under_review"] } }),
+  ]);
+
+  const riskScore = Math.min(100, criticalIncidents * 25 + highIncidents * 15 + activeAnomalies * 10);
+  let riskStatus = "LOW";
+  let securityAlertLevel = "Normal";
+  if (criticalIncidents > 0) {
+    riskStatus = "CRITICAL";
+    securityAlertLevel = "Critical";
+  } else if (highIncidents > 0) {
+    riskStatus = "HIGH";
+    securityAlertLevel = "High";
+  } else if (openIncidents > 5) {
+    riskStatus = "MEDIUM";
+    securityAlertLevel = "Elevated";
+  }
 
   sendSuccess(res, {
     marketplaceOverview: {
@@ -39,13 +74,21 @@ export const getCommandCenterMetrics = asyncHandler(async (_req: Request, res: R
       pendingSellerApprovals: pendingSellers,
       pendingProductModeration: pendingProducts,
       systemHealthPercent: 99.8,
-      riskStatus: "LOW",
+      riskStatus,
+      securityRiskScore: riskScore,
     },
     liveStatus: {
       activeShoppersNow: activeUsers,
       checkoutSuccessRate: orderCount > 0 ? "100%" : "0%",
       averageApiResponseTimeMs: 35,
-      securityAlertLevel: "Normal",
+      securityAlertLevel,
+    },
+    securityMetrics: {
+      openIncidents,
+      criticalIncidents,
+      highIncidents,
+      activeAnomalies,
+      incidentTrend: openIncidents > 10 ? "increasing" : openIncidents > 0 ? "stable" : "decreasing",
     },
   });
 });

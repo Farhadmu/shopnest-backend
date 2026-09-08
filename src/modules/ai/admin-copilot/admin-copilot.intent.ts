@@ -21,6 +21,7 @@ const INTENT_PATTERNS: Array<{ intent: CopilotIntent; patterns: string[] }> = [
   { intent: CopilotIntent.REVENUE_LEAKAGE, patterns: ["leakage", "revenue leak", "losing money", "money leak", "financial leak", "where are we losing"] },
   { intent: CopilotIntent.FRAUD_ANALYSIS, patterns: ["fraud", "scam", "fake", "suspicious order", "suspicious transaction", "fraudulent"] },
   { intent: CopilotIntent.SECURITY_ANALYSIS, patterns: ["security", "security incident", "security issue", "breach", "hack", "suspicious login"] },
+  { intent: CopilotIntent.INCIDENT_ANALYSIS, patterns: ["incident", "incidents", "resolve incident", "update incident", "incident status", "open incident", "critical incident", "high incident", "incident report"] },
   { intent: CopilotIntent.SYSTEM_HEALTH, patterns: ["system health", "platform health", "is the platform healthy", "api health", "system status"] },
   { intent: CopilotIntent.TELEMETRY_ANALYSIS, patterns: ["telemetry", "api performance", "response time", "error rate", "slow endpoint", "degraded"] },
   { intent: CopilotIntent.FORECAST_ANALYSIS, patterns: ["forecast", "predict", "projection", "future", "next month", "next week", "will grow"] },

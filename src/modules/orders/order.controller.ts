@@ -8,6 +8,7 @@ import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { flagSuspiciousOrder } from "../security/security.service";
 import { recomputeStoreTrustScore } from "../trust/trust.service";
+import mongoose from "mongoose";
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const { shippingAddress, division, paymentMethod, couponCode } = req.body as {
@@ -136,4 +137,140 @@ export const listAllOrdersForAdmin = asyncHandler(async (req: Request, res: Resp
   const filter = status ? { status } : {};
   const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(500);
   res.status(200).json(orders);
+});
+
+export const getAdminOrderStats = asyncHandler(async (_req: Request, res: Response) => {
+  const db = mongoose.connection.db;
+  if (!db) throw ApiError.internal("Database connection unavailable");
+
+  const [
+    totalOrders,
+    totalGmvAgg,
+    pendingOrders,
+    processingOrders,
+    shippedOrders,
+    deliveredOrders,
+    cancelledOrders,
+  ] = await Promise.all([
+    Order.countDocuments({}),
+    Order.aggregate([
+      { $match: { status: { $ne: "cancelled" } } },
+      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+    ]),
+    Order.countDocuments({ status: "pending" }),
+    Order.countDocuments({ status: "processing" }),
+    Order.countDocuments({ status: { $in: ["shipped", "out_for_delivery"] } }),
+    Order.countDocuments({ status: "delivered" }),
+    Order.countDocuments({ status: "cancelled" }),
+  ]);
+
+  const totalGmv = totalGmvAgg[0]?.total || 0;
+
+  sendSuccess(res, {
+    totalOrders,
+    totalGmv,
+    pendingOrders,
+    processingOrders,
+    shippedOrders,
+    deliveredOrders,
+    cancelledOrders,
+  });
+});
+
+export const searchAdminOrders = asyncHandler(async (req: Request, res: Response) => {
+  const {
+    q,
+    status,
+    paymentStatus,
+    paymentMethod,
+    seller,
+    dateFrom,
+    dateTo,
+    sortBy = "createdAt",
+    sortDir = "-1",
+    page = "1",
+    limit = "20",
+  } = req.query as {
+    q?: string;
+    status?: string;
+    paymentStatus?: string;
+    paymentMethod?: string;
+    seller?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    sortBy?: string;
+    sortDir?: string;
+    page?: string;
+    limit?: string;
+  };
+
+  const filter: Record<string, unknown> = {};
+
+  if (status && status !== "all") filter.status = status;
+  if (paymentStatus) filter.paymentStatus = paymentStatus;
+  if (paymentMethod) filter.paymentMethod = paymentMethod;
+
+  if (seller) {
+    filter["items.sellerId"] = seller;
+  }
+
+  if (dateFrom || dateTo) {
+    filter.createdAt = {} as Record<string, Date>;
+    if (dateFrom) (filter.createdAt as Record<string, Date>).$gte = new Date(dateFrom);
+    if (dateTo) (filter.createdAt as Record<string, Date>).$lte = new Date(dateTo);
+  }
+
+  if (q) {
+    const regex = new RegExp(q.trim(), "i");
+    filter.$or = [
+      { _id: regex },
+      { shippingAddress: regex },
+      { "items.title": regex },
+      { "items.productId": regex },
+    ];
+  }
+
+  const sortField = ["createdAt", "updatedAt", "totalAmount", "status"].includes(sortBy) ? sortBy : "createdAt";
+  const sortOrder = sortDir === "1" ? 1 : -1;
+
+  const skip = (Number(page) - 1) * Number(limit);
+
+  const [orders, total] = await Promise.all([
+    Order.find(filter).sort({ [sortField]: sortOrder }).skip(skip).limit(Number(limit)),
+    Order.countDocuments(filter),
+  ]);
+
+  sendSuccess(res, {
+    orders,
+    pagination: {
+      total,
+      page: Number(page),
+      limit: Number(limit),
+      totalPages: Math.ceil(total / Number(limit)),
+    },
+  });
+});
+
+export const cancelOrderAdmin = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { reason } = req.body as { reason?: string };
+  const adminId = req.user?.id || "admin";
+
+  const order = await Order.findById(id);
+  if (!order) throw ApiError.notFound("Order not found");
+
+  if (order.status === "cancelled") {
+    throw ApiError.badRequest("Order is already cancelled");
+  }
+
+  if (order.status === "delivered") {
+    throw ApiError.badRequest("Cannot cancel a delivered order");
+  }
+
+  const previousStatus = order.status;
+  order.status = "cancelled";
+  order.statusHistory.push({ status: "cancelled", at: new Date() });
+  await order.save();
+
+  sendSuccess(res, order.toJSON(), `Order cancelled${reason ? `: ${reason}` : ""}`);
 });

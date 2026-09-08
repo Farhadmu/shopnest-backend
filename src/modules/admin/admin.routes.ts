@@ -3,6 +3,7 @@ import * as ctrl from "./admin.controller";
 import adminIntelligenceRoutes from "./admin-intelligence.routes";
 import securityCenterRoutes from "./security-center.routes";
 import orderRiskRoutes from "../risk/order-risk.routes";
+import { adminRouter as adminNotificationRouter } from "../notifications/notification.routes";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 
@@ -19,6 +20,9 @@ router.use("/security-center", securityCenterRoutes);
 
 // Order Risk Assessment routes
 router.use("/order-risk", orderRiskRoutes);
+
+// Admin notifications
+router.use("/notifications", adminNotificationRouter);
 
 // Core admin routes
 router.get("/dashboard", ctrl.getDashboardMetrics);

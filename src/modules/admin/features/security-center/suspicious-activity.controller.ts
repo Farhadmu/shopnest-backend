@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../../../utils/async-handler";
 import { sendSuccess } from "../../../../utils/api-response";
 import { SecurityLog } from "../../../security/securityLog.model";
+import { createIncidentFromSecurityLog } from "../security-incidents.service";
 
 // 4. SUSPICIOUS ACTIVITY DETECTION
 export const getSuspiciousActivity = asyncHandler(async (req: Request, res: Response) => {
@@ -56,3 +57,24 @@ export const getSuspiciousActivity = asyncHandler(async (req: Request, res: Resp
     typeBreakdown: typeBreakdown.map((t) => ({ type: t._id, count: t.count })),
   });
 });
+
+// Auto-seed incident from high/critical security logs that lack one
+export async function ensureIncidentForEvent(logEntry: any) {
+  if (logEntry.resolved || logEntry.severity !== "high" && logEntry.severity !== "critical") return null;
+
+  const typeMap: Record<string, string> = {
+    LOGIN_ANOMALY: "suspicious_login",
+    SUSPICIOUS_ORDER: "suspicious_order_activity",
+    RATE_LIMIT_BREACH: "rate_limit_abuse",
+    ADMIN_ACTION: "system_security_incident",
+    AI_MISUSE: "api_abuse",
+  };
+
+  return createIncidentFromSecurityLog(
+    logEntry,
+    logEntry.severity,
+    (typeMap[logEntry.type] || "other") as any,
+    "security_log"
+  );
+}
+

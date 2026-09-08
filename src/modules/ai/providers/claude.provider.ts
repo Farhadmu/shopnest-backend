@@ -47,33 +47,105 @@ function isTextOnly(messages: ChatMessage[]) {
   return messages.every((message) => typeof message.content === "string");
 }
 
+function hasImages(messages: ChatMessage[]): boolean {
+  return messages.some(
+    (message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image")
+  );
+}
+
+const KNOWN_VISION_MODELS = new Set([
+  "claude-3-opus",
+  "claude-3-sonnet",
+  "claude-3-5-sonnet",
+  "claude-3-5-haiku",
+  "claude-sonnet-4",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-7",
+  "claude-4-opus",
+  "claude-4-sonnet",
+  "claude-3-opus-20240229",
+  "claude-3-sonnet-20240229",
+  "claude-3-5-sonnet-20240620",
+  "claude-3-5-sonnet-20241022",
+  "claude-3-5-haiku-20240307",
+  "claude-sonnet-4-20250514",
+  "claude-sonnet-4-6-20250514",
+  "claude-sonnet-4-7-20250514",
+  "claude-opus-4-20251120",
+  "claude-sonnet-4-20251120",
+  "claude-3.5-haiku",
+  "claude-3.5-sonnet",
+  "claude-3-sonnet",
+  "claude-3-opus",
+]);
+
+function isVisionModel(model: string): boolean {
+  const lower = model.toLowerCase();
+  if (lower.includes("claude-2") || lower.includes("claude-instant")) return false;
+  if (lower.includes("claude-3") || lower.includes("claude-sonnet-4") || lower.includes("claude-4") || lower.includes("claude-opus-4")) return true;
+  return KNOWN_VISION_MODELS.has(lower);
+}
+
+function stripImages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => {
+    if (typeof message.content === "string") return message;
+    const textParts = message.content.filter((part) => part.type === "text");
+    const text = textParts.map((part) => part.text).join(" ");
+    return { ...message, content: text };
+  });
+}
+
 async function completeWithClaude(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
   if (!env.ANTHROPIC_API_KEY) throw new Error("Anthropic is not configured");
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: env.ANTHROPIC_MODEL,
-      max_tokens: opts.maxTokens ?? 1024,
-      temperature: opts.temperature ?? 0.4,
-      system: opts.system,
-      messages,
-    }),
-  });
+  const model = env.ANTHROPIC_MODEL;
 
-  if (!response.ok) {
-    const errBody = await response.text().catch(() => "");
-    logger.error("Anthropic API error", { status: response.status, body: errBody });
-    throw new Error(`Anthropic request failed with ${response.status}`);
+  async function sendToClaude(msgs: ChatMessage[]): Promise<{ content: string; stripped: boolean }> {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: opts.maxTokens ?? 1024,
+        temperature: opts.temperature ?? 0.4,
+        system: opts.system,
+        messages: msgs,
+      }),
+    });
+
+    if (!response.ok) {
+      let errorMessage = `Anthropic request failed with ${response.status}`;
+      let errBody = "";
+      try {
+        errBody = await response.text();
+        const parsed = JSON.parse(errBody) as { error?: { message?: string; type?: string } };
+        if (parsed.error?.message) errorMessage = parsed.error.message;
+        logger.error("Anthropic API error", { status: response.status, body: errBody });
+        if (parsed.error?.type === "invalid_request_error" && errorMessage.toLowerCase().includes("image") && errorMessage.toLowerCase().includes("support")) {
+          if (hasImages(msgs)) {
+            const stripped = stripImages(msgs);
+            logger.warn("Claude API rejected image content; retrying with stripped text", { model, originalError: errorMessage });
+            const retry = await sendToClaude(stripped);
+            return { content: retry.content, stripped: true };
+          }
+        }
+        throw new Error(errorMessage);
+      } catch (err) {
+        if ((err as Error).message !== errorMessage) throw err;
+      }
+      throw new Error(errorMessage);
+    }
+
+    const data = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
+    return { content: (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n").trim(), stripped: false };
   }
 
-  const data = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
-  return (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n").trim();
+  const result = await sendToClaude(messages);
+  return result.content;
 }
 
 async function completeWithGemini(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
@@ -97,9 +169,18 @@ async function completeWithGemini(messages: ChatMessage[], opts: CompleteOptions
   });
 
   if (!response.ok) {
-    const errBody = await response.text().catch(() => "");
-    logger.error("Gemini API error", { status: response.status, body: errBody });
-    throw new Error(`Gemini request failed with ${response.status}`);
+    let errorMessage = `Gemini request failed with ${response.status}`;
+    try {
+      const errBody = await response.text();
+      const parsed = JSON.parse(errBody) as { error?: { message?: string } };
+      if (parsed.error?.message) {
+        errorMessage = parsed.error.message;
+      }
+      logger.error("Gemini API error", { status: response.status, body: errBody });
+    } catch {
+      logger.error("Gemini API error", { status: response.status });
+    }
+    throw new Error(errorMessage);
   }
 
   const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };

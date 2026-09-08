@@ -3,7 +3,7 @@ import { Product } from "../products/product.model";
 import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
-import { complete, completeJSON, AiContext } from "./providers/claude.provider";
+import { completeJSON, AiContext } from "./providers/claude.provider";
 import { logger } from "../../utils/logger";
 import {
   PRODUCT_DESCRIPTION_SYSTEM,
@@ -19,7 +19,16 @@ import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { logAiIncident } from "./incident/incident.service";
 
-/** POST /ai/recommend - AI Product Recommendation Engine (query/budget/category driven). */
+/**
+ * Controller: Recommend Products
+ *
+ * 1. Inputs Extracted:
+ *    - req.body: query, budgetMax, category
+ * 2. Database Operation:
+ *    - Product.find(filter).sort({ ratingAvg: -1, sold: -1 }).limit(10)
+ * 3. Response Sent:
+ *    - HTTP 200: { count, products: [...] }
+ */
 export const recommend = asyncHandler(async (req: Request, res: Response) => {
   const { query, budgetMax, category } = req.body as { query?: string; budgetMax?: number; category?: string };
 
@@ -29,11 +38,20 @@ export const recommend = asyncHandler(async (req: Request, res: Response) => {
   if (query) filter.$text = { $search: query };
 
   const products = await Product.find(filter).sort({ ratingAvg: -1, sold: -1 }).limit(10);
-
   sendSuccess(res, { count: products.length, products });
 });
 
-/** POST /ai/product-description - AI Product Content Generator (for sellers). */
+/**
+ * Controller: Generate AI Product Description (Sellers & Admins)
+ *
+ * 1. Inputs Extracted:
+ *    - req.body: productName, category, features
+ *    - req.user: Logged-in seller/admin ID
+ * 2. Database Operation:
+ *    - None directly; invokes completeJSON prompt engine
+ * 3. Response Sent:
+ *    - HTTP 200: { description, bulletPoints, isFallback }
+ */
 export const productDescription = asyncHandler(async (req: Request, res: Response) => {
   const { productName, category, features } = req.body as { productName: string; category: string; features: string[] };
 
@@ -55,14 +73,32 @@ export const productDescription = asyncHandler(async (req: Request, res: Respons
   }
 });
 
-/** POST /ai/review-summary - AI Review Summarization + sentiment breakdown. */
+/**
+ * Controller: Review Summary & Sentiment Breakdown
+ *
+ * 1. Inputs Extracted:
+ *    - req.body.productId: Target product ID
+ * 2. Database Operation:
+ *    - Queries Review collection via summarizeProductReviews helper
+ * 3. Response Sent:
+ *    - HTTP 200: Summary JSON object { summary, positivePoints, negativePoints, sentimentScore }
+ */
 export const reviewSummary = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.body as { productId: string };
   const result = await summarizeProductReviews(productId);
   sendSuccess(res, result);
 });
 
-/** POST /ai/compare - neutral multi-product comparison. */
+/**
+ * Controller: Compare Products Side-By-Side
+ *
+ * 1. Inputs Extracted:
+ *    - req.body.productIds: Array of product IDs to compare (min 2)
+ * 2. Database Operation:
+ *    - Product.find({ _id: { $in: productIds }, isDeleted: false })
+ * 3. Response Sent:
+ *    - HTTP 200: Comparative analysis matrix
+ */
 export const compareProducts = asyncHandler(async (req: Request, res: Response) => {
   const { productIds } = req.body as { productIds: string[] };
   const products = await Product.find({ _id: { $in: productIds }, isDeleted: false });
@@ -90,7 +126,17 @@ export const compareProducts = asyncHandler(async (req: Request, res: Response) 
   sendSuccess(res, { ...(result.data as Record<string, unknown>), isFallback: result.isFallback });
 });
 
-/** POST /ai/pricing - AI Pricing Assistant using internal platform data only. */
+/**
+ * Controller: AI Pricing Suggestion (Sellers & Admins)
+ *
+ * 1. Inputs Extracted:
+ *    - req.body.productId: Target product ID
+ * 2. Database Operation:
+ *    - Product.findOne({ _id: productId })
+ *    - Product.aggregate(...) to compute average category price
+ * 3. Response Sent:
+ *    - HTTP 200: { currentPrice, categoryAvgPrice, suggestedMin, suggestedMax, reason }
+ */
 export const pricingSuggestion = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.body as { productId: string };
   const product = await Product.findOne({ _id: productId, isDeleted: false });
@@ -118,19 +164,32 @@ export const pricingSuggestion = asyncHandler(async (req: Request, res: Response
     { system: PRICING_SYSTEM }
   );
 
-  sendSuccess(res, { currentPrice: product.price, categoryAvgPrice, ...(result.data as Record<string, unknown>), isFallback: result.isFallback });
+  sendSuccess(res, {
+    currentPrice: product.price,
+    categoryAvgPrice,
+    ...(result.data as Record<string, unknown>),
+    isFallback: result.isFallback,
+  });
 });
 
-/** POST /ai/visual-search */
+/**
+ * Controller: Visual Search
+ *
+ * 1. Inputs Extracted:
+ *    - req.body.imageUrl: Image link
+ *    - req.body.searchQuery: Optional detected search query
+ * 2. Database Operation:
+ *    - Product.find(...) based on extracted filename keywords or text search
+ * 3. Response Sent:
+ *    - HTTP 200: { detectedQuery, count, products }
+ */
 export const visualSearch = asyncHandler(async (req: Request, res: Response) => {
   const { imageUrl, searchQuery } = req.body as { imageUrl: string; searchQuery?: string };
 
-  // Use provided search query or extract from URL, skip AI image recognition
   let description: string;
   if (searchQuery && searchQuery.trim()) {
     description = searchQuery.trim();
   } else {
-    // Extract search terms from the URL filename or use generic search
     try {
       const urlPath = new URL(imageUrl).pathname;
       const filename = urlPath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
@@ -151,10 +210,10 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
     ],
   }).limit(10);
 
-  // Fallback: if no results, return popular products
-  const fallbackProducts = products.length === 0
-    ? await Product.find({ isDeleted: false, status: "approved" }).sort({ sold: -1 }).limit(10)
-    : products;
+  const fallbackProducts =
+    products.length === 0
+      ? await Product.find({ isDeleted: false, status: "approved" }).sort({ sold: -1 }).limit(10)
+      : products;
 
   sendSuccess(res, {
     detectedQuery: description,
@@ -164,9 +223,18 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
   });
 });
 
-// 36. AI COMMERCE MEMORY
 const memoryStore = new Map<string, { preferences: string[]; activeTheme: string; lastSearchIntent: string }>();
 
+/**
+ * Controller: Get AI Commerce Memory
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated user ID (or "guest")
+ * 2. Database Operation:
+ *    - In-memory preferences store lookup
+ * 3. Response Sent:
+ *    - HTTP 200: { userId, memory, controls: { canReset, personalizationEnabled } }
+ */
 export const getAiCommerceMemory = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id || "guest";
   const userMemory = memoryStore.get(userId) || {
@@ -185,27 +253,54 @@ export const getAiCommerceMemory = asyncHandler(async (req: Request, res: Respon
   });
 });
 
+/**
+ * Controller: Clear AI Commerce Memory
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Authenticated user ID
+ * 2. Database Operation:
+ *    - Deletes user key from memoryStore
+ * 3. Response Sent:
+ *    - HTTP 200: { success: true }
+ */
 export const clearAiCommerceMemory = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id || "guest";
   memoryStore.delete(userId);
   sendSuccess(res, { success: true }, "AI commerce preferences and shopping memory cleared");
 });
 
-// 37. AI SHOPPING NEGOTIATOR
+/**
+ * Controller: AI Shopping Negotiator
+ *
+ * 1. Inputs Extracted:
+ *    - req.body.productId: Target product (optional)
+ *    - req.body.cartSubtotal: Subtotal to optimize
+ * 2. Database Operation:
+ *    - Product.findById(productId)
+ *    - Coupon.find({ isActive: true }) to find best lawful promo codes
+ * 3. Response Sent:
+ *    - HTTP 200: { originalPrice, bestEffectivePrice, totalSavings, savingsPercent, discountBreakdown, negotiationStrategy }
+ */
 export const negotiateDeal = asyncHandler(async (req: Request, res: Response) => {
   const { productId, cartSubtotal = 5000 } = req.body;
 
   const product = productId ? await Product.findById(productId) : null;
   const originalPrice = product ? (product.discountPrice || product.price) : Number(cartSubtotal);
 
-  // Look up actual valid coupons
   const activeCoupons = await Coupon.find({ isActive: true });
-  const bestCoupon = activeCoupons[0] || { code: "SHOPNEST10", type: "percentage" as const, value: 10, minPurchase: 1000, isActive: true };
+  const bestCoupon = activeCoupons[0] || {
+    code: "SHOPNEST10",
+    type: "percentage" as const,
+    value: 10,
+    minPurchase: 1000,
+    isActive: true,
+  };
 
-  const couponDiscount = bestCoupon.type === "percentage" 
-    ? Math.round(originalPrice * (bestCoupon.value / 100))
-    : bestCoupon.value;
-  const platformOffer = originalPrice > 3000 ? 150 : 0; // Free delivery / platform voucher
+  const couponDiscount =
+    bestCoupon.type === "percentage"
+      ? Math.round(originalPrice * (bestCoupon.value / 100))
+      : bestCoupon.value;
+  const platformOffer = originalPrice > 3000 ? 150 : 0;
   const bestEffectivePrice = Math.max(100, originalPrice - couponDiscount - platformOffer);
   const totalSavings = originalPrice - bestEffectivePrice;
 
@@ -215,7 +310,10 @@ export const negotiateDeal = asyncHandler(async (req: Request, res: Response) =>
     totalSavings,
     savingsPercent: Math.round((totalSavings / originalPrice) * 100),
     discountBreakdown: [
-      { type: "Seller / Product Direct Promotion", amount: product?.discountPrice ? product.price - product.discountPrice : 0 },
+      {
+        type: "Seller / Product Direct Promotion",
+        amount: product?.discountPrice ? product.price - product.discountPrice : 0,
+      },
       { type: `Platform Coupon (${bestCoupon.code})`, amount: couponDiscount, code: bestCoupon.code },
       { type: "Free Express Delivery Credit", amount: platformOffer },
     ],
@@ -223,12 +321,22 @@ export const negotiateDeal = asyncHandler(async (req: Request, res: Response) =>
   });
 });
 
-// 38. AI SHOPPING INTENT & DATABASE-DRIVEN SEARCH ASSISTANT
+/**
+ * Controller: AI Shopping Intent & Database-Driven Search Assistant
+ *
+ * 1. Inputs Extracted:
+ *    - req.body.prompt: User natural language search prompt (English or Bangla)
+ * 2. Database Operation:
+ *    - Parses budget, recipient, and category keywords
+ *    - Product.find(filter) using strict budget cap & regex matching
+ * 3. Response Sent:
+ *    - HTTP 200: { extractedIntent, matchingProducts, recommendationSummary }
+ */
 export const detectShoppingIntent = asyncHandler(async (req: Request, res: Response) => {
   const { prompt = "I need a gift for my brother's birthday under 5000" } = req.body;
   const rawPrompt = String(prompt).trim();
 
-  // 1. Transliterate Bengali Numerals to English (০-৯ -> 0-9)
+  // Transliterate Bengali numerals to English (০-৯ -> 0-9)
   const bnToEnMap: Record<string, string> = {
     "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4",
     "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9",
@@ -236,17 +344,17 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
   const normalizedPrompt = rawPrompt.replace(/[০-৯]/g, (d) => bnToEnMap[d] || d);
   const lower = normalizedPrompt.toLowerCase();
 
-  // 2. Extract Budget Constraint (Strict Maximum Budget)
   let maxPrice: number | null = null;
   let minPrice: number | null = null;
 
-  // Handle "k" multiplier (e.g. "under 5k", "2.5k er moddhe", "10k")
-  const kBudgetMatch = lower.match(/(?:under|below|budget|within|max|niche|moddhe|vitor|kom|takar)\s*(\d+(?:\.\d+)?)\s*k\b/i) ||
+  // Check for 'k' multiplier (e.g. "under 5k")
+  const kBudgetMatch =
+    lower.match(/(?:under|below|budget|within|max|niche|moddhe|vitor|kom|takar)\s*(\d+(?:\.\d+)?)\s*k\b/i) ||
     lower.match(/(\d+(?:\.\d+)?)\s*k\s*(?:under|below|budget|within|takar|tk|৳|moddhe|niche|vitor)/i);
+
   if (kBudgetMatch) {
     maxPrice = Math.round(parseFloat(kBudgetMatch[1]) * 1000);
   } else {
-    // Standard numerical budget extraction
     const budgetPatterns = [
       /(?:under|below|budget|within|less than|max|maximum|up to|highest|niche|er niche|moddhe|er moddhe|vitor|kom)\s*(?:tk|taka|৳)?\s*(\d+[\d,]*)/i,
       /(?:tk|taka|৳)\s*(\d+[\d,]*)\s*(?:under|below|niche|er niche|moddhe|er moddhe|vitor|kom)/i,
@@ -262,13 +370,11 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
     }
   }
 
-  // Check for minimum budget (e.g. "above 2000", "min 1500", "2000 theke")
   const minMatch = lower.match(/(?:above|more than|at least|min|minimum|theke|from)\s*(?:tk|taka|৳)?\s*(\d+[\d,]*)/i);
   if (minMatch) {
     minPrice = Number(minMatch[1].replace(/,/g, ""));
   }
 
-  // 3. Extract Occasion
   let occasion = "General Shopping";
   if (lower.includes("birthday") || lower.includes("jonmodin")) occasion = "Birthday Celebration";
   else if (lower.includes("eid") || lower.includes("roza")) occasion = "Eid Festival";
@@ -278,7 +384,6 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
   else if (lower.includes("gym") || lower.includes("workout") || lower.includes("running") || lower.includes("fitness")) occasion = "Sports & Fitness";
   else if (lower.includes("travel") || lower.includes("tour")) occasion = "Travel & Outdoor";
 
-  // 4. Extract Recipient
   let recipient = "Self";
   if (lower.includes("mother") || lower.includes("mom") || lower.includes("ammu") || lower.includes("ma")) recipient = "Mother";
   else if (lower.includes("father") || lower.includes("dad") || lower.includes("abbu") || lower.includes("baba")) recipient = "Father";
@@ -288,7 +393,6 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
   else if (lower.includes("wife") || lower.includes("bou") || lower.includes("husband") || lower.includes("shami")) recipient = "Spouse";
   else if (lower.includes("kids") || lower.includes("baby") || lower.includes("child") || lower.includes("baccha")) recipient = "Kids / Baby";
 
-  // 5. Extract Search Keywords by Stripping Stopwords & Context Words
   const stopWords = [
     "i need", "i want", "show me", "find me", "give me", "suggest", "recommend", "looking for",
     "something for", "a gift for", "gift", "gifts", "under", "below", "less than", "within",
@@ -299,13 +403,12 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
     "and", "or", "to", "with", "please", "item", "product", "products", "stuff",
   ];
 
-  let cleaned = lower;
-  // Remove extracted numerical expressions
-  cleaned = cleaned.replace(/\b\d+(?:[.,]\d+)?\s*(?:k|tk|taka|৳)?\b/gi, " ");
+  let cleaned = lower.replace(/\b\d+(?:[.,]\d+)?\s*(?:k|tk|taka|৳)?\b/gi, " ");
   for (const sw of stopWords) {
     const reg = new RegExp(`\\b${sw}\\b`, "gi");
     cleaned = cleaned.replace(reg, " ");
   }
+
   const searchTokens = cleaned
     .replace(/[^\w\s\u0980-\u09FF-]/g, " ")
     .split(/\s+/)
@@ -314,13 +417,11 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
 
   const cleanSearchQuery = searchTokens.join(" ");
 
-  // 6. Build Strict MongoDB Query Filters
   const filter: Record<string, any> = {
     isDeleted: false,
     status: "approved",
   };
 
-  // Enforce Strict Budget Constraints (NEVER exceed maxPrice)
   if (maxPrice !== null && maxPrice > 0) {
     filter.price = { $lte: maxPrice };
   }
@@ -328,7 +429,6 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
     filter.price = { ...(filter.price || {}), $gte: minPrice };
   }
 
-  // Detect explicit category intent
   let categoryHint = "";
   if (lower.includes("phone") || lower.includes("mobile") || lower.includes("smartphone")) categoryHint = "Phones & Tablets";
   else if (lower.includes("laptop") || lower.includes("computer") || lower.includes("pc") || lower.includes("macbook")) categoryHint = "Computers";
@@ -336,9 +436,7 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
   else if (lower.includes("shirt") || lower.includes("t-shirt") || lower.includes("saree") || lower.includes("panjabi") || lower.includes("dress") || lower.includes("pant") || lower.includes("jacket")) categoryHint = "Fashion";
   else if (lower.includes("watch") || lower.includes("smartwatch") || lower.includes("bag") || lower.includes("wallet") || lower.includes("perfume")) categoryHint = "Accessories";
 
-  // Build Keyword Filter
   if (searchTokens.length > 0) {
-    // Construct multi-token field search: title, category, tags, description
     const tokenConditions = searchTokens.map((token) => ({
       $or: [
         { title: { $regex: token, $options: "i" } },
@@ -352,13 +450,11 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
     filter.category = { $regex: categoryHint, $options: "i" };
   }
 
-  // 7. Query Real MongoDB Database
   let matchingProducts = await Product.find(filter)
     .sort({ ratingAvg: -1, sold: -1, stock: -1 })
     .limit(8)
     .lean();
 
-  // If strict $and yielded 0 and multiple tokens were provided, try broader $or match within same budget
   if (matchingProducts.length === 0 && searchTokens.length > 1) {
     const broaderFilter: Record<string, any> = {
       isDeleted: false,
@@ -380,10 +476,8 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
       .lean();
   }
 
-  // 8. Generate Honest, Non-Hallucinated Explanation
   let recommendationSummary = "";
   if (matchingProducts.length === 0) {
-    // Honest Zero-Hallucination state
     const budgetClause = maxPrice ? ` under ৳${maxPrice.toLocaleString()}` : "";
     const termClause = cleanSearchQuery ? ` for "${cleanSearchQuery}"` : "";
     recommendationSummary = `I couldn't find any products in our current catalog matching${termClause}${budgetClause}. Please try searching with a different keyword or adjusting your budget.`;
@@ -393,23 +487,6 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
     recommendationSummary = `Found ${matchingProducts.length} verified products from real marketplace inventory${targetClause}${budgetClause}. All items are in-stock and spec-verified.`;
   }
 
-  // 9. Structured Backend Logging
-  logger.info("[AI Shopping Assistant] Processed Query", {
-    rawPrompt,
-    parsedIntent: {
-      occasion,
-      recipient,
-      cleanSearchQuery,
-      maxPrice,
-      minPrice,
-      categoryHint,
-    },
-    mongoFilter: JSON.stringify(filter),
-    productsFoundCount: matchingProducts.length,
-    productIds: matchingProducts.map((p: any) => p._id),
-  });
-
-  // 10. Return Real DB Products to Frontend
   sendSuccess(res, {
     extractedIntent: {
       occasion,
@@ -437,21 +514,29 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
   });
 });
 
-// 39. MULTI-ROLE AI COMMERCE COPILOT
+/**
+ * Controller: Multi-Role AI Commerce Copilot (Customer, Seller, Admin)
+ *
+ * 1. Inputs Extracted:
+ *    - req.body: query, role, context
+ *    - req.user: User session
+ * 2. Database Operation:
+ *    - Fetches role-specific marketplace telemetry or order stats
+ * 3. Response Sent:
+ *    - HTTP 200: { role, query, answer, suggestedActions, isFallback }
+ */
 export const commerceCopilot = asyncHandler(async (req: Request, res: Response) => {
-  const { query, role = "customer", context = {} } = req.body;
+  const { query, role = "customer" } = req.body;
   const userRole = req.user?.role || role;
   const userId = req.user?.id;
 
   if (!query) throw ApiError.badRequest("Please provide a prompt for the AI Copilot");
 
-  let systemPrompt = "";
   let answer = "";
   let suggestedActions: Array<{ label: string; action: string; targetUrl?: string }> = [];
   const aiContext: AiContext = {};
 
   if (userRole === "admin" && userId) {
-    systemPrompt = "You are the ShopNest Marketplace Admin Intelligence Copilot. Provide actionable marketplace audit insights, anomaly analysis, and platform growth telemetry.";
     const userCount = await import("../users/user.model").then((m) => m.usersCollection().countDocuments({}));
     const sellerCount = await import("../sellers/store.model").then((m) => m.Store.countDocuments({}));
     const orderCount = await Order.countDocuments({});
@@ -461,7 +546,10 @@ export const commerceCopilot = asyncHandler(async (req: Request, res: Response) 
       { $group: { _id: null, total: { $sum: "$totalAmount" } } },
     ]);
     aiContext.userContext = {
-      userCount, sellerCount, orderCount, productCount,
+      userCount,
+      sellerCount,
+      orderCount,
+      productCount,
       totalRevenue: totalRevenue[0]?.total || 0,
     };
     answer = `📊 **Marketplace Overview**: ${userCount} users, ${sellerCount} sellers, ${orderCount} orders, ${productCount} products. Total revenue: ৳${(totalRevenue[0]?.total || 0).toLocaleString()}.`;
@@ -470,7 +558,6 @@ export const commerceCopilot = asyncHandler(async (req: Request, res: Response) 
       { label: "Inspect Geographical Map", action: "filter", targetUrl: "/admin/dashboard" },
     ];
   } else if (userRole === "seller" && userId) {
-    systemPrompt = "You are the ShopNest Seller Business Copilot. Analyze store metrics, inventory reorders, pricing elasticity, and marketing ROI.";
     const store = await Store.findOne({ $or: [{ ownerId: userId }, { userId }] });
     if (store) {
       const [orderCount, productCount] = await Promise.all([
@@ -480,7 +567,8 @@ export const commerceCopilot = asyncHandler(async (req: Request, res: Response) 
       aiContext.userContext = {
         storeName: store.storeName,
         trustScore: store.trustScore,
-        orderCount, productCount,
+        orderCount,
+        productCount,
       };
       answer = `💼 **Store Overview**: ${store.storeName} (Trust Score: ${store.trustScore}/100). ${orderCount} orders, ${productCount} active products.`;
     } else {
@@ -491,8 +579,6 @@ export const commerceCopilot = asyncHandler(async (req: Request, res: Response) 
       { label: "View Profitability Waterfall", action: "navigate" },
     ];
   } else {
-    // Customer Shopping Copilot
-    systemPrompt = "You are the ShopNest Smart Shopping Copilot. Help customers find verified products, optimize budgets, check compatibility, and find lawful discounts.";
     if (userId) {
       const [orders, wishlist] = await Promise.all([
         Order.find({ customerId: userId }).sort({ createdAt: -1 }).limit(5),

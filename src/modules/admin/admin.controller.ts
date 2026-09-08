@@ -9,7 +9,6 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { logSecurityEvent } from "../security/security.service";
-
 import { createNotification } from "../notifications/notification.service";
 import { logger } from "../../utils/logger";
 
@@ -21,23 +20,42 @@ function safeObjectId(id: string) {
   }
 }
 
+/**
+ * Controller: Get Admin Dashboard Metrics
+ *
+ * 1. Inputs Extracted:
+ *    - None (admin authenticated)
+ * 2. Database Operation:
+ *    - Counts users, approved sellers, active products, total orders, pending stores, pending products, refund requests
+ *    - Order.aggregate(...) to sum paid revenue
+ * 3. Response Sent:
+ *    - HTTP 200: { totalUsers, totalSellers, totalProducts, totalOrders, totalRevenue, pendingSellers, reportedProducts, refundRequests }
+ */
 export const getDashboardMetrics = asyncHandler(async (_req: Request, res: Response) => {
   const db = mongoose.connection.db;
 
-  const [totalUsers, totalSellers, totalProducts, totalOrders, revenueAgg, pendingSellers, reportedProducts, refundRequests] =
-    await Promise.all([
-      db ? db.collection("user").countDocuments() : 0,
-      Store.countDocuments({ status: "approved" }),
-      Product.countDocuments({ isDeleted: false }),
-      Order.countDocuments(),
-      Order.aggregate([
-        { $match: { paymentStatus: "paid" } },
-        { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-      ]),
-      Store.countDocuments({ status: "pending" }),
-      Product.countDocuments({ status: "pending" }),
-      Order.countDocuments({ status: { $in: ["returned", "refunded"] } }),
-    ]);
+  const [
+    totalUsers,
+    totalSellers,
+    totalProducts,
+    totalOrders,
+    revenueAgg,
+    pendingSellers,
+    reportedProducts,
+    refundRequests,
+  ] = await Promise.all([
+    db ? db.collection("user").countDocuments() : 0,
+    Store.countDocuments({ status: "approved" }),
+    Product.countDocuments({ isDeleted: false }),
+    Order.countDocuments(),
+    Order.aggregate([
+      { $match: { paymentStatus: "paid" } },
+      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+    ]),
+    Store.countDocuments({ status: "pending" }),
+    Product.countDocuments({ status: "pending" }),
+    Order.countDocuments({ status: { $in: ["returned", "refunded"] } }),
+  ]);
 
   sendSuccess(res, {
     totalUsers,
@@ -51,6 +69,18 @@ export const getDashboardMetrics = asyncHandler(async (_req: Request, res: Respo
   });
 });
 
+/**
+ * Controller: List Sellers For Moderation
+ *
+ * 1. Inputs Extracted:
+ *    - req.query.status: Optional status filter ("pending", "approved", "rejected", "suspended")
+ *    - req.query.search: Optional search term matching store name, slug, phone, NID, etc.
+ * 2. Database Operation:
+ *    - Store.find(filter).sort({ createdAt: -1 })
+ *    - Enriches each store with owner email, full name, and avatar from better-auth user collection
+ * 3. Response Sent:
+ *    - HTTP 200: Array of enriched store objects
+ */
 export const listSellersForModeration = asyncHandler(async (req: Request, res: Response) => {
   const { status, search } = req.query as { status?: string; search?: string };
   const filter: Record<string, unknown> = {};
@@ -73,19 +103,17 @@ export const listSellersForModeration = asyncHandler(async (req: Request, res: R
 
   const stores = await Store.find(filter).sort({ createdAt: -1 });
 
-  // Enrich with user profile details (email, registered name) from the user collection
   const db = mongoose.connection.db;
   if (db && stores.length > 0) {
     const ownerIds = stores.map((s) => s.ownerId);
-    const validObjectIds = ownerIds.map((id) => safeObjectId(id)).filter((id): id is mongoose.Types.ObjectId => id !== null);
+    const validObjectIds = ownerIds
+      .map((id) => safeObjectId(id))
+      .filter((id): id is mongoose.Types.ObjectId => id !== null);
 
     const userDocs = await db
       .collection("user")
       .find({
-        $or: [
-          { id: { $in: ownerIds } },
-          { _id: { $in: validObjectIds } },
-        ],
+        $or: [{ id: { $in: ownerIds } }, { _id: { $in: validObjectIds } }],
       })
       .toArray();
 
@@ -108,6 +136,18 @@ export const listSellersForModeration = asyncHandler(async (req: Request, res: R
   res.status(200).json(stores);
 });
 
+/**
+ * Controller: Get Single Seller Details For Admin
+ *
+ * 1. Inputs Extracted:
+ *    - req.params.id: Store ID
+ * 2. Database Operation:
+ *    - Store.findById(id)
+ *    - Queries user collection for owner info
+ *    - Queries Product and Order for store performance metrics
+ * 3. Response Sent:
+ *    - HTTP 200: Detailed seller dossier { ...store, ownerEmail, ownerFullName, metrics: { totalProducts, totalOrders, totalSales }, recentProducts }
+ */
 export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: Response) => {
   const store = await Store.findById(req.params.id);
   if (!store) throw ApiError.notFound("Store not found");
@@ -121,7 +161,6 @@ export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: R
     });
   }
 
-  // Get store performance and catalog metrics
   const [totalProducts, orderAgg, recentProducts] = await Promise.all([
     Product.countDocuments({ storeId: store.id, isDeleted: false }),
     Order.aggregate([
@@ -159,6 +198,19 @@ export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: R
   sendSuccess(res, result);
 });
 
+/**
+ * Controller: Update Seller Application / Store Status (Approve / Reject / Suspend)
+ *
+ * 1. Inputs Extracted:
+ *    - req.params.id: Store ID
+ *    - req.body: status ("pending" | "approved" | "rejected" | "suspended"), rejectionReason
+ * 2. Database Operation:
+ *    - Store.findByIdAndUpdate(id, updateFields, { new: true })
+ *    - Updates user role in "user" collection to "seller" or "customer"
+ *    - Creates an in-app notification for the seller
+ * 3. Response Sent:
+ *    - HTTP 200: Updated store document with status message
+ */
 export const updateSellerStatus = asyncHandler(async (req: Request, res: Response) => {
   const { status, rejectionReason } = req.body as {
     status: "pending" | "approved" | "rejected" | "suspended";
@@ -176,7 +228,7 @@ export const updateSellerStatus = asyncHandler(async (req: Request, res: Respons
   const store = await Store.findByIdAndUpdate(req.params.id, updateFields, { new: true });
   if (!store) throw ApiError.notFound("Store not found");
 
-  // Sync role to better-auth's `user` collection
+  // Sync role to better-auth's user collection
   try {
     const db = mongoose.connection.db;
     if (db) {
@@ -232,6 +284,16 @@ export const updateSellerStatus = asyncHandler(async (req: Request, res: Respons
   sendSuccess(res, store.toJSON(), `Store status updated to ${status}`);
 });
 
+/**
+ * Controller: List Reported Reviews For Moderation
+ *
+ * 1. Inputs Extracted:
+ *    - None (admin authenticated)
+ * 2. Database Operation:
+ *    - Review.find({ reported: true }).sort({ createdAt: -1 })
+ * 3. Response Sent:
+ *    - HTTP 200: Raw array of reported reviews
+ */
 export const listReportedReviews = asyncHandler(async (_req: Request, res: Response) => {
   const reviews = await Review.find({ reported: true }).sort({ createdAt: -1 });
   res.status(200).json(reviews);

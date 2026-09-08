@@ -18,71 +18,7 @@ export const getAuditLogs = asyncHandler(async (req: Request, res: Response) => 
     ];
   }
 
-  let logs = await AuditLog.find(filter).sort({ createdAt: -1 }).limit(100);
-
-  if (logs.length === 0) {
-    logs = await AuditLog.create([
-      {
-        actorId: "usr-admin-1",
-        actorName: "Farhad (Platform Admin)",
-        role: "admin",
-        action: "APPROVED_SELLER",
-        resource: "Store",
-        resourceId: "store-tech-zone-9",
-        status: "success",
-        ip: "103.145.12.84",
-        details: { storeName: "ElectroZone Official", documentsVerified: true },
-        createdAt: new Date(Date.now() - 35 * 60 * 1000),
-      },
-      {
-        actorId: "usr-admin-1",
-        actorName: "Farhad (Platform Admin)",
-        role: "admin",
-        action: "MODERATED_PRODUCT",
-        resource: "Product",
-        resourceId: "prod-gadget-99",
-        status: "success",
-        ip: "103.145.12.84",
-        details: { productTitle: "Wireless Gaming Mouse RGB", decision: "approved" },
-        createdAt: new Date(Date.now() - 90 * 60 * 1000),
-      },
-      {
-        actorId: "usr-seller-44",
-        actorName: "SoundMaster BD (Seller)",
-        role: "seller",
-        action: "UPDATED_INVENTORY",
-        resource: "Product",
-        resourceId: "prod-headphone-12",
-        status: "success",
-        ip: "103.145.12.92",
-        details: { newStock: 45, price: 8900 },
-        createdAt: new Date(Date.now() - 3 * 3600 * 1000),
-      },
-      {
-        actorId: "usr-admin-1",
-        actorName: "Farhad (Platform Admin)",
-        role: "admin",
-        action: "UPDATED_CATEGORY",
-        resource: "Category",
-        resourceId: "cat-electronics",
-        status: "success",
-        ip: "103.145.12.84",
-        details: { categoryName: "Electronics & Audio", featured: true },
-        createdAt: new Date(Date.now() - 6 * 3600 * 1000),
-      },
-      {
-        actorId: "system",
-        actorName: "ShopNest Security Sentinel",
-        role: "system",
-        action: "AUTO_RATE_LIMIT_TRIGGERED",
-        resource: "Security",
-        status: "warning",
-        ip: "185.220.101.44",
-        details: { reason: "Subnet burst threshold reached (>200 req/min)" },
-        createdAt: new Date(Date.now() - 10 * 3600 * 1000),
-      },
-    ]);
-  }
+  const logs = await AuditLog.find(filter).sort({ createdAt: -1 }).limit(100);
 
   sendSuccess(res, logs);
 });

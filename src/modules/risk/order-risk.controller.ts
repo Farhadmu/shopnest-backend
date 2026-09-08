@@ -5,6 +5,10 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 
+/**
+ * Helper: Computes rule-based fraud and risk scores for an order.
+ * Considers high cart value, cash-on-delivery, bulk quantities, and payment anomalies.
+ */
 function assessRisk(order: any) {
   let score = 10;
   const factors: { name: string; description: string; weight: number }[] = [];
@@ -72,6 +76,18 @@ function assessRisk(order: any) {
   };
 }
 
+/**
+ * Controller: Get Order Risk Assessment
+ *
+ * 1. Inputs Extracted:
+ *    - req.params.orderId: Order ID to look up
+ *    - req.user: User session for authorization checks
+ * 2. Database Operation:
+ *    - OrderRisk.findOne({ orderId })
+ *    - Order.findById(orderId) to verify access rights
+ * 3. Response Sent:
+ *    - HTTP 200: OrderRisk document { orderId, riskLevel, riskScore, factors, ... }
+ */
 export const getOrderRisk = asyncHandler(async (req: Request, res: Response) => {
   const { orderId } = req.params;
   const risk = await OrderRisk.findOne({ orderId });
@@ -92,6 +108,18 @@ export const getOrderRisk = asyncHandler(async (req: Request, res: Response) => 
   sendSuccess(res, risk);
 });
 
+/**
+ * Controller: Assess / Re-assess Order Risk (Admin Only)
+ *
+ * 1. Inputs Extracted:
+ *    - req.body.orderId: ID of the order to evaluate
+ *    - req.user: Must have "admin" role
+ * 2. Database Operation:
+ *    - Order.findById(orderId)
+ *    - OrderRisk.findOneAndUpdate({ orderId }, riskData, { new: true, upsert: true })
+ * 3. Response Sent:
+ *    - HTTP 200: Updated OrderRisk document with "Risk assessment completed" message
+ */
 export const assessOrderRisk = asyncHandler(async (req: Request, res: Response) => {
   const { orderId } = req.body as { orderId: string };
 

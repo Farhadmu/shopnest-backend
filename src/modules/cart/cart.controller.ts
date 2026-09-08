@@ -1,19 +1,25 @@
 import { Request, Response } from "express";
-import { Cart, ICart, toCartResponse } from "./cart.model";
+import { Cart, ICart } from "./cart.model";
 import { Product } from "../products/product.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { ApiError } from "../../utils/api-error";
 
-/** Collapses historic duplicate product rows into one line item per product. */
+/**
+ * Helper: Deduplicates items in a cart so each productId only appears once,
+ * merging quantities together if duplicates exist.
+ */
 async function normalizeCartItems(cart: ICart & { save: () => Promise<unknown> }) {
   const mergedItems = new Map<string, { productId: string; quantity: number; price: number }>();
 
   for (const item of cart.items) {
     const productId = String(item.productId);
     const existing = mergedItems.get(productId);
-    mergedItems.set(productId, existing
-      ? { ...existing, quantity: existing.quantity + item.quantity, price: item.price }
-      : { productId, quantity: item.quantity, price: item.price });
+    mergedItems.set(
+      productId,
+      existing
+        ? { ...existing, quantity: existing.quantity + item.quantity, price: item.price }
+        : { productId, quantity: item.quantity, price: item.price }
+    );
   }
 
   if (mergedItems.size !== cart.items.length) {
@@ -22,13 +28,22 @@ async function normalizeCartItems(cart: ICart & { save: () => Promise<unknown> }
   }
 }
 
+/**
+ * Helper: Retrieves the user's active cart from MongoDB or creates an empty one.
+ */
 async function getOrCreateCart(userId: string) {
   let cart = await Cart.findOne({ userId });
-  if (!cart) cart = await Cart.create({ userId, items: [] });
+  if (!cart) {
+    cart = await Cart.create({ userId, items: [] });
+  }
   await normalizeCartItems(cart);
   return cart;
 }
 
+/**
+ * Helper: Enriches cart items with live product details (title, images, stock, category)
+ * and computes the subtotal. Matches the frontend's expected Cart response shape.
+ */
 async function buildPopulatedCartResponse(cart: any) {
   const productIds = cart.items.map((i: any) => i.productId);
   const products = await Product.find({ _id: { $in: productIds } }).lean();
@@ -55,12 +70,36 @@ async function buildPopulatedCartResponse(cart: any) {
   };
 }
 
+/**
+ * Controller: Get User's Cart
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: ID of the logged-in user
+ * 2. Database Operation:
+ *    - Cart.findOne({ userId }) (or Cart.create if not yet created)
+ *    - Product.find({ _id: { $in: productIds } }) to enrich items with real-time product info
+ * 3. Response Sent:
+ *    - HTTP 200: { items: [...enrichedItems], subtotal: number }
+ */
 export const getCart = asyncHandler(async (req: Request, res: Response) => {
   const cart = await getOrCreateCart(req.user!.id);
   const response = await buildPopulatedCartResponse(cart);
   res.status(200).json(response);
 });
 
+/**
+ * Controller: Add Item to Cart
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Logged-in user ID
+ *    - req.body.productId: ID of the product to add
+ *    - req.body.quantity: Number of units to add (default >= 1)
+ * 2. Database Operation:
+ *    - Product.findOne({ _id: productId, isDeleted: false, status: "approved" }) to verify availability & stock
+ *    - Cart.findOne / Cart.create, update item quantity, cart.save()
+ * 3. Response Sent:
+ *    - HTTP 200: { items: [...enrichedItems], subtotal: number }
+ */
 export const addCartItem = asyncHandler(async (req: Request, res: Response) => {
   const { productId, quantity } = req.body as { productId: string; quantity: number };
 
@@ -84,6 +123,19 @@ export const addCartItem = asyncHandler(async (req: Request, res: Response) => {
   res.status(200).json(response);
 });
 
+/**
+ * Controller: Update Cart Item Quantity
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Logged-in user ID
+ *    - req.params.productId: Target product ID in cart
+ *    - req.body.quantity: New quantity value
+ * 2. Database Operation:
+ *    - Product.findOne to check stock limit
+ *    - Cart.findOne, update quantity in cart.items, cart.save()
+ * 3. Response Sent:
+ *    - HTTP 200: { items: [...enrichedItems], subtotal: number }
+ */
 export const updateCartItem = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
   const { quantity } = req.body as { quantity: number };
@@ -97,15 +149,29 @@ export const updateCartItem = asyncHandler(async (req: Request, res: Response) =
 
   item.quantity = quantity;
   await cart.save();
+
   const response = await buildPopulatedCartResponse(cart);
   res.status(200).json(response);
 });
 
+/**
+ * Controller: Remove Item From Cart
+ *
+ * 1. Inputs Extracted:
+ *    - req.user.id: Logged-in user ID
+ *    - req.params.productId: Product ID to remove
+ * 2. Database Operation:
+ *    - Cart.findOne, filter out productId from cart.items, cart.save()
+ * 3. Response Sent:
+ *    - HTTP 200: { items: [...enrichedItems], subtotal: number }
+ */
 export const removeCartItem = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
   const cart = await getOrCreateCart(req.user!.id);
+
   cart.items = cart.items.filter((i) => i.productId !== productId);
   await cart.save();
+
   const response = await buildPopulatedCartResponse(cart);
   res.status(200).json(response);
 });

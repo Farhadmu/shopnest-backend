@@ -7,10 +7,10 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 
-/** Resolves a category name to itself plus the names of every descendant
- * category, so filtering by a parent (e.g. "Electronics") also returns
- * products filed under its subcategories (e.g. "Phones", "Laptops").
- * Falls back to just the given name if it isn't a known category. */
+/**
+ * Helper: Resolves a category name to itself plus all subcategory names.
+ * For example, filtering by "Electronics" will also match "Phones" and "Laptops".
+ */
 async function resolveCategoryNames(categoryName: string): Promise<string[]> {
   const root = await Category.findOne({
     $or: [
@@ -20,10 +20,12 @@ async function resolveCategoryNames(categoryName: string): Promise<string[]> {
   })
     .select("_id name")
     .lean();
+
   if (!root) return [categoryName];
 
   const allCategories = await Category.find().select("_id name parent").lean();
   const byParent = new Map<string, { _id: unknown; name: string }[]>();
+
   allCategories.forEach((c) => {
     const parentId = c.parent ? String(c.parent) : "";
     if (!byParent.has(parentId)) byParent.set(parentId, []);
@@ -32,6 +34,7 @@ async function resolveCategoryNames(categoryName: string): Promise<string[]> {
 
   const names = [root.name];
   const queue = [String(root._id)];
+
   while (queue.length) {
     const id = queue.shift()!;
     const children = byParent.get(id) || [];
@@ -40,14 +43,27 @@ async function resolveCategoryNames(categoryName: string): Promise<string[]> {
       queue.push(String(child._id));
     }
   }
+
   return names;
 }
 
-/** GET /products - public catalog, filterable + paginated. Returns a raw array to match the frontend's Product[] contract, with pagination metadata in headers. */
+/**
+ * Controller: List Products (Public Catalog & Search)
+ *
+ * 1. Inputs Extracted:
+ *    - req.query: page, limit, search, category, storeId, minPrice, maxPrice, sort, status
+ *    - req.user: attached if user is logged in (used for role-based status filtering)
+ * 2. Database Operation:
+ *    - Product.find(filter).sort(...).skip(...).limit(...)
+ *    - Product.countDocuments(filter)
+ * 3. Response Sent:
+ *    - HTTP 200: Raw array of product objects (Product[]) to match frontend contract
+ *    - Pagination headers: X-Total-Count, X-Page, X-Limit
+ */
 export const listProducts = asyncHandler(async (req: Request, res: Response) => {
-  const { page, limit, search, category, storeId, minPrice, maxPrice, sort, status } = req.query as unknown as {
-    page: number;
-    limit: number;
+  const { page = 1, limit = 20, search, category, storeId, minPrice, maxPrice, sort, status } = req.query as unknown as {
+    page?: number;
+    limit?: number;
     search?: string;
     category?: string;
     storeId?: string;
@@ -58,32 +74,36 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   };
 
   const filter: FilterQuery<IProduct> = { isDeleted: false };
-  
-  // Public callers only ever see approved products; admins/sellers may filter by status.
+
+  // Public visitors see approved products; admins & sellers can filter by status
   filter.status = req.user?.role === "admin" || req.user?.role === "seller" ? status ?? "approved" : "approved";
-  
+
+  // Category filter with subcategory expansion
   if (category) {
     const names = await resolveCategoryNames(category);
     const regexes = names.map((n) => new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"));
     filter.category = regexes.length > 1 ? { $in: regexes } : regexes[0];
   }
 
+  // Filter by store ID
   if (storeId) filter.storeId = storeId;
-  
+
+  // Price range filters
   if (minPrice || maxPrice) {
     filter.price = {};
     if (minPrice) filter.price.$gte = minPrice;
     if (maxPrice) filter.price.$lte = maxPrice;
   }
 
- 
+  // Text search query
   if (search) {
     filter.$or = [
-      { $text: { $search: search } }, 
-      { category: { $regex: search, $options: "i" } }, 
+      { $text: { $search: search } },
+      { category: { $regex: search, $options: "i" } },
     ];
   }
 
+  // Sorting options
   const sortMap: Record<string, Record<string, 1 | -1>> = {
     newest: { createdAt: -1 },
     price_asc: { price: 1 },
@@ -93,34 +113,63 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   };
   const sortStage = sortMap[sort ?? "newest"] ?? sortMap.newest;
 
+  // Execute database query and document count in parallel
   const [items, total] = await Promise.all([
     Product.find(filter)
       .sort(sortStage)
-      .skip((page - 1) * limit)
-      .limit(limit),
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit)),
     Product.countDocuments(filter),
   ]);
 
+  // Set pagination headers expected by frontend
   res.setHeader("X-Total-Count", String(total));
   res.setHeader("X-Page", String(page));
   res.setHeader("X-Limit", String(limit));
   res.setHeader("Access-Control-Expose-Headers", "X-Total-Count, X-Page, X-Limit");
+
   res.status(200).json(items);
 });
 
+/**
+ * Controller: Get Single Product By ID
+ *
+ * 1. Inputs Extracted:
+ *    - req.params.id: Target product ID
+ *    - req.user: Logged-in user information (optional)
+ * 2. Database Operation:
+ *    - Product.findOne({ _id: id, isDeleted: false })
+ *    - Increments views counter in the background
+ * 3. Response Sent:
+ *    - HTTP 200: Single Product JSON object
+ */
 export const getProductById = asyncHandler(async (req: Request, res: Response) => {
   const product = await Product.findOne({ _id: req.params.id, isDeleted: false });
   if (!product) throw ApiError.notFound("Product not found");
 
+  // Non-admins and non-owners cannot view unapproved products
   if (product.status !== "approved" && req.user?.role !== "admin" && req.user?.id !== product.sellerId) {
     throw ApiError.notFound("Product not found");
   }
 
+  // Increment view counter without blocking the response
   Product.findByIdAndUpdate(product.id, { $inc: { views: 1 } }).catch(() => undefined);
 
   sendSuccess(res, product.toJSON());
 });
 
+/**
+ * Controller: Create New Product (Sellers & Admins)
+ *
+ * 1. Inputs Extracted:
+ *    - req.body: title, description, price, discountPrice, category, stock, images, specifications, tags
+ *    - req.user: Authenticated seller/admin user (provides owner ID)
+ * 2. Database Operation:
+ *    - Store.findOne({ ownerId }) to verify active store or auto-create one
+ *    - Product.create(...) to save the new product
+ * 3. Response Sent:
+ *    - HTTP 201: Created product object with success message
+ */
 export const createProduct = asyncHandler(async (req: Request, res: Response) => {
   let store = await Store.findOne({ ownerId: req.user!.id });
   if (!store) {
@@ -142,9 +191,13 @@ export const createProduct = asyncHandler(async (req: Request, res: Response) =>
   }
 
   const productData = { ...req.body };
+
+  // Sanitize discount price: must be positive and less than the original price
   if (productData.discountPrice !== undefined && (productData.discountPrice <= 0 || productData.discountPrice >= productData.price)) {
     delete productData.discountPrice;
   }
+
+  // Format specifications dictionary
   if (productData.specifications && typeof productData.specifications === "object") {
     const stringSpecs: Record<string, string> = {};
     for (const [key, val] of Object.entries(productData.specifications)) {
@@ -163,6 +216,19 @@ export const createProduct = asyncHandler(async (req: Request, res: Response) =>
   sendSuccess(res, product.toJSON(), "Product created", 201);
 });
 
+/**
+ * Controller: Update Product
+ *
+ * 1. Inputs Extracted:
+ *    - req.params.id: ID of the product to update
+ *    - req.body: Updated product fields (title, price, stock, images, etc.)
+ *    - req.user: Authenticated user (checks ownership or admin role)
+ * 2. Database Operation:
+ *    - Product.findOne({ _id: id, isDeleted: false })
+ *    - product.save()
+ * 3. Response Sent:
+ *    - HTTP 200: Updated product object with success message
+ */
 export const updateProduct = asyncHandler(async (req: Request, res: Response) => {
   const product = await Product.findOne({ _id: req.params.id, isDeleted: false });
   if (!product) throw ApiError.notFound("Product not found");
@@ -177,6 +243,18 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response) =>
   sendSuccess(res, product.toJSON(), "Product updated");
 });
 
+/**
+ * Controller: Soft Delete Product
+ *
+ * 1. Inputs Extracted:
+ *    - req.params.id: ID of the product to delete
+ *    - req.user: Authenticated user (checks ownership or admin role)
+ * 2. Database Operation:
+ *    - Product.findOne({ _id: id, isDeleted: false })
+ *    - product.isDeleted = true; product.save()
+ * 3. Response Sent:
+ *    - HTTP 200: { success: true } with "Product deleted" message
+ */
 export const deleteProduct = asyncHandler(async (req: Request, res: Response) => {
   const product = await Product.findOne({ _id: req.params.id, isDeleted: false });
   if (!product) throw ApiError.notFound("Product not found");
@@ -191,6 +269,17 @@ export const deleteProduct = asyncHandler(async (req: Request, res: Response) =>
   sendSuccess(res, { success: true }, "Product deleted");
 });
 
+/**
+ * Controller: Moderate Product (Admin Only)
+ *
+ * 1. Inputs Extracted:
+ *    - req.params.id: ID of the product to moderate
+ *    - req.body.status: New moderation status ("pending" | "approved" | "rejected")
+ * 2. Database Operation:
+ *    - Product.findByIdAndUpdate(id, { status }, { new: true })
+ * 3. Response Sent:
+ *    - HTTP 200: Updated product object with status message
+ */
 export const moderateProduct = asyncHandler(async (req: Request, res: Response) => {
   const { status } = req.body as { status: "pending" | "approved" | "rejected" };
   const product = await Product.findByIdAndUpdate(req.params.id, { status }, { new: true });

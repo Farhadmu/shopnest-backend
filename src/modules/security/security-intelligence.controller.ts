@@ -36,42 +36,7 @@ export const getSecurityOverview = asyncHandler(async (req: Request, res: Respon
 export const getActiveSessions = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id || "demo-user";
 
-  let sessions = await DeviceSession.find({ userId, status: "active" }).sort({ lastActiveAt: -1 });
-
-  if (sessions.length === 0) {
-    // Seed current and prior active session for realistic experience
-    const seeded = await DeviceSession.create([
-      {
-        userId,
-        sessionToken: "tok-curr-9921",
-        deviceName: "Chrome on Windows 11",
-        deviceType: "desktop",
-        browser: "Chrome 128.0",
-        os: "Windows 11 (64-bit)",
-        ipAddress: "103.145.12.84",
-        locationCity: "Dhaka, Bangladesh",
-        isCurrentSession: true,
-        isTrusted: true,
-        status: "active",
-        lastActiveAt: new Date(),
-      },
-      {
-        userId,
-        sessionToken: "tok-mob-4412",
-        deviceName: "ShopNest Mobile on Samsung Galaxy S24",
-        deviceType: "mobile",
-        browser: "ShopNest Android App",
-        os: "Android 14",
-        ipAddress: "103.145.12.90",
-        locationCity: "Dhaka, Bangladesh",
-        isCurrentSession: false,
-        isTrusted: true,
-        status: "active",
-        lastActiveAt: new Date(Date.now() - 3 * 3600 * 1000),
-      },
-    ]);
-    sessions = seeded;
-  }
+  const sessions = await DeviceSession.find({ userId, status: "active" }).sort({ lastActiveAt: -1 });
 
   sendSuccess(res, sessions);
 });

@@ -3,7 +3,8 @@ import { applyToJSON } from "../../utils/model-plugins";
 
 export type CouponScope = "all-products" | "specific-category" | "specific-products";
 export type CouponPlacement = "store" | "homepage" | "private";
-export type CouponApprovalStatus = "approved" | "pending" | "rejected";
+export type CouponApprovalStatus = "approved" | "pending" | "rejected" | "reported";
+export type CouponHomepageStatus = "running" | "queued" | "expired";
 
 export interface ICoupon {
   _id: Types.ObjectId;
@@ -41,6 +42,14 @@ export interface ICoupon {
   durationDays?: number;
   approvedAt?: Date;
 
+  /** Homepage Coupon Queue Engine: "running" (one of the 3 live slots),
+   *  "queued" (approved, waiting for a running slot to free up), or
+   *  "expired" (finished; kept for fallback visibility until replaced). */
+  homepageStatus?: CouponHomepageStatus;
+
+  /** Queue position (1-based) for queued coupons. */
+  queuePosition?: number;
+
   usageLimit?: number;
   usedCount: number;
   isActive: boolean;
@@ -66,7 +75,7 @@ const couponSchema = new Schema<ICoupon>(
     productIds: { type: [String], default: [] },
 
     placement: { type: String, enum: ["store", "homepage", "private"], default: "store", index: true },
-    approvalStatus: { type: String, enum: ["approved", "pending", "rejected"], default: "approved", index: true },
+    approvalStatus: { type: String, enum: ["approved", "pending", "rejected", "reported"], default: "approved", index: true },
     rejectionNote: { type: String },
 
     createdBy: { type: String, required: true, index: true },
@@ -78,6 +87,10 @@ const couponSchema = new Schema<ICoupon>(
     promoStartDate: { type: Date },
     durationDays: { type: Number },
     approvedAt: { type: Date },
+
+    homepageStatus: { type: String, enum: ["running", "queued", "expired"], index: true },
+
+    queuePosition: { type: Number },
 
     usageLimit: { type: Number },
     usedCount: { type: Number, default: 0 },

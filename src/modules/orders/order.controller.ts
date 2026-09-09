@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { Order } from "./order.model";
 import { Cart } from "../cart/cart.model";
 import { Product } from "../products/product.model";
-import { Coupon, computeDiscount } from "../coupons/coupon.model";
+import { Coupon, computeDiscount, isFreeShippingCouponApplicable } from "../coupons/coupon.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
@@ -71,19 +71,30 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
 
   // Apply optional coupon discount
   let discount = 0;
+  let waiveDeliveryFee = false;
   if (couponCode) {
     const coupon = await Coupon.findOne({ code: couponCode.toUpperCase() });
     if (!coupon) throw ApiError.badRequest("Invalid coupon code");
 
-    discount = computeDiscount(coupon, subtotal);
-    if (discount <= 0) throw ApiError.badRequest("Coupon is not applicable to this order");
+    if (coupon.type === "free-shipping") {
+      // Free-shipping coupons don't discount the subtotal — they waive the
+      // delivery fee below instead.
+      if (!isFreeShippingCouponApplicable(coupon, subtotal)) {
+        throw ApiError.badRequest("Coupon is not applicable to this order");
+      }
+      waiveDeliveryFee = true;
+    } else {
+      discount = computeDiscount(coupon, subtotal);
+      if (discount <= 0) throw ApiError.badRequest("Coupon is not applicable to this order");
+    }
 
     coupon.usedCount += 1;
     await coupon.save();
   }
 
-  // Delivery fee rules: 60 inside Dhaka, 120 outside
-  const deliveryFee = division === "Dhaka" ? 60 : 120;
+  // Delivery fee rules: 60 inside Dhaka, 120 outside — waived entirely by a
+  // valid, applicable free-shipping coupon.
+  const deliveryFee = waiveDeliveryFee ? 0 : division === "Dhaka" ? 60 : 120;
   const totalAmount = Math.round((subtotal - discount + deliveryFee) * 100) / 100;
 
   // Create the order document

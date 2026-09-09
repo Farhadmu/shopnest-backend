@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { FilterQuery } from "mongoose";
 import { Coupon, ICoupon, computeDiscount } from "./coupon.model";
+import { Store } from "../sellers/store.model";
 import { Category } from "../categories/category.model";
 import { getSettingsSingleton } from "../settings/admin-settings.model";
 import { createNotification } from "../notifications/notification.service";
@@ -117,7 +118,7 @@ async function recomputeQueuePositions(): Promise<void> {
 
 /**
  * Homepage Coupon Queue Engine:
- * - Expires running coupons whose expiresAt has passed
+ * - Expires running coupons whose expiresAt has passed, or whose usage limit is exhausted
  * - Promotes the oldest queued coupon into each freed running slot
  * - Fallback: if no queued coupon exists, keeps the expired coupon visible ("running")
  *   until a replacement arrives
@@ -133,10 +134,14 @@ async function runHomepageQueueEngine(): Promise<void> {
     homepageStatus: "running",
   });
 
-  // Find expired runners
-  const expiredRunners = runningCoupons.filter((c) => c.expiresAt && c.expiresAt <= now);
+  // Find expired runners (past their expiresAt, or their usage limit is exhausted)
+  const expiredRunners = runningCoupons.filter(
+    (c) =>
+      (c.expiresAt && c.expiresAt <= now) ||
+      (c.usageLimit != null && c.usedCount >= c.usageLimit)
+  );
 
-  // Process each expired runner
+  // Process each expired/exhausted runner
   for (const expired of expiredRunners) {
     // Find the oldest queued coupon
     const nextQueued = await Coupon.findOne({
@@ -494,22 +499,55 @@ export const validateCoupon = asyncHandler(async (req: Request, res: Response) =
 
 /**
  * GET /coupons/public/homepage (aliased at GET /homepage-coupons) - Queue Engine
- * output: always returns up to 3 currently-"running" homepage coupons. Advances
- * the queue first (expires finished runners, promotes the oldest queued coupon,
- * falls back to keeping an expired runner visible if nothing is queued).
+ * output: returns up to 3 homepage coupons. Advances the queue first (expires
+ * finished/exhausted runners, promotes the oldest queued coupon, falls back to
+ * keeping an expired runner visible if nothing is queued).
+ *
+ * The result is "running" coupons first, topped up with "expired" fallback
+ * coupons (per the model's fallback-visibility contract) only to fill any
+ * empty slots left after promotion — so a slot that already has a running
+ * coupon never also shows its stale fallback. Each coupon is enriched with
+ * its seller's storeName/logo for display.
  */
 export const getPublicHomepageCoupons = asyncHandler(async (_req: Request, res: Response) => {
   await runHomepageQueueEngine();
 
-  const coupons = await Coupon.find({
+  const running = await Coupon.find({
     placement: "homepage",
     approvalStatus: "approved",
     homepageStatus: "running",
-  })
-    .sort({ startsAt: 1 })
-    .limit(HOMEPAGE_RUNNING_SLOTS);
+  }).sort({ startsAt: 1 });
 
-  res.status(200).json(coupons);
+  let coupons = running;
+  const remainingSlots = HOMEPAGE_RUNNING_SLOTS - running.length;
+  if (remainingSlots > 0) {
+    const fallbackExpired = await Coupon.find({
+      placement: "homepage",
+      approvalStatus: "approved",
+      homepageStatus: "expired",
+    })
+      .sort({ expiresAt: -1 })
+      .limit(remainingSlots);
+    coupons = [...running, ...fallbackExpired];
+  }
+  coupons = coupons.slice(0, HOMEPAGE_RUNNING_SLOTS);
+
+  // Batch-fetch each coupon's seller Store so we can attach storeName/logo
+  // without an N+1 query per coupon.
+  const sellerIds = [...new Set(coupons.map((c) => c.createdBy))];
+  const stores = sellerIds.length > 0 ? await Store.find({ ownerId: { $in: sellerIds } }) : [];
+  const storeByOwnerId = new Map(stores.map((s) => [s.ownerId, s]));
+
+  const enriched = coupons.map((coupon) => {
+    const store = storeByOwnerId.get(coupon.createdBy);
+    return {
+      ...coupon.toJSON(),
+      storeName: store?.storeName,
+      logo: store?.logo,
+    };
+  });
+
+  res.status(200).json(enriched);
 });
 
 /** GET /coupons/category-limit - returns the platform category limit set by admin. */

@@ -6,10 +6,12 @@ export type CouponPlacement = "store" | "homepage" | "private";
 export type CouponApprovalStatus = "approved" | "pending" | "rejected" | "reported";
 export type CouponHomepageStatus = "running" | "queued" | "expired";
 
+export type CouponType = "percentage" | "fixed" | "free-shipping";
+
 export interface ICoupon {
   _id: Types.ObjectId;
   code: string;
-  type: "percentage" | "fixed";
+  type: CouponType;
   value: number;
   minPurchase: number;
   maxDiscount?: number;
@@ -60,7 +62,7 @@ export interface ICoupon {
 const couponSchema = new Schema<ICoupon>(
   {
     code: { type: String, required: true, unique: true, uppercase: true, trim: true, index: true },
-    type: { type: String, enum: ["percentage", "fixed"], required: true },
+    type: { type: String, enum: ["percentage", "fixed", "free-shipping"], required: true },
     value: { type: Number, required: true, min: 0 },
     minPurchase: { type: Number, default: 0 },
     maxDiscount: { type: Number },
@@ -103,16 +105,36 @@ applyToJSON(couponSchema);
 
 export const Coupon = model<ICoupon>("Coupon", couponSchema);
 
-/** Computes the discount amount for a subtotal; throws-free, returns 0 if invalid/inapplicable. */
+/**
+ * Shared eligibility checks used by both subtotal discounting and free-shipping
+ * waivers: active, approved, within the start/expiry window, under the usage
+ * limit, and the subtotal meets minPurchase.
+ */
+export function isCouponEligible(coupon: ICoupon, subtotal: number): boolean {
+  if (!coupon.isActive) return false;
+  if (coupon.approvalStatus !== "approved") return false;
+  if (coupon.startsAt && coupon.startsAt > new Date()) return false;
+  if (coupon.expiresAt && coupon.expiresAt < new Date()) return false;
+  if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) return false;
+  if (subtotal < coupon.minPurchase) return false;
+  return true;
+}
+
+/**
+ * Computes the discount amount for a subtotal; throws-free, returns 0 if invalid/inapplicable.
+ * "free-shipping" coupons discount nothing on the subtotal — they waive the delivery
+ * fee instead (see isFreeShippingCouponApplicable / the checkout/order module).
+ */
 export function computeDiscount(coupon: ICoupon, subtotal: number): number {
-  if (!coupon.isActive) return 0;
-  if (coupon.approvalStatus !== "approved") return 0;
-  if (coupon.startsAt && coupon.startsAt > new Date()) return 0;
-  if (coupon.expiresAt && coupon.expiresAt < new Date()) return 0;
-  if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) return 0;
-  if (subtotal < coupon.minPurchase) return 0;
+  if (!isCouponEligible(coupon, subtotal)) return 0;
+  if (coupon.type === "free-shipping") return 0;
 
   let discount = coupon.type === "percentage" ? (subtotal * coupon.value) / 100 : coupon.value;
   if (coupon.maxDiscount) discount = Math.min(discount, coupon.maxDiscount);
   return Math.min(discount, subtotal);
+}
+
+/** Whether a coupon is a valid, currently-usable free-shipping coupon for this subtotal. */
+export function isFreeShippingCouponApplicable(coupon: ICoupon, subtotal: number): boolean {
+  return coupon.type === "free-shipping" && isCouponEligible(coupon, subtotal);
 }

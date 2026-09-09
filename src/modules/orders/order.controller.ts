@@ -3,7 +3,7 @@ import { Order } from "./order.model";
 import { Cart } from "../cart/cart.model";
 import { Product } from "../products/product.model";
 import { ProductLifecycle } from "../customer/customer-intelligence.model";
-import { Coupon, computeDiscount } from "../coupons/coupon.model";
+import { Coupon, computeDiscount, isFreeShippingCouponApplicable } from "../coupons/coupon.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
@@ -38,6 +38,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       productId: product.id,
       storeId: product.storeId,
       sellerId: product.sellerId,
+      category: product.category,
       title: product.title,
       quantity: item.quantity,
       price,
@@ -47,16 +48,29 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   subtotal = Math.round(subtotal * 100) / 100;
 
   let discount = 0;
+  let freeShipping = false;
   if (couponCode) {
     const coupon = await Coupon.findOne({ code: couponCode.toUpperCase() });
     if (!coupon) throw ApiError.badRequest("Invalid coupon code");
-    discount = computeDiscount(coupon, subtotal);
-    if (discount <= 0) throw ApiError.badRequest("Coupon is not applicable to this order");
+
+    // free-shipping coupons don't reduce the product subtotal — they waive the
+    // delivery fee. Validate eligibility through the shipping path; the discount
+    // stays 0 and deliveryFee is zeroed below.
+    if (coupon.type === "free-shipping") {
+      if (!isFreeShippingCouponApplicable(coupon, orderItems)) {
+        throw ApiError.badRequest("Coupon is not applicable to this order");
+      }
+      freeShipping = true;
+    } else {
+      discount = computeDiscount(coupon, orderItems);
+      if (discount <= 0) throw ApiError.badRequest("Coupon is not applicable to this order");
+    }
+
     coupon.usedCount += 1;
     await coupon.save();
   }
 
-  const deliveryFee = division === "Dhaka" ? 60 : 120;
+  const deliveryFee = freeShipping ? 0 : division === "Dhaka" ? 60 : 120;
   const totalAmount = Math.round((subtotal - discount + deliveryFee) * 100) / 100;
 
   const order = await Order.create({

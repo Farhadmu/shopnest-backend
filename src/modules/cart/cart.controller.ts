@@ -59,6 +59,8 @@ async function buildPopulatedCartResponse(cart: any) {
       title: p?.title ?? `Product #${i.productId}`,
       images: p?.images ?? [],
       category: p?.category ?? "General",
+      sellerId: p?.sellerId ?? "",
+      storeId: p?.storeId ?? "",
       stock: p?.stock ?? 10,
     };
   });

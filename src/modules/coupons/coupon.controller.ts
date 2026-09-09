@@ -266,6 +266,12 @@ export const createCoupon = asyncHandler(async (req: Request, res: Response) => 
 
   const role = req.user!.role as "seller" | "admin";
 
+  if (role === "admin" && req.body.placement === "homepage") {
+    throw ApiError.badRequest(
+      "Admins cannot create homepage-placement coupons — only sellers can request homepage placement."
+    );
+  }
+
   if (role === "seller") {
     await assertCategoryLimitNotExceeded(req.body, req.user!.id);
     await assertCategoriesNotLockedToOtherSeller(req.body, req.user!.id);

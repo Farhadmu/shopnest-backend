@@ -36,5 +36,6 @@ router.patch(
   validate({ body: reportCouponSchema }),
   ctrl.reportCoupon
 );
+router.patch("/:id/resolve-report", ...requireAuth, requireRole("admin"), ctrl.resolveReportCoupon);
 
 export default router;

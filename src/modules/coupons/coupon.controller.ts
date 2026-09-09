@@ -380,6 +380,38 @@ export const reportCoupon = asyncHandler(async (req: Request, res: Response) => 
   sendSuccess(res, coupon.toJSON(), "Coupon reported and disabled");
 });
 
+/**
+ * PATCH /coupons/:id/resolve-report - admin only. Clears an admin report on a
+ * reported coupon, restoring it to approved/active and removing the report note.
+ * The seller is notified that the report has been resolved.
+ */
+export const resolveReportCoupon = asyncHandler(async (req: Request, res: Response) => {
+  const coupon = await Coupon.findById(req.params.id);
+  if (!coupon) throw ApiError.notFound("Coupon not found");
+  if (coupon.approvalStatus !== "reported") {
+    throw ApiError.badRequest("Only reported coupons can have their report resolved");
+  }
+
+  coupon.approvalStatus = "approved";
+  coupon.isActive = true;
+  coupon.rejectionNote = undefined;
+  await coupon.save();
+
+  await createNotification({
+    userId: coupon.createdBy,
+    recipientType: "seller",
+    type: "coupon",
+    category: "system",
+    priority: "info",
+    source: "admin",
+    title: "Admin Report Resolved",
+    message: `The report on your coupon "${coupon.code}" has been resolved by an admin. The coupon has been restored and is now active again.`,
+    link: "/dashboard/seller/coupons",
+  });
+
+  sendSuccess(res, coupon.toJSON(), "Coupon report resolved");
+});
+
 export const deleteCoupon = asyncHandler(async (req: Request, res: Response) => {
   const coupon = await Coupon.findById(req.params.id);
   if (!coupon) throw ApiError.notFound("Coupon not found");

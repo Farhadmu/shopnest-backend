@@ -51,9 +51,13 @@ async function resolveCategoryNames(categoryName: string): Promise<string[]> {
  * Controller: List Products (Public Catalog & Search)
  *
  * 1. Inputs Extracted:
- *    - req.query: page, limit, search, category, storeId, minPrice, maxPrice, sort, status
+ *    - req.query: page, limit, search, category, storeId, store, rating, minPrice, maxPrice, sort, status
+ *    - store / storeId: comma-separated store slugs or IDs
+ *    - rating: minimum merchant rating (0–5)
  *    - req.user: attached if user is logged in (used for role-based status filtering)
  * 2. Database Operation:
+ *    - Resolves store slugs/IDs to internal store _ids
+ *    - Optionally intersects with stores meeting the minimum rating
  *    - Product.find(filter).sort(...).skip(...).limit(...)
  *    - Product.countDocuments(filter)
  * 3. Response Sent:
@@ -61,16 +65,42 @@ async function resolveCategoryNames(categoryName: string): Promise<string[]> {
  *    - Pagination headers: X-Total-Count, X-Page, X-Limit
  */
 export const listProducts = asyncHandler(async (req: Request, res: Response) => {
-  const { page = 1, limit = 20, search, category, storeId, minPrice, maxPrice, sort, status } = req.query as unknown as {
+  const {
+    page = 1,
+    limit = 12,
+    search,
+    category,
+    storeId,
+    store,
+    sellerId,
+    seller,
+    minPrice,
+    maxPrice,
+    sort,
+    status,
+    productRating,
+    verified,
+    inStock,
+    freeDelivery,
+    aiPick,
+  } = req.query as unknown as {
     page?: number;
     limit?: number;
     search?: string;
     category?: string;
     storeId?: string;
+    store?: string;
+    sellerId?: string;
+    seller?: string;
     minPrice?: number;
     maxPrice?: number;
     sort?: string;
     status?: string;
+    productRating?: string;
+    verified?: string;
+    inStock?: string;
+    freeDelivery?: string;
+    aiPick?: string;
   };
 
   const filter: FilterQuery<IProduct> = { isDeleted: false };
@@ -85,8 +115,97 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
     filter.category = regexes.length > 1 ? { $in: regexes } : regexes[0];
   }
 
-  // Filter by store ID
-  if (storeId) filter.storeId = storeId;
+  // Resolve store filters (supports comma-separated slugs or ObjectId strings)
+  const rawStoreParam = [storeId, store].filter(Boolean).join(",").trim();
+  const ratingParam = req.query.rating as string | undefined;
+  const verifiedParam = req.query.verified as string | undefined;
+
+  if (rawStoreParam || ratingParam || verifiedParam) {
+    let matchingStoreIds: string[] = [];
+
+    if (rawStoreParam) {
+      const ids = rawStoreParam.split(",").map((s) => s.trim()).filter(Boolean);
+      const matchedStores = await Store.find({
+        $or: [
+          { _id: { $in: ids } },
+          { slug: { $in: ids } },
+        ],
+        status: "approved",
+      }).select("_id");
+      matchingStoreIds = matchedStores.map((s) => String(s._id));
+    }
+
+    if (ratingParam) {
+      const minRating = Number(ratingParam);
+      const ratedStores = await Store.find({
+        status: "approved",
+        rating: { $gte: minRating },
+      }).select("_id");
+      const ratedIds = ratedStores.map((s) => String(s._id));
+
+      if (matchingStoreIds.length > 0) {
+        matchingStoreIds = matchingStoreIds.filter((id) => ratedIds.includes(id));
+      } else {
+        matchingStoreIds = ratedIds;
+      }
+    }
+
+    if (verifiedParam === "1") {
+      const verifiedStores = await Store.find({
+        status: "approved",
+        verifiedAt: { $exists: true, $ne: null },
+      }).select("_id");
+      const verifiedIds = verifiedStores.map((s) => String(s._id));
+
+      if (matchingStoreIds.length > 0) {
+        matchingStoreIds = matchingStoreIds.filter((id) => verifiedIds.includes(id));
+      } else {
+        matchingStoreIds = verifiedIds;
+      }
+    }
+
+    if (matchingStoreIds.length > 0) {
+      filter.storeId = { $in: matchingStoreIds };
+    } else {
+      filter.storeId = { $in: [] };
+    }
+  }
+
+  // Resolve seller filters (supports comma-separated seller user IDs or names)
+  const rawSellerParam = [sellerId, seller].filter(Boolean).join(",").trim();
+  if (rawSellerParam) {
+    const sellerValues = rawSellerParam.split(",").map((s) => s.trim()).filter(Boolean);
+    const matchedSellers = await Store.find({
+      $or: [
+        { ownerId: { $in: sellerValues } },
+        { storeName: { $in: sellerValues } },
+      ],
+      status: "approved",
+    }).select("ownerId");
+    const matchedSellerIds = matchedSellers.map((s) => s.ownerId);
+
+    if (matchedSellerIds.length > 0) {
+      filter.sellerId = { $in: matchedSellerIds };
+    } else {
+      filter.sellerId = { $in: [] };
+    }
+  }
+
+  if (productRating) {
+    filter.ratingAvg = { $gte: Number(productRating) };
+  }
+
+  if (inStock === "1") {
+    filter.stock = { $gt: 0 };
+  }
+
+  if (freeDelivery === "1") {
+    filter.freeDelivery = true;
+  }
+
+  if (aiPick === "1") {
+    filter.aiPick = true;
+  }
 
   // Price range filters
   if (minPrice || maxPrice) {
@@ -129,6 +248,107 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   res.setHeader("Access-Control-Expose-Headers", "X-Total-Count, X-Page, X-Limit");
 
   res.status(200).json(items);
+});
+
+/**
+ * Controller: Get Store Options for "Shop by Store" Filter
+ *
+ * Returns approved stores that have at least one approved product, with
+ * their slug, name, rounded rating, and product count.
+ *
+ * 1. Database Operation:
+ *    - Store aggregation with $lookup to count approved products per store
+ * 2. Response Sent:
+ *    - HTTP 200: Array of { id, name, rating, productCount }
+ */
+export const getStoreOptions = asyncHandler(async (req: Request, res: Response) => {
+  const stores = await Store.aggregate([
+    { $match: { status: "approved" } },
+    {
+      $lookup: {
+        from: "products",
+        let: { sid: { $toString: "$_id" } },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$storeId", "$$sid"] },
+                  { $eq: ["$status", "approved"] },
+                  { $eq: ["$isDeleted", false] },
+                ],
+              },
+            },
+          },
+          { $count: "cnt" },
+        ],
+        as: "counts",
+      },
+    },
+    {
+      $addFields: {
+        productCount: { $ifNull: [{ $arrayElemAt: ["$counts.cnt", 0] }, 0] },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        id: "$slug",
+        name: "$storeName",
+        rating: { $round: ["$rating", 1] },
+        productCount: 1,
+      },
+    },
+    { $match: { productCount: { $gt: 0 } } },
+    { $sort: { name: 1 } },
+  ]);
+
+  res.status(200).json(stores);
+});
+
+export const getSellerOptions = asyncHandler(async (req: Request, res: Response) => {
+  const sellers = await Store.aggregate([
+    { $match: { status: "approved" } },
+    {
+      $lookup: {
+        from: "products",
+        let: { sid: { $toString: "$_id" }, oid: "$ownerId" },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$sellerId", "$$oid"] },
+                  { $eq: ["$status", "approved"] },
+                  { $eq: ["$isDeleted", false] },
+                ],
+              },
+            },
+          },
+          { $count: "cnt" },
+        ],
+        as: "counts",
+      },
+    },
+    {
+      $addFields: {
+        productCount: { $ifNull: [{ $arrayElemAt: ["$counts.cnt", 0] }, 0] },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        id: "$ownerId",
+        name: "$storeName",
+        rating: { $round: ["$rating", 1] },
+        productCount: 1,
+      },
+    },
+    { $match: { productCount: { $gt: 0 } } },
+    { $sort: { name: 1 } },
+  ]);
+
+  res.status(200).json(sellers);
 });
 
 /**
@@ -285,4 +505,20 @@ export const moderateProduct = asyncHandler(async (req: Request, res: Response) 
   const product = await Product.findByIdAndUpdate(req.params.id, { status }, { new: true });
   if (!product) throw ApiError.notFound("Product not found");
   sendSuccess(res, product.toJSON(), `Product ${status}`);
+});
+
+export const getTrendingProducts = asyncHandler(async (req: Request, res: Response) => {
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 8));
+
+  const products = await Product.find({ isDeleted: false, status: "approved" })
+    .sort({ sold: -1, views: -1, ratingAvg: -1, createdAt: -1 })
+    .limit(limit)
+    .lean();
+
+  const normalized = products.map((p: any) => ({
+    ...p,
+    id: String(p._id),
+  }));
+
+  sendSuccess(res, { count: normalized.length, products: normalized });
 });

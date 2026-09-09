@@ -15,6 +15,12 @@ import { createReviewSchema } from "../../schemas/review.schema";
 const router = Router();
 
 router.get("/", attachUserIfPresent, validate({ query: listProductsQuerySchema }), ctrl.listProducts);
+router.get("/stores/options", ctrl.getStoreOptions);
+router.get("/sellers/options", ctrl.getSellerOptions);
+
+// Trending products must be registered BEFORE `:id` so it is not captured as a product id.
+router.get("/trending", ctrl.getTrendingProducts);
+
 router.get("/:id", attachUserIfPresent, validate({ params: idParamSchema }), ctrl.getProductById);
 
 router.post(

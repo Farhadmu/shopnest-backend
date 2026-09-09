@@ -7,17 +7,14 @@ import { Product } from "../products/product.model";
 import { Store } from "../sellers/store.model";
 import { SpendingBudget } from "./spending-budget.model";
 
-const VALID_SPENDING_STATUSES = ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"];
+const VALID_SPENDING_STATUSES = ["pending", "confirmed", "processing", "shipped", "out_for_delivery", "delivered"];
+const EXCLUDED_STATUSES = ["cancelled", "returned", "refunded"];
 
 interface DateRangeFilter {
   startDate?: Date;
   endDate?: Date;
 }
 
-/**
- * Helper: Computes start and end Date objects based on timeframe string
- * e.g., "this_week", "this_month", "last_3_months", "this_year".
- */
 function buildDateFilter(range: string): DateRangeFilter {
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -60,20 +57,6 @@ function buildDateFilter(range: string): DateRangeFilter {
   }
 }
 
-/**
- * Controller: Get Comprehensive Customer Spending Analytics
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Authenticated customer ID
- *    - req.query.range: Timeframe filter ("all", "this_month", "last_3_months", etc.)
- * 2. Database Operation:
- *    - Order.find({ userId, createdAt: dateRange })
- *    - Product.find({ _id: { $in: productIds } }) to group by category and discounts
- *    - Store.find({ _id: { $in: storeIds } }) to group spending by merchant
- *    - SpendingBudget.findOne({ userId })
- * 3. Response Sent:
- *    - HTTP 200: Full analytics breakdown { totalSpent, totalOrders, completedOrders, monthlySpending, categorySpending, sellerSpending, insights, budget }
- */
 export const getComprehensiveSpendingAnalytics = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) throw ApiError.unauthorized("Authentication required");
@@ -100,9 +83,7 @@ export const getComprehensiveSpendingAnalytics = asyncHandler(async (req: Reques
   const averageOrderValue = completedOrders > 0 ? Math.round(totalSpent / completedOrders) : 0;
 
   const productIds = [...new Set(validOrders.flatMap((o) => o.items.map((i) => i.productId)))];
-  const products = await Product.find({ _id: { $in: productIds } }).select(
-    "category price discountPrice storeId sellerId title"
-  );
+  const products = await Product.find({ _id: { $in: productIds } }).select("category price discountPrice storeId sellerId title");
   const productMap = new Map(products.map((p) => [p.id, p]));
 
   const storeIds = [...new Set(validOrders.flatMap((o) => o.items.map((i) => i.storeId)))];
@@ -192,10 +173,9 @@ export const getComprehensiveSpendingAnalytics = asyncHandler(async (req: Reques
     }))
     .sort((a, b) => b.amount - a.amount);
 
-  const highestSpendingMonth =
-    monthlySpending.length > 0
-      ? monthlySpending.reduce((max, m) => (m.amount > max.amount ? m : max))
-      : null;
+  const highestSpendingMonth = monthlySpending.length > 0
+    ? monthlySpending.reduce((max, m) => (m.amount > max.amount ? m : max))
+    : null;
 
   const totalSavings = totalDiscount + couponSavings;
 
@@ -209,9 +189,7 @@ export const getComprehensiveSpendingAnalytics = asyncHandler(async (req: Reques
   let spendingTrend = "stable";
   let spendingTrendPercent = 0;
   if (currentMonthData && prevMonthData && prevMonthData.amount > 0) {
-    spendingTrendPercent = Math.round(
-      ((currentMonthData.amount - prevMonthData.amount) / prevMonthData.amount) * 100
-    );
+    spendingTrendPercent = Math.round(((currentMonthData.amount - prevMonthData.amount) / prevMonthData.amount) * 100);
     spendingTrend = spendingTrendPercent > 0 ? "increasing" : spendingTrendPercent < 0 ? "decreasing" : "stable";
   }
 
@@ -265,17 +243,6 @@ export const getComprehensiveSpendingAnalytics = asyncHandler(async (req: Reques
   });
 });
 
-/**
- * Controller: Get Budget Tracker Status
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Authenticated customer ID
- * 2. Database Operation:
- *    - SpendingBudget.findOne({ userId })
- *    - Order.find(...) for the current calendar month
- * 3. Response Sent:
- *    - HTTP 200: { monthlyBudget, spent, remaining, percentage, status: "under"|"near"|"exceeded", updatedAt }
- */
 export const getBudgetTracker = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) throw ApiError.unauthorized("Authentication required");
@@ -313,17 +280,6 @@ export const getBudgetTracker = asyncHandler(async (req: Request, res: Response)
   });
 });
 
-/**
- * Controller: Update Customer Monthly Budget
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Authenticated customer ID
- *    - req.body.monthlyBudget: Numeric amount for monthly target
- * 2. Database Operation:
- *    - SpendingBudget.findOneAndUpdate({ userId }, { monthlyBudget }, { upsert: true, new: true })
- * 3. Response Sent:
- *    - HTTP 200: Updated SpendingBudget document with "Budget updated successfully" message
- */
 export const updateBudget = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) throw ApiError.unauthorized("Authentication required");
@@ -342,17 +298,6 @@ export const updateBudget = asyncHandler(async (req: Request, res: Response) => 
   sendSuccess(res, budget, "Budget updated successfully");
 });
 
-/**
- * Controller: Export Spending Report As CSV
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Authenticated customer ID
- *    - req.query.range: Timeframe string
- * 2. Database Operation:
- *    - Order.find({ userId, status: valid, createdAt: range })
- * 3. Response Sent:
- *    - HTTP 200: CSV text attachment ("spending-report-[range].csv")
- */
 export const getSpendingReport = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) throw ApiError.unauthorized("Authentication required");

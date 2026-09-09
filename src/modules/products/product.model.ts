@@ -22,6 +22,10 @@ export interface IProduct {
   sold: number;
   views: number;
   isDeleted: boolean;
+  freeDelivery: boolean;
+  aiPick: boolean;
+  warrantyMonths?: number;
+  warrantyProvider?: string;
   sentiment?: { positive: number; neutral: number; negative: number };
   createdAt: Date;
   updatedAt: Date;
@@ -46,6 +50,10 @@ const productSchema = new Schema<IProduct>(
     sold: { type: Number, default: 0 },
     views: { type: Number, default: 0 },
     isDeleted: { type: Boolean, default: false, index: true },
+    freeDelivery: { type: Boolean, default: false, index: true },
+    aiPick: { type: Boolean, default: false, index: true },
+    warrantyMonths: { type: Number, min: 0 },
+    warrantyProvider: { type: String },
     sentiment: {
       positive: { type: Number, default: 0 },
       neutral: { type: Number, default: 0 },

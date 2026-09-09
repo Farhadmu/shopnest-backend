@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { ApiError } from "../../src/utils/api-error";
 import { sendSuccess, sendPaginated } from "../../src/utils/api-response";
+import { normalizeCustomerActivityType } from "../../src/modules/customer/features/journey.controller";
 import { Response } from "express";
 
 function createMockResponse() {
@@ -32,6 +33,18 @@ describe("ApiError", () => {
   it("creates notFound error with 404", () => {
     const err = ApiError.notFound("User not found");
     expect(err.statusCode).toBe(404);
+  });
+});
+
+describe("normalizeCustomerActivityType", () => {
+  it("maps the real customer activity collection event names into the Shopping Journey analytics contract", () => {
+    expect(normalizeCustomerActivityType("view")).toBe("view");
+    expect(normalizeCustomerActivityType("search")).toBe("search");
+    expect(normalizeCustomerActivityType("wishlist_add")).toBe("wishlist_add");
+    expect(normalizeCustomerActivityType("cart_add")).toBe("cart_add");
+    expect(normalizeCustomerActivityType("order")).toBe("purchase");
+    expect(normalizeCustomerActivityType("review")).toBe("review");
+    expect(normalizeCustomerActivityType("security")).toBe("security");
   });
 });
 

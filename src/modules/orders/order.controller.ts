@@ -2,31 +2,16 @@ import { Request, Response } from "express";
 import { Order } from "./order.model";
 import { Cart } from "../cart/cart.model";
 import { Product } from "../products/product.model";
-import { Coupon, computeDiscount, isFreeShippingCouponApplicable } from "../coupons/coupon.model";
+import { ProductLifecycle } from "../customer/customer-intelligence.model";
+import { Coupon, computeDiscount } from "../coupons/coupon.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { flagSuspiciousOrder } from "../security/security.service";
 import { recomputeStoreTrustScore } from "../trust/trust.service";
+import { createNotification } from "../notifications/notification.service";
 import mongoose from "mongoose";
-import { PaymentRecord } from "../customer/customer-features.model";
 
-/**
- * Controller: Create New Order (Checkout)
- *
- * 1. Inputs Extracted:
- *    - req.user.id: ID of the logged-in customer placing the order
- *    - req.body: shippingAddress, division, paymentMethod, couponCode (optional)
- * 2. Database Operation:
- *    - Cart.findOne({ userId }) to read items
- *    - Product.findOne for each item to verify live stock and pricing
- *    - Coupon.findOne if couponCode provided, increments usedCount
- *    - Order.create(...) to save the order
- *    - Product.findByIdAndUpdate(...) to reduce stock and increase sold counts
- *    - Cart.save() to clear the user's cart
- * 3. Response Sent:
- *    - HTTP 201: Created order JSON object with message "Order placed"
- */
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const { shippingAddress, division, paymentMethod, couponCode } = req.body as {
     shippingAddress: string;
@@ -35,28 +20,20 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     couponCode?: string;
   };
 
-  // Find user's cart
   const cart = await Cart.findOne({ userId: req.user!.id });
-  if (!cart || cart.items.length === 0) {
-    throw ApiError.badRequest("Your cart is empty");
-  }
+  if (!cart || cart.items.length === 0) throw ApiError.badRequest("Your cart is empty");
 
   const orderItems = [];
   let subtotal = 0;
 
-  // Validate stock and snapshot prices
   for (const item of cart.items) {
     const product = await Product.findOne({ _id: item.productId, isDeleted: false });
-    if (!product) {
-      throw ApiError.badRequest("A product in your cart is no longer available");
-    }
+    if (!product) throw ApiError.badRequest(`A product in your cart is no longer available`);
     if (product.stock < item.quantity) {
       throw ApiError.badRequest(`Insufficient stock for "${product.title}"`);
     }
-
     const price = product.discountPrice ?? product.price;
     subtotal += price * item.quantity;
-
     orderItems.push({
       productId: product.id,
       storeId: product.storeId,
@@ -69,35 +46,19 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   }
   subtotal = Math.round(subtotal * 100) / 100;
 
-  // Apply optional coupon discount
   let discount = 0;
-  let waiveDeliveryFee = false;
   if (couponCode) {
     const coupon = await Coupon.findOne({ code: couponCode.toUpperCase() });
     if (!coupon) throw ApiError.badRequest("Invalid coupon code");
-
-    if (coupon.type === "free-shipping") {
-      // Free-shipping coupons don't discount the subtotal — they waive the
-      // delivery fee below instead.
-      if (!isFreeShippingCouponApplicable(coupon, subtotal)) {
-        throw ApiError.badRequest("Coupon is not applicable to this order");
-      }
-      waiveDeliveryFee = true;
-    } else {
-      discount = computeDiscount(coupon, subtotal);
-      if (discount <= 0) throw ApiError.badRequest("Coupon is not applicable to this order");
-    }
-
+    discount = computeDiscount(coupon, subtotal);
+    if (discount <= 0) throw ApiError.badRequest("Coupon is not applicable to this order");
     coupon.usedCount += 1;
     await coupon.save();
   }
 
-  // Delivery fee rules: 60 inside Dhaka, 120 outside — waived entirely by a
-  // valid, applicable free-shipping coupon.
-  const deliveryFee = waiveDeliveryFee ? 0 : division === "Dhaka" ? 60 : 120;
+  const deliveryFee = division === "Dhaka" ? 60 : 120;
   const totalAmount = Math.round((subtotal - discount + deliveryFee) * 100) / 100;
 
-  // Create the order document
   const order = await Order.create({
     userId: req.user!.id,
     items: orderItems,
@@ -113,30 +74,17 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     statusHistory: [{ status: "pending", at: new Date() }],
   });
 
-  // Decrement stock and increment sold count for each ordered item
+  // Decrement stock + bump sold count for each purchased product.
   await Promise.all(
     orderItems.map((i) =>
       Product.findByIdAndUpdate(i.productId, { $inc: { stock: -i.quantity, sold: i.quantity } })
     )
   );
 
-  // Empty the cart
   cart.items = [];
   await cart.save();
 
-  // For Cash on Delivery, record an initial pending payment record
-  if (paymentMethod === "cod" || paymentMethod === "cash_on_delivery") {
-    await PaymentRecord.create({
-      userId: req.user!.id,
-      orderId: order._id.toString(),
-      amount: order.totalAmount,
-      method: "cash_on_delivery",
-      status: "pending",
-      description: `Cash on Delivery for Order #${order._id.toString().slice(-6).toUpperCase()}`,
-    }).catch((err) => console.error("Failed to create COD payment record:", err));
-  }
-
-  // Background non-blocking notifications / risk checks
+  // Fire-and-forget fraud heuristics; never block the checkout flow on this.
   flagSuspiciousOrder(order).catch(() => undefined);
   const storeIds = [...new Set(orderItems.map((i) => i.storeId))];
   Promise.all(storeIds.map((id) => recomputeStoreTrustScore(id))).catch(() => undefined);
@@ -144,39 +92,17 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   sendSuccess(res, order.toJSON(), "Order placed", 201);
 });
 
-/**
- * Controller: Get Logged-In User's Orders
- *
- * 1. Inputs Extracted:
- *    - req.user.id: ID of the logged-in customer
- * 2. Database Operation:
- *    - Order.find({ userId }).sort({ createdAt: -1 })
- * 3. Response Sent:
- *    - HTTP 200: Raw array of user's orders (Order[])
- */
 export const getOrders = asyncHandler(async (req: Request, res: Response) => {
   const orders = await Order.find({ userId: req.user!.id }).sort({ createdAt: -1 });
   res.status(200).json(orders);
 });
 
-/**
- * Controller: Get Single Order By ID
- *
- * 1. Inputs Extracted:
- *    - req.params.id: Order ID
- *    - req.user: Logged-in user information (id, role)
- * 2. Database Operation:
- *    - Order.findById(id)
- * 3. Response Sent:
- *    - HTTP 200: Single Order JSON object (with 403 error if user lacks access)
- */
 export const getOrderById = asyncHandler(async (req: Request, res: Response) => {
   const order = await Order.findById(req.params.id);
   if (!order) throw ApiError.notFound("Order not found");
 
   const isOwner = order.userId === req.user!.id;
   const isSellerOnOrder = order.items.some((i) => i.sellerId === req.user!.id);
-
   if (!isOwner && !isSellerOnOrder && req.user!.role !== "admin") {
     throw ApiError.forbidden("You cannot view this order");
   }
@@ -199,34 +125,12 @@ export const getOrderById = asyncHandler(async (req: Request, res: Response) => 
   sendSuccess(res, { ...order.toJSON(), customerEmail });
 });
 
-/**
- * Controller: Get Seller's Orders
- *
- * 1. Inputs Extracted:
- *    - req.user.id: Logged-in seller ID
- * 2. Database Operation:
- *    - Order.find({ "items.sellerId": sellerId }).sort({ createdAt: -1 })
- * 3. Response Sent:
- *    - HTTP 200: Array of orders that contain items belonging to this seller
- */
+/** GET /orders/seller/mine - orders that include at least one of the seller's products */
 export const getSellerOrders = asyncHandler(async (req: Request, res: Response) => {
   const orders = await Order.find({ "items.sellerId": req.user!.id }).sort({ createdAt: -1 });
   res.status(200).json(orders);
 });
 
-/**
- * Controller: Update Order Status
- *
- * 1. Inputs Extracted:
- *    - req.params.id: Target order ID
- *    - req.body.status: New status ("pending", "processing", "shipped", "delivered", "cancelled", etc.)
- *    - req.user: Authenticated seller or admin
- * 2. Database Operation:
- *    - Order.findById(id)
- *    - order.status = status; order.statusHistory.push(...); order.save()
- * 3. Response Sent:
- *    - HTTP 200: Updated order object with "Order status updated" message
- */
 export const updateOrderStatus = asyncHandler(async (req: Request, res: Response) => {
   const { status } = req.body as { status: string };
   const order = await Order.findById(req.params.id);
@@ -237,33 +141,116 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
     throw ApiError.forbidden("You cannot update this order");
   }
 
+  const previousStatus = order.status;
   order.status = status as typeof order.status;
   order.statusHistory.push({ status: order.status, at: new Date() });
+  if (status === "delivered") order.paymentStatus = "paid";
+  await order.save();
 
-  if (status === "delivered") {
-    order.paymentStatus = "paid";
-    if (order.paymentMethod === "cod" || order.paymentMethod === "cash_on_delivery") {
-      await PaymentRecord.findOneAndUpdate(
-        { orderId: order._id.toString(), method: "cash_on_delivery" },
-        { status: "successful" }
-      ).catch((err) => console.error("Failed to update COD payment record to successful:", err));
+  if (previousStatus !== status) {
+    const statusMessages: Record<string, { title: string; message: string; type: string; category: string }> = {
+      confirmed: {
+        title: "Order Confirmed",
+        message: `Your order #${order.id} has been confirmed and is being processed.`,
+        type: "order_confirmation",
+        category: "orders",
+      },
+      processing: {
+        title: "Order Processing",
+        message: `Your order #${order.id} is now being processed.`,
+        type: "order_update",
+        category: "orders",
+      },
+      shipped: {
+        title: "Order Shipped",
+        message: `Your order #${order.id} has been shipped and is on its way.`,
+        type: "order_shipped",
+        category: "orders",
+      },
+      out_for_delivery: {
+        title: "Out for Delivery",
+        message: `Your order #${order.id} is out for delivery.`,
+        type: "delivery_alert",
+        category: "delivery",
+      },
+      delivered: {
+        title: "Order Delivered",
+        message: `Your order #${order.id} has been delivered. Thank you for shopping with us!`,
+        type: "order_delivered",
+        category: "orders",
+      },
+      cancelled: {
+        title: "Order Cancelled",
+        message: `Your order #${order.id} has been cancelled.`,
+        type: "order_cancelled",
+        category: "orders",
+      },
+    };
+
+    const notificationData = statusMessages[status];
+    if (notificationData) {
+      createNotification({
+        userId: order.userId,
+        type: notificationData.type as any,
+        category: notificationData.category as any,
+        priority: status === "cancelled" ? "warning" : "info",
+        source: "order",
+        title: notificationData.title,
+        message: notificationData.message,
+        link: `/orders/${order.id}`,
+        relatedId: order.id,
+        relatedType: "order",
+      }).catch((err) => console.warn("Failed to create order notification", err));
     }
   }
 
-  await order.save();
+  if (previousStatus !== "delivered" && status === "delivered") {
+    const productIds = order.items.map((i) => i.productId);
+    const products = await Product.find({ _id: { $in: productIds } }).lean();
+    const productMap = new Map(products.map((p: any) => [String(p._id), p]));
+
+    for (const item of order.items) {
+      const existing = await ProductLifecycle.findOne({ userId: order.userId, orderId: order.id, productId: item.productId });
+      if (existing) continue;
+
+      const product = productMap.get(item.productId);
+      let warrantyExpiryDate: Date | undefined;
+      let warrantyProvider: string | undefined;
+      let warrantyDurationMonths: number | undefined;
+      let warrantyStartDate: Date | undefined;
+
+      if (product?.warrantyMonths && product.warrantyMonths > 0) {
+        warrantyDurationMonths = product.warrantyMonths;
+        warrantyStartDate = new Date(order.createdAt);
+        warrantyExpiryDate = new Date(warrantyStartDate);
+        if (warrantyDurationMonths) {
+          warrantyExpiryDate.setMonth(warrantyExpiryDate.getMonth() + warrantyDurationMonths);
+        }
+        warrantyProvider = product.warrantyProvider || "Seller";
+      }
+
+      await ProductLifecycle.create({
+        userId: order.userId,
+        orderId: order.id,
+        productId: item.productId,
+        productTitle: item.title,
+        category: product?.category || "General",
+        purchaseDate: order.createdAt,
+        estimatedLifespanMonths: 36,
+        usagePercentage: 5,
+        warrantyProvider,
+        warrantyDurationMonths,
+        warrantyStartDate,
+        warrantyExpiryDate,
+        maintenanceReminders: [],
+        status: "active",
+      });
+    }
+  }
+
   sendSuccess(res, order.toJSON(), "Order status updated");
 });
 
-/**
- * Controller: List All Orders For Admin
- *
- * 1. Inputs Extracted:
- *    - req.query.status: Optional status filter ("pending", "delivered", etc.)
- * 2. Database Operation:
- *    - Order.find(filter).sort({ createdAt: -1 }).limit(500)
- * 3. Response Sent:
- *    - HTTP 200: Array of all orders matching the optional status filter
- */
 export const listAllOrdersForAdmin = asyncHandler(async (req: Request, res: Response) => {
   const { status } = req.query as { status?: string };
   const filter = status ? { status } : {};

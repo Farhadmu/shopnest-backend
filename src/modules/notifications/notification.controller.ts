@@ -33,8 +33,40 @@ export const listNotifications = asyncHandler(async (req: Request, res: Response
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
   const userId = req.user!.id;
+  const userRole = (req.user as { role?: string } | undefined)?.role;
+  const { category, source, isRead, search } = req.query as {
+    category?: string;
+    source?: string;
+    isRead?: string;
+    search?: string;
+  };
+
   const collection = getCollection();
-  const filter = { userId };
+  const filter: Record<string, unknown> = { userId };
+
+  const allowedRecipientTypes = new Set<string>(["all"]);
+  if (userRole === "admin") {
+    allowedRecipientTypes.add("admin");
+  } else if (userRole === "seller") {
+    allowedRecipientTypes.add("seller");
+  } else {
+    allowedRecipientTypes.add("user");
+  }
+  filter.recipientType = { $in: Array.from(allowedRecipientTypes) };
+
+  if (category) filter.category = category;
+  if (source) filter.source = source;
+  if (isRead !== undefined) filter.isRead = isRead === "true";
+
+  if (search) {
+    const regex = new RegExp(search.trim(), "i");
+    filter.$or = [
+      { title: regex },
+      { message: regex },
+      { type: regex },
+    ];
+  }
+
   const [docs, total] = await Promise.all([
     collection.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray(),
     collection.countDocuments(filter),
@@ -51,14 +83,31 @@ export const listNotifications = asyncHandler(async (req: Request, res: Response
 });
 
 export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
-  const count = await getCollection().countDocuments({ userId: req.user!.id, isRead: { $ne: true } });
+  const userId = req.user!.id;
+  const userRole = (req.user as { role?: string } | undefined)?.role;
+  const allowedRecipientTypes = new Set<string>(["all"]);
+  if (userRole === "admin") {
+    allowedRecipientTypes.add("admin");
+  } else if (userRole === "seller") {
+    allowedRecipientTypes.add("seller");
+  } else {
+    allowedRecipientTypes.add("user");
+  }
+  const count = await getCollection().countDocuments({ userId, recipientType: { $in: Array.from(allowedRecipientTypes) }, isRead: { $ne: true } });
   res.json({ success: true, count });
 });
 
 export const markRead = asyncHandler(async (req: Request, res: Response) => {
   const id = new mongoose.Types.ObjectId(req.params.id);
+  const userId = req.user!.id;
+  const userRole = (req.user as { role?: string } | undefined)?.role;
+  const allowedRecipientTypes = new Set<string>(["all"]);
+  if (userRole === "admin") allowedRecipientTypes.add("admin");
+  else if (userRole === "seller") allowedRecipientTypes.add("seller");
+  else allowedRecipientTypes.add("user");
+
   const result = await getCollection().findOneAndUpdate(
-    { _id: id, userId: req.user!.id },
+    { _id: id, userId, recipientType: { $in: Array.from(allowedRecipientTypes) } },
     { $set: { isRead: true, updatedAt: new Date() } },
     { returnDocument: "after" }
   );
@@ -67,11 +116,44 @@ export const markRead = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const markAllRead = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.id;
+  const userRole = (req.user as { role?: string } | undefined)?.role;
+  const allowedRecipientTypes = new Set<string>(["all"]);
+  if (userRole === "admin") allowedRecipientTypes.add("admin");
+  else if (userRole === "seller") allowedRecipientTypes.add("seller");
+  else allowedRecipientTypes.add("user");
+
   await getCollection().updateMany(
-    { userId: req.user!.id, isRead: { $ne: true } },
+    { userId, recipientType: { $in: Array.from(allowedRecipientTypes) }, isRead: { $ne: true } },
     { $set: { isRead: true, updatedAt: new Date() } }
   );
   res.json({ success: true });
+});
+
+export const deleteNotification = asyncHandler(async (req: Request, res: Response) => {
+  const id = new mongoose.Types.ObjectId(req.params.id);
+  const userId = req.user!.id;
+  const userRole = (req.user as { role?: string } | undefined)?.role;
+  const allowedRecipientTypes = new Set<string>(["all"]);
+  if (userRole === "admin") allowedRecipientTypes.add("admin");
+  else if (userRole === "seller") allowedRecipientTypes.add("seller");
+  else allowedRecipientTypes.add("user");
+
+  const result = await getCollection().findOneAndDelete({ _id: id, userId, recipientType: { $in: Array.from(allowedRecipientTypes) } });
+  if (!result) throw ApiError.notFound("Notification not found");
+  res.json({ success: true, deleted: true });
+});
+
+export const clearReadNotifications = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.id;
+  const userRole = (req.user as { role?: string } | undefined)?.role;
+  const allowedRecipientTypes = new Set<string>(["all"]);
+  if (userRole === "admin") allowedRecipientTypes.add("admin");
+  else if (userRole === "seller") allowedRecipientTypes.add("seller");
+  else allowedRecipientTypes.add("user");
+
+  const result = await getCollection().deleteMany({ userId, recipientType: { $in: Array.from(allowedRecipientTypes) }, isRead: true });
+  res.json({ success: true, deleted: result.deletedCount });
 });
 
 function ensureAdmin(req: Request) {

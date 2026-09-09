@@ -49,16 +49,23 @@ const router = Router();
 // (previously in the now-deleted customer.controller.ts — restored here)
 // ============================================================
 router.get("/journey", ...requireAuth, journeyCtrl.getShoppingJourney);
+router.get("/journey/analytics", ...requireAuth, journeyCtrl.getJourneyAnalytics);
 router.post("/journey/event", ...requireAuth, journeyCtrl.recordJourneyEvent);
 router.post("/budget-planner", ...requireAuth, budgetPlannerCtrl.generateBudgetPlan);
 router.post("/compatibility-check", attachUserIfPresent, compatibilityCtrl.checkProductCompatibility);
 router.get("/bundles/:productId", bundleCtrl.getProductBundle);
 router.get("/lifecycle", ...requireAuth, lifecycleCtrl.getProductLifecycle);
+router.get("/lifecycle/:id", ...requireAuth, lifecycleCtrl.getLifecycleDetails);
+router.post("/lifecycle/from-order/:orderId", ...requireAuth, lifecycleCtrl.createLifecycleFromOrder);
+router.post("/lifecycle/:id/maintenance", ...requireAuth, lifecycleCtrl.addMaintenanceRecord);
 router.patch("/lifecycle/:id/maintenance", ...requireAuth, lifecycleCtrl.updateMaintenanceReminder);
 router.get("/goals", ...requireAuth, goalsCtrl.getGoals);
+router.get("/goals/:id", ...requireAuth, goalsCtrl.getGoalDetails);
 router.post("/goals", ...requireAuth, goalsCtrl.createGoal);
 router.patch("/goals/:id", ...requireAuth, goalsCtrl.updateGoal);
+router.post("/goals/:id/progress", ...requireAuth, goalsCtrl.addProgress);
 router.delete("/goals/:id", ...requireAuth, goalsCtrl.deleteGoal);
+
 
 // ============================================================
 // 1. ADVANCED AI SEARCH (Feature 1)

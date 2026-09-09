@@ -2,9 +2,11 @@ import { Request, Response } from "express";
 import { Store } from "./store.model";
 import { Product } from "../products/product.model";
 import { Order } from "../orders/order.model";
+import { Review } from "../reviews/review.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+import mongoose from "mongoose";
 
 /**
  * Helper: Converts any string into a URL-friendly slug.
@@ -128,11 +130,34 @@ export const updateMyStore = asyncHandler(async (req: Request, res: Response) =>
  *    - HTTP 200: Public storefront profile { id, storeName, description, trustScore, logo, banner, rating, ... }
  */
 export const getStoreById = asyncHandler(async (req: Request, res: Response) => {
-  const store = await Store.findById(req.params.storeId);
+  const identifier = req.params.storeId;
+  const store = await Store.findOne({
+    $or: [
+      { slug: identifier.toLowerCase() },
+      ...(mongoose.isValidObjectId(identifier) ? [{ _id: identifier }] : []),
+    ],
+  }).lean();
   if (!store || store.status === "rejected") throw ApiError.notFound("Store not found");
 
+  const products = await Product.find({
+    storeId: { $in: [store._id.toString(), store.slug, store.ownerId] },
+    status: "approved",
+    isDeleted: false,
+  })
+    .sort({ sold: -1, createdAt: -1 })
+    .lean();
+
+  const reviews = products.length
+    ? await Review.find({ productId: { $in: products.map((product) => product._id.toString()) } })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean()
+    : [];
+
   sendSuccess(res, {
-    id: store.id,
+    id: store._id.toString(),
+    slug: store.slug,
+    ownerId: store.ownerId,
     storeName: store.storeName,
     description: store.description,
     trustScore: store.trustScore,
@@ -142,6 +167,12 @@ export const getStoreById = asyncHandler(async (req: Request, res: Response) => 
     ratingCount: store.ratingCount,
     followersCount: store.followersCount,
     status: store.status,
+    createdAt: store.createdAt,
+    products,
+    reviews: reviews.map((review) => ({
+      ...review,
+      productId: review.productId,
+    })),
   });
 });
 
@@ -197,7 +228,11 @@ export const getSellerMetrics = asyncHandler(async (req: Request, res: Response)
 export const listStores = asyncHandler(async (req: Request, res: Response) => {
   const filter = { status: "approved" as const };
   const stores = await Store.find(filter).sort({ createdAt: -1 }).lean();
-  const storeIds = stores.map((store) => store._id.toString());
+  const storeIds = stores.flatMap((store) => [
+    store._id.toString(),
+    store.slug,
+    store.ownerId,
+  ]);
 
   const products = await Product.find({
     storeId: { $in: storeIds },
@@ -216,7 +251,11 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
 
   res.status(200).json(
     stores.map((store) => {
-      const storeProducts = productsByStore.get(store._id.toString()) || [];
+      const storeProducts =
+        productsByStore.get(store._id.toString()) ||
+        productsByStore.get(store.slug) ||
+        productsByStore.get(store.ownerId) ||
+        [];
       const salesNumber = storeProducts.reduce((total, product) => total + (product.sold || 0), 0);
 
       return {

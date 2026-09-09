@@ -14,6 +14,7 @@ router.get("/public/store/:sellerId", ctrl.getPublicStoreCoupons);
 
 // Seller + Admin
 router.get("/category-limit", ...requireAuth, requireRole("seller", "admin"), ctrl.getCategoryLimit);
+router.get("/seller-locked-categories/:sellerId", ...requireAuth, requireRole("seller", "admin"), ctrl.getSellerLockedCategories);
 router.get("/", ...requireAuth, requireRole("seller", "admin"), ctrl.listCoupons);
 router.post("/", ...requireAuth, requireRole("seller", "admin"), validate({ body: createCouponSchema }), ctrl.createCoupon);
 router.put("/:id", ...requireAuth, requireRole("seller", "admin"), ctrl.updateCoupon);

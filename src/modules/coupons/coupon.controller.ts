@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { FilterQuery } from "mongoose";
-import { Coupon, ICoupon, computeDiscount } from "./coupon.model";
+import { Coupon, ICoupon, computeDiscount, isFreeShippingCouponApplicable, CartLineItem } from "./coupon.model";
 import { Store } from "../sellers/store.model";
 import { Category } from "../categories/category.model";
 import { getSettingsSingleton } from "../settings/admin-settings.model";
@@ -242,9 +242,18 @@ export const approveCoupon = asyncHandler(async (req: Request, res: Response) =>
   if (req.body.promoStartDate) coupon.promoStartDate = new Date(req.body.promoStartDate);
 
   await lockCategoriesForSeller(coupon);
+
+  // 1. First, update the coupon to approved status and save it
+  const now = new Date();
+  coupon.approvalStatus = "approved";
+  coupon.rejectionNote = undefined;
+  coupon.approvedAt = now;
+  await coupon.save();
+
+  // 2. Run the homepage queue engine (now sees the newly approved coupon)
   await runHomepageQueueEngine();
 
-  const now = new Date();
+  // 3. Count running coupons AFTER queue engine has processed expirations
   const durationDays = coupon.durationDays ?? 7;
   const runningCount = await Coupon.countDocuments({
     placement: "homepage",
@@ -252,10 +261,7 @@ export const approveCoupon = asyncHandler(async (req: Request, res: Response) =>
     homepageStatus: "running",
   });
 
-  coupon.approvalStatus = "approved";
-  coupon.rejectionNote = undefined;
-  coupon.approvedAt = now;
-
+  // 4. Determine if the new coupon should be running or queued
   if (runningCount < HOMEPAGE_RUNNING_SLOTS) {
     const startsAt = coupon.promoStartDate && coupon.promoStartDate > now ? coupon.promoStartDate : now;
     coupon.startsAt = startsAt;
@@ -486,15 +492,32 @@ export const updateCoupon = asyncHandler(async (req: Request, res: Response) => 
 
 export const validateCoupon = asyncHandler(async (req: Request, res: Response) => {
   const { code } = req.params as { code: string };
-  const subtotal = Number(req.query.subtotal ?? 0);
+  const { items } = req.body as { items: CartLineItem[] };
 
   const coupon = await Coupon.findOne({ code: code.toUpperCase() });
   if (!coupon) throw ApiError.notFound("Invalid coupon code");
 
-  const discount = computeDiscount(coupon, subtotal);
+  // free-shipping coupons don't reduce the product subtotal — they waive the
+  // delivery fee, so they're validated through the shipping-applicability path
+  // rather than computeDiscount (which returns 0 for this type).
+  if (coupon.type === "free-shipping") {
+    if (!isFreeShippingCouponApplicable(coupon, items)) {
+      throw ApiError.badRequest("Coupon is not applicable to this order");
+    }
+    sendSuccess(res, {
+      code: coupon.code,
+      discount: 0,
+      type: coupon.type,
+      value: coupon.value,
+      freeShipping: true,
+    });
+    return;
+  }
+
+  const discount = computeDiscount(coupon, items);
   if (discount <= 0) throw ApiError.badRequest("Coupon is not applicable to this order");
 
-  sendSuccess(res, { code: coupon.code, discount, type: coupon.type, value: coupon.value });
+  sendSuccess(res, { code: coupon.code, discount, type: coupon.type, value: coupon.value, freeShipping: false });
 });
 
 /**

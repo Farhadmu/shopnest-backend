@@ -105,36 +105,83 @@ applyToJSON(couponSchema);
 
 export const Coupon = model<ICoupon>("Coupon", couponSchema);
 
+export interface CartLineItem {
+  productId: string;
+  category: string;
+  sellerId: string;
+  price: number;
+  quantity: number;
+}
+
 /**
  * Shared eligibility checks used by both subtotal discounting and free-shipping
  * waivers: active, approved, within the start/expiry window, under the usage
  * limit, and the subtotal meets minPurchase.
  */
-export function isCouponEligible(coupon: ICoupon, subtotal: number): boolean {
+export function isCouponEligible(coupon: ICoupon, items: CartLineItem[]): boolean {
   if (!coupon.isActive) return false;
   if (coupon.approvalStatus !== "approved") return false;
   if (coupon.startsAt && coupon.startsAt > new Date()) return false;
   if (coupon.expiresAt && coupon.expiresAt < new Date()) return false;
   if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) return false;
-  if (subtotal < coupon.minPurchase) return false;
+  if (computeApplicableSubtotal(coupon, items) <= 0) return false;
+  if (computeApplicableSubtotal(coupon, items) < coupon.minPurchase) return false;
   return true;
 }
 
 /**
- * Computes the discount amount for a subtotal; throws-free, returns 0 if invalid/inapplicable.
+ * Computes the discount amount for a set of cart line items; throws-free, returns 0 if invalid/inapplicable.
  * "free-shipping" coupons discount nothing on the subtotal — they waive the delivery
  * fee instead (see isFreeShippingCouponApplicable / the checkout/order module).
  */
-export function computeDiscount(coupon: ICoupon, subtotal: number): number {
-  if (!isCouponEligible(coupon, subtotal)) return 0;
+export function computeDiscount(coupon: ICoupon, items: CartLineItem[]): number {
+  if (!isCouponEligible(coupon, items)) return 0;
   if (coupon.type === "free-shipping") return 0;
 
-  let discount = coupon.type === "percentage" ? (subtotal * coupon.value) / 100 : coupon.value;
+  const applicableSubtotal = computeApplicableSubtotal(coupon, items);
+  let discount = coupon.type === "percentage" ? (applicableSubtotal * coupon.value) / 100 : coupon.value;
   if (coupon.maxDiscount) discount = Math.min(discount, coupon.maxDiscount);
-  return Math.min(discount, subtotal);
+  return Math.min(discount, applicableSubtotal);
 }
 
-/** Whether a coupon is a valid, currently-usable free-shipping coupon for this subtotal. */
-export function isFreeShippingCouponApplicable(coupon: ICoupon, subtotal: number): boolean {
-  return coupon.type === "free-shipping" && isCouponEligible(coupon, subtotal);
+/** Whether a coupon is a valid, currently-usable free-shipping coupon for this set of line items. */
+export function isFreeShippingCouponApplicable(coupon: ICoupon, items: CartLineItem[]): boolean {
+  return coupon.type === "free-shipping" && isCouponEligible(coupon, items);
+}
+
+export function computeApplicableSubtotal(coupon: ICoupon, items: CartLineItem[]): number {
+  let applicableSubtotal = 0;
+
+  const isAdminCoupon = coupon.createdByRole === "admin";
+
+  switch (coupon.scope) {
+    case "all-products": {
+      const filteredItems = isAdminCoupon
+        ? items
+        : items.filter((item) => item.sellerId === coupon.createdBy);
+      applicableSubtotal = filteredItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      break;
+    }
+    case "specific-category": {
+      const allowedCategories = new Set([
+        ...(coupon.categories ?? []),
+        ...(coupon.category ? [coupon.category] : []),
+      ]);
+      const filteredItems = isAdminCoupon
+        ? items.filter((item) => allowedCategories.has(item.category))
+        : items.filter((item) => item.sellerId === coupon.createdBy && allowedCategories.has(item.category));
+      applicableSubtotal = filteredItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      break;
+    }
+    case "specific-products": {
+      const allowedProductIds = new Set(coupon.productIds);
+      const filteredItems = isAdminCoupon
+        ? items.filter((item) => allowedProductIds.has(item.productId))
+        : items.filter((item) => allowedProductIds.has(item.productId) && item.sellerId === coupon.createdBy);
+      applicableSubtotal = filteredItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      break;
+    }
+  }
+
+  return Math.round(applicableSubtotal * 100) / 100;
 }

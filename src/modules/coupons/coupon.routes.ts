@@ -3,12 +3,12 @@ import * as ctrl from "./coupon.controller";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
-import { createCouponSchema, rejectCouponSchema, reportCouponSchema } from "../../schemas/coupon.schema";
+import { createCouponSchema, rejectCouponSchema, reportCouponSchema, validateCouponSchema } from "../../schemas/coupon.schema";
 
 const router = Router();
 
 // Public
-router.get("/validate/:code", ctrl.validateCoupon);
+router.post("/validate/:code", validate({ body: validateCouponSchema }), ctrl.validateCoupon);
 router.get("/public/homepage", ctrl.getPublicHomepageCoupons);
 router.get("/public/store/:sellerId", ctrl.getPublicStoreCoupons);
 

@@ -8,4 +8,19 @@ router.post(
   sslcommerzController.createPaymentSession
 );
 
-export default router;
+router.get(
+  "/verify-payment",
+  sslcommerzController.verifyPayment
+);
+
+router.post(
+  "/verify-payment",
+  sslcommerzController.verifyPayment
+);
+
+router.post(
+  "/ipn",
+  sslcommerzController.handleIPN
+);
+
+export default router;

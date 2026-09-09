@@ -5,6 +5,7 @@ import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { createCategorySchema, updateCategorySchema } from "../../schemas/category.schema";
 import { idParamSchema } from "../../schemas/product.schema";
+import { categoryImageUpload } from "../../middlewares/upload.middleware";
 
 const router = Router();
 
@@ -15,6 +16,7 @@ router.post(
   "/",
   ...requireAuth,
   requireRole("admin"),
+  categoryImageUpload.single("image"),
   validate({ body: createCategorySchema }),
   ctrl.createCategory
 );
@@ -22,6 +24,7 @@ router.put(
   "/:id",
   ...requireAuth,
   requireRole("admin"),
+  categoryImageUpload.single("image"),
   validate({ params: idParamSchema, body: updateCategorySchema }),
   ctrl.updateCategory
 );

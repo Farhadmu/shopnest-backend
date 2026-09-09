@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as ctrl from "./seller.controller";
+import * as followCtrl from "./store-follow.controller";
 import sellerIntelligenceRoutes from "./seller-intelligence.routes";
 import profitCalculatorRoutes from "./profit-calculator.routes";
 import { requireAuth } from "../../middlewares/auth.middleware";
@@ -14,6 +15,9 @@ router.use("/", sellerIntelligenceRoutes);
 router.use("/profit-calculator", profitCalculatorRoutes);
 
 router.get("/stores/:storeId", ctrl.getStoreById);
+router.get("/stores/:storeId/follow", ...requireAuth, followCtrl.getFollowStatus);
+router.post("/stores/:storeId/follow", ...requireAuth, followCtrl.followStore);
+router.delete("/stores/:storeId/follow", ...requireAuth, followCtrl.unfollowStore);
 router.get("/", ctrl.listStores);
 
 router.post("/register", ...requireAuth, requireRole("customer", "seller"), validate({ body: registerStoreSchema }), ctrl.registerStore);

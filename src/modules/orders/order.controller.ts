@@ -181,7 +181,22 @@ export const getOrderById = asyncHandler(async (req: Request, res: Response) => 
     throw ApiError.forbidden("You cannot view this order");
   }
 
-  sendSuccess(res, order.toJSON());
+  let customerEmail = req.user?.email || "";
+  if (!customerEmail && mongoose.connection.db && order.userId) {
+    const userDoc = await mongoose.connection.db.collection("user").findOne({
+      $or: [
+        { id: order.userId },
+        {
+          _id: (mongoose.Types.ObjectId.isValid(order.userId)
+            ? new mongoose.Types.ObjectId(order.userId)
+            : null) as any,
+        },
+      ],
+    });
+    if (userDoc?.email) customerEmail = userDoc.email;
+  }
+
+  sendSuccess(res, { ...order.toJSON(), customerEmail });
 });
 
 /**

@@ -195,8 +195,35 @@ export const getSellerMetrics = asyncHandler(async (req: Request, res: Response)
  *    - HTTP 200: Raw array of Store documents (Store[])
  */
 export const listStores = asyncHandler(async (req: Request, res: Response) => {
-  const { status } = req.query as { status?: string };
-  const filter = status ? { status } : {};
-  const stores = await Store.find(filter).sort({ createdAt: -1 });
-  res.status(200).json(stores);
+  const filter = { status: "approved" as const };
+  const stores = await Store.find(filter).sort({ createdAt: -1 }).lean();
+  const storeIds = stores.map((store) => store._id.toString());
+
+  const products = await Product.find({
+    storeId: { $in: storeIds },
+    status: "approved",
+    isDeleted: false,
+  })
+    .sort({ sold: -1, createdAt: -1 })
+    .lean();
+
+  const productsByStore = new Map<string, typeof products>();
+  for (const product of products) {
+    const storeProducts = productsByStore.get(product.storeId) || [];
+    storeProducts.push(product);
+    productsByStore.set(product.storeId, storeProducts);
+  }
+
+  res.status(200).json(
+    stores.map((store) => {
+      const storeProducts = productsByStore.get(store._id.toString()) || [];
+      const salesNumber = storeProducts.reduce((total, product) => total + (product.sold || 0), 0);
+
+      return {
+        ...store,
+        products: storeProducts.slice(0, 3),
+        salesNumber,
+      };
+    }),
+  );
 });

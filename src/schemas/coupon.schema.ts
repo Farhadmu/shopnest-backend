@@ -1,9 +1,12 @@
 import { z } from "zod";
 
-export const createCouponSchema = z.object({
+const baseCouponSchema = z.object({
   code: z.string().min(3).max(30).toUpperCase(),
-  type: z.enum(["percentage", "fixed"]),
-  value: z.number().positive(),
+  type: z.enum(["percentage", "fixed", "free-shipping"]),
+  // "free-shipping" coupons don't use value for discount math — the form always
+  // submits 0 for this type, so 0 is accepted here (not made optional); the
+  // superRefine below still requires a positive value for percentage/fixed.
+  value: z.number().nonnegative(),
   minPurchase: z.number().nonnegative().default(0),
   maxDiscount: z.number().positive().optional(),
 
@@ -27,7 +30,25 @@ export const createCouponSchema = z.object({
   approvedAt: z.coerce.date().optional(),
 });
 
-export const updateCouponSchema = createCouponSchema.partial();
+function requirePositiveValueUnlessFreeShipping(
+  data: { type: string; value: number },
+  ctx: z.RefinementCtx
+) {
+  if (data.type !== "free-shipping" && data.value <= 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["value"],
+      message: "value must be greater than 0",
+    });
+  }
+}
+
+export const createCouponSchema = baseCouponSchema.superRefine(requirePositiveValueUnlessFreeShipping);
+
+export const updateCouponSchema = baseCouponSchema.partial().superRefine((data, ctx) => {
+  if (data.type === undefined || data.value === undefined) return;
+  requirePositiveValueUnlessFreeShipping({ type: data.type, value: data.value }, ctx);
+});
 
 export const rejectCouponSchema = z.object({
   rejectionNote: z.string().max(500).optional(),

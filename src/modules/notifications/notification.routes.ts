@@ -11,6 +11,8 @@ router.get("/", ctrl.listNotifications);
 router.get("/unread-count", ctrl.unreadCount);
 router.patch("/read-all", ctrl.markAllRead);
 router.patch("/:id/read", ctrl.markRead);
+router.delete("/:id", ctrl.deleteNotification);
+router.delete("/clear-read", ctrl.clearReadNotifications);
 
 // Admin notification endpoints
 const adminRouter = Router();

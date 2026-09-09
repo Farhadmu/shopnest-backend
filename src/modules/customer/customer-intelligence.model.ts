@@ -3,7 +3,7 @@ import { applyToJSON } from "../../utils/model-plugins";
 
 // 1. Shopping Event & Journey
 export interface IShoppingEvent {
-  eventType: "search" | "view" | "category_browse" | "cart_add" | "wishlist_add" | "purchase" | "budget_plan";
+  eventType: "search" | "view" | "category_browse" | "cart_add" | "wishlist_add" | "checkout" | "purchase" | "budget_plan";
   productId?: string;
   productTitle?: string;
   category?: string;
@@ -29,7 +29,7 @@ const shoppingEventSchema = new Schema<IShoppingEvent>(
   {
     eventType: {
       type: String,
-      enum: ["search", "view", "category_browse", "cart_add", "wishlist_add", "purchase", "budget_plan"],
+      enum: ["search", "view", "category_browse", "cart_add", "wishlist_add", "checkout", "purchase", "budget_plan"],
       required: true,
     },
     productId: { type: String },
@@ -78,9 +78,15 @@ export interface IShoppingGoal {
   category: string;
   targetBudget: number;
   targetDate?: Date;
+  currentAmount: number;
+  remainingAmount: number;
+  relatedProductId?: string;
+  relatedCategoryId?: string;
+  notes?: string;
   items: IShoppingGoalItem[];
   progressPercentage: number;
-  status: "in_progress" | "achieved" | "archived";
+  status: "active" | "completed" | "cancelled";
+  completedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -103,14 +109,20 @@ const shoppingGoalSchema = new Schema<IShoppingGoal>(
     category: { type: String, required: true },
     targetBudget: { type: Number, required: true, min: 0 },
     targetDate: { type: Date },
+    currentAmount: { type: Number, default: 0, min: 0 },
+    remainingAmount: { type: Number, default: 0, min: 0 },
+    relatedProductId: { type: String },
+    relatedCategoryId: { type: String },
+    notes: { type: String },
     items: { type: [shoppingGoalItemSchema], default: [] },
     progressPercentage: { type: Number, default: 0, min: 0, max: 100 },
     status: {
       type: String,
-      enum: ["in_progress", "achieved", "archived"],
-      default: "in_progress",
+      enum: ["active", "completed", "cancelled"],
+      default: "active",
       index: true,
     },
+    completedAt: { type: Date },
   },
   { timestamps: true }
 );
@@ -136,7 +148,10 @@ export interface IProductLifecycle {
   purchaseDate: Date;
   estimatedLifespanMonths: number;
   usagePercentage: number; // 0 - 100
-  warrantyExpiryDate: Date;
+  warrantyProvider?: string;
+  warrantyDurationMonths?: number;
+  warrantyStartDate?: Date;
+  warrantyExpiryDate?: Date;
   maintenanceReminders: IMaintenanceReminder[];
   status: "active" | "replacement_recommended" | "retired";
   createdAt: Date;
@@ -163,7 +178,10 @@ const productLifecycleSchema = new Schema<IProductLifecycle>(
     purchaseDate: { type: Date, default: Date.now },
     estimatedLifespanMonths: { type: Number, default: 36 },
     usagePercentage: { type: Number, default: 10, min: 0, max: 100 },
-    warrantyExpiryDate: { type: Date, required: true },
+    warrantyProvider: { type: String },
+    warrantyDurationMonths: { type: Number },
+    warrantyStartDate: { type: Date },
+    warrantyExpiryDate: { type: Date },
     maintenanceReminders: { type: [maintenanceReminderSchema], default: [] },
     status: {
       type: String,

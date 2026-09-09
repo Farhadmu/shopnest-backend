@@ -5,6 +5,11 @@ import { env } from "../config/env";
 import { ApiError } from "../utils/api-error";
 import { asyncHandler } from "../utils/async-handler";
 import { logger } from "../utils/logger";
+import { DeviceSession } from "../modules/security/security-intelligence.model";
+import { parseUserAgent, getClientIp, maskIp } from "../utils/device";
+
+const SESSION_UPDATE_INTERVAL_MS = 30 * 60 * 1000;
+const MAX_ACTIVE_SESSIONS = 2;
 
 /**
  * ------------------------------------------------------------------------
@@ -186,7 +191,58 @@ export const attachUserIfPresent = asyncHandler(async (req: Request, _res: Respo
     if (!token) return next();
 
     const user = await resolveUserFromSessionToken(token);
-    if (user) req.user = user;
+    if (user) {
+      req.user = user;
+      try {
+        const userAgent = req.headers["user-agent"] as string | undefined;
+        const device = parseUserAgent(userAgent);
+        const ip = getClientIp(req);
+        const sessionToken = token;
+        const now = new Date();
+
+        const existing = await DeviceSession.findOne({ userId: user.id, sessionToken }).lean();
+        if (existing) {
+          const lastActive = new Date(existing.lastActiveAt).getTime();
+          if (now.getTime() - lastActive > SESSION_UPDATE_INTERVAL_MS) {
+            await DeviceSession.findByIdAndUpdate(existing._id, {
+              lastActiveAt: now,
+              ipAddress: maskIp(ip),
+              browser: device.browser,
+              os: device.os,
+              deviceType: device.deviceType,
+              deviceName: `${device.browser} on ${device.os}`,
+            });
+          }
+        } else {
+          const activeCount = await DeviceSession.countDocuments({ userId: user.id, status: "active" });
+          if (activeCount >= MAX_ACTIVE_SESSIONS) {
+            const oldest = await DeviceSession.findOne({ userId: user.id, status: "active" }).sort({ createdAt: 1 }).lean();
+            if (oldest) {
+              await DeviceSession.findByIdAndUpdate(oldest._id, { status: "revoked" });
+            }
+          }
+
+          await DeviceSession.create({
+            userId: user.id,
+            sessionToken,
+            deviceName: `${device.browser} on ${device.os}`,
+            deviceType: device.deviceType,
+            browser: device.browser,
+            os: device.os,
+            ipAddress: maskIp(ip),
+            locationCity: "Unknown",
+            isCurrentSession: true,
+            isTrusted: true,
+            status: "active",
+            lastActiveAt: now,
+          });
+
+          await DeviceSession.updateMany({ userId: user.id, status: "active", sessionToken: { $ne: sessionToken } }, { isCurrentSession: false });
+        }
+      } catch (sessionErr) {
+        logger.warn("Session tracking failed", sessionErr);
+      }
+    }
     next();
   } catch (err) {
     logger.error("attachUserIfPresent failed", err);

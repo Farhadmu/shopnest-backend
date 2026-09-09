@@ -506,3 +506,19 @@ export const moderateProduct = asyncHandler(async (req: Request, res: Response) 
   if (!product) throw ApiError.notFound("Product not found");
   sendSuccess(res, product.toJSON(), `Product ${status}`);
 });
+
+export const getTrendingProducts = asyncHandler(async (req: Request, res: Response) => {
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 8));
+
+  const products = await Product.find({ isDeleted: false, status: "approved" })
+    .sort({ sold: -1, views: -1, ratingAvg: -1, createdAt: -1 })
+    .limit(limit)
+    .lean();
+
+  const normalized = products.map((p: any) => ({
+    ...p,
+    id: String(p._id),
+  }));
+
+  sendSuccess(res, { count: normalized.length, products: normalized });
+});

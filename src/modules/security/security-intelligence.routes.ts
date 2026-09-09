@@ -9,6 +9,7 @@ router.get("/overview", attachUserIfPresent, ctrl.getSecurityOverview);
 
 // 22. Active Sessions & Device Manager
 router.get("/sessions", attachUserIfPresent, ctrl.getActiveSessions);
+router.post("/sessions/record", attachUserIfPresent, ctrl.recordSession);
 router.delete("/sessions/:id", attachUserIfPresent, ctrl.revokeSession);
 router.post("/sessions/revoke-all", attachUserIfPresent, ctrl.revokeAllOtherSessions);
 

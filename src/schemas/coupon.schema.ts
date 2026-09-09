@@ -21,12 +21,29 @@ export const createCouponSchema = z.object({
   durationDays: z.number().positive().max(60).optional(),
 
   usageLimit: z.number().int().positive().optional(),
+
+  homepageStatus: z.enum(["running", "queued", "expired"]).optional(),
+  queuePosition: z.number().int().nonnegative().optional(),
+  approvedAt: z.coerce.date().optional(),
 });
+
+export const updateCouponSchema = createCouponSchema.partial();
 
 export const rejectCouponSchema = z.object({
   rejectionNote: z.string().max(500).optional(),
 });
 
+export const reportCouponSchema = z.object({
+  reportNote: z.string().min(1).max(500),
+  rejectionNote: z.string().min(1).max(500).optional(),
+});
+
 export const applyCouponSchema = z.object({
   code: z.string().min(1),
+});
+
+export const approveCouponSchema = z.object({
+  // Admin can optionally override duration/launch
+  durationDays: z.number().positive().max(60).optional(),
+  promoStartDate: z.coerce.date().optional(),
 });

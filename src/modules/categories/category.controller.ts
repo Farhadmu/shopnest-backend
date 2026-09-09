@@ -3,6 +3,15 @@ import { Category } from "./category.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { env } from "../../config/env";
+
+async function removeStoredImage(image?: string | null) {
+  if (!image || !image.startsWith("/uploads/categories/")) return;
+  const filename = path.basename(image);
+  await fs.rm(path.resolve(env.UPLOAD_DIR, "categories", filename), { force: true });
+}
 
 function slugify(input: string) {
   return input
@@ -53,13 +62,18 @@ export const createCategory = asyncHandler(async (req: Request, res: Response) =
     if (!parentCategory) throw ApiError.badRequest("Selected parent category does not exist");
   }
 
-  const category = await Category.create({ name, slug, parent: parent || null, image });
+  const storedImage = req.file ? `/uploads/categories/${req.file.filename}` : image;
+  const category = await Category.create({ name, slug, parent: parent || null, image: storedImage });
   sendSuccess(res, category.toJSON(), "Category created", 201);
 });
 
 export const updateCategory = asyncHandler(async (req: Request, res: Response) => {
   const update = { ...req.body };
   const id = req.params.id;
+
+  const existing = await Category.findById(id);
+  if (!existing) throw ApiError.notFound("Category not found");
+  if (req.file) update.image = `/uploads/categories/${req.file.filename}`;
 
   if (update.slug) {
     update.slug = slugify(update.slug);
@@ -79,6 +93,7 @@ export const updateCategory = asyncHandler(async (req: Request, res: Response) =
 
   const category = await Category.findByIdAndUpdate(id, update, { new: true });
   if (!category) throw ApiError.notFound("Category not found");
+  if (req.file && existing.image !== update.image) await removeStoredImage(existing.image);
   sendSuccess(res, category.toJSON(), "Category updated");
 });
 
@@ -92,5 +107,6 @@ export const deleteCategory = asyncHandler(async (req: Request, res: Response) =
 
   const category = await Category.findByIdAndDelete(req.params.id);
   if (!category) throw ApiError.notFound("Category not found");
+  await removeStoredImage(category.image);
   sendSuccess(res, { success: true }, "Category deleted");
 });

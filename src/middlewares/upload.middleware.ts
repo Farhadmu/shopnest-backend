@@ -27,6 +27,17 @@ const heroBannerImageStorage = multer.diskStorage({
   },
 });
 
+const categoryUploadDirectory = path.resolve(env.UPLOAD_DIR, "categories");
+fs.mkdirSync(categoryUploadDirectory, { recursive: true });
+
+const categoryImageStorage = multer.diskStorage({
+  destination: (_request, _file, callback) => callback(null, categoryUploadDirectory),
+  filename: (_request, file, callback) => {
+    const extension = path.extname(file.originalname).toLowerCase() || ".jpg";
+    callback(null, `${crypto.randomUUID()}${extension}`);
+  },
+});
+
 export const reviewImageUpload = multer({
   storage: reviewImageStorage,
   limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024, files: 5 },
@@ -45,6 +56,18 @@ export const heroBannerImageUpload = multer({
   fileFilter: (_request, file, callback) => {
     if (!file.mimetype.startsWith("image/")) {
       callback(ApiError.badRequest("Only image files can be uploaded for a hero banner"));
+      return;
+    }
+    callback(null, true);
+  },
+});
+
+export const categoryImageUpload = multer({
+  storage: categoryImageStorage,
+  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
+  fileFilter: (_request, file, callback) => {
+    if (!file.mimetype.startsWith("image/")) {
+      callback(ApiError.badRequest("Only image files can be uploaded for a category"));
       return;
     }
     callback(null, true);

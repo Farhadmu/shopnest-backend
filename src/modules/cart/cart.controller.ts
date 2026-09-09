@@ -23,8 +23,11 @@ async function normalizeCartItems(cart: ICart & { save: () => Promise<unknown> }
 }
 
 async function getOrCreateCart(userId: string) {
-  let cart = await Cart.findOne({ userId });
-  if (!cart) cart = await Cart.create({ userId, items: [] });
+  const cart = await Cart.findOneAndUpdate(
+    { userId },
+    { $setOnInsert: { userId, items: [] } },
+    { new: true, upsert: true }
+  );
   await normalizeCartItems(cart);
   return cart;
 }

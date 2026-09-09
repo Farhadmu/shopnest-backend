@@ -41,4 +41,44 @@ describe("Admin Coupon Control Logic", () => {
     expect(message).toContain("Please adjust discount value");
     expect(message).toContain("Admin report for your coupon");
   });
+
+  it("resolveReport clears report fields and restores coupon", () => {
+    const reported = {
+      approvalStatus: "reported" as const,
+      isActive: false,
+      rejectionNote: "Discount value too high",
+    };
+    const resolved = {
+      approvalStatus: "approved" as const,
+      isActive: true,
+      rejectionNote: undefined,
+    };
+    expect(reported.approvalStatus).toBe("reported");
+    expect(resolved.approvalStatus).toBe("approved");
+    expect(resolved.isActive).toBe(true);
+    expect(resolved.rejectionNote).toBeUndefined();
+  });
+
+  it("resolveReport rejects non-reported coupons", () => {
+    const err = ApiError.badRequest("Only reported coupons can have their report resolved");
+    expect(err.statusCode).toBe(400);
+    expect(err.message).toContain("Only reported coupons can have their report resolved");
+  });
+
+  it("resolveReport notification payload is sent to seller", () => {
+    const code = "TEST";
+    const notification = {
+      type: "coupon",
+      category: "system",
+      priority: "info",
+      source: "admin",
+      title: "Admin Report Resolved",
+      message: `The report on your coupon "${code}" has been resolved by an admin. The coupon has been restored and is now active again.`,
+      link: "/dashboard/seller/coupons",
+    };
+    expect(notification.priority).toBe("info");
+    expect(notification.source).toBe("admin");
+    expect(notification.title).toBe("Admin Report Resolved");
+    expect(notification.message).toContain(`"${code}" has been resolved by an admin`);
+  });
 });

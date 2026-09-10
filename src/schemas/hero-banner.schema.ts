@@ -18,6 +18,8 @@ export const createHeroBannerSchema = z.object({
     .refine((value) => value.startsWith("/") || URL.canParse(value), "A valid URL or site path is required")
     .optional()
     .nullable(),
+  overlayColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Overlay color must be a hex color").optional().nullable(),
+  overlayOpacity: z.coerce.number().int().min(0).max(100).optional().nullable(),
   bgClassName: z.string().max(200).optional().nullable(),
   textTheme: z.enum(["light", "dark"]).default("light"),
   isActive: z.boolean().default(true),

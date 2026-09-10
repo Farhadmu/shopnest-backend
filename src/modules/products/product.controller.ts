@@ -6,7 +6,7 @@ import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { ACTIVE_PRODUCT_FILTER } from "../../utils/activeProductFilter";
 import { getSellerStore } from "../sellers/seller-store.util";
-import { resolveCategoryNames } from "@/utils/category.utils";
+import { resolveCategoryNames } from "../../utils/category.utils";
 
 function resolveStore(identifier: string) {
   return Store.findOne({

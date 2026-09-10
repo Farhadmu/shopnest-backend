@@ -199,11 +199,15 @@ async function runHomepageQueueEngine(): Promise<void> {
 
   // Process each expired/exhausted runner
   for (const expired of expiredRunners) {
-    // Find the oldest queued coupon
+    // Find the oldest queued coupon that is eligible to start (no future promoStartDate)
     const nextQueued = await Coupon.findOne({
       placement: "homepage",
       approvalStatus: "approved",
       homepageStatus: "queued",
+      $or: [
+        { promoStartDate: { $exists: false } },
+        { promoStartDate: { $lte: now } },
+      ],
     }).sort({ approvedAt: 1, createdAt: 1 });
 
     if (!nextQueued) {
@@ -239,6 +243,42 @@ async function runHomepageQueueEngine(): Promise<void> {
 
   // Recompute queue positions for all remaining queued coupons
   await recomputeQueuePositions();
+
+  // Fill any remaining empty slots with queued coupons
+  const runningCount = await Coupon.countDocuments({
+    placement: "homepage",
+    approvalStatus: "approved",
+    homepageStatus: "running",
+  });
+
+  let slotsToFill = HOMEPAGE_RUNNING_SLOTS - runningCount;
+  while (slotsToFill > 0) {
+    const nextQueued = await Coupon.findOne({
+      placement: "homepage",
+      approvalStatus: "approved",
+      homepageStatus: "queued",
+      $or: [
+        { promoStartDate: { $exists: false } },
+        { promoStartDate: { $lte: now } },
+      ],
+    }).sort({ approvedAt: 1, createdAt: 1 });
+
+    if (!nextQueued) break;
+
+    const durationDays = nextQueued.durationDays ?? 7;
+    const startsAt = nextQueued.promoStartDate && nextQueued.promoStartDate > now
+      ? nextQueued.promoStartDate
+      : now;
+
+    nextQueued.startsAt = startsAt;
+    nextQueued.expiresAt = new Date(startsAt.getTime() + durationDays * DAY_MS);
+    nextQueued.homepageStatus = "running";
+    nextQueued.queuePosition = undefined;
+    nextQueued.isActive = true;
+    await nextQueued.save();
+
+    slotsToFill--;
+  }
 }
 
 /** GET /coupons - sellers see their own coupons, admins see every coupon on the platform. */
@@ -408,6 +448,10 @@ export const rejectCoupon = asyncHandler(async (req: Request, res: Response) => 
   coupon.rejectionNote = req.body?.rejectionNote;
   await coupon.save();
 
+  if (coupon.homepageStatus === "running") {
+    await runHomepageQueueEngine();
+  }
+
   const reportMsg = coupon.rejectionNote
     ? `Your coupon "${coupon.code}" has been rejected. Admin report: ${coupon.rejectionNote}`
     : `Your coupon "${coupon.code}" has been rejected by an admin.`;
@@ -441,6 +485,10 @@ export const reportCoupon = asyncHandler(async (req: Request, res: Response) => 
   coupon.isActive = false;
   coupon.rejectionNote = reportNote.trim();
   await coupon.save();
+
+  if (coupon.placement === "homepage" && coupon.homepageStatus === "running") {
+    await runHomepageQueueEngine();
+  }
 
   // Release category locks since coupon is no longer valid
   await releaseCategoriesIfUnused(coupon);
@@ -510,7 +558,20 @@ export const deleteCoupon = asyncHandler(async (req: Request, res: Response) => 
   // Release category locks if no other valid homepage coupon from the same seller uses them
   await releaseCategoriesIfUnused(coupon);
 
+  const wasRunning = coupon.placement === "homepage" && coupon.homepageStatus === "running";
+
+  coupon.isActive = false;
+  if (coupon.placement === "homepage") {
+    coupon.homepageStatus = "expired";
+  }
+  await coupon.save();
+
   await coupon.deleteOne();
+
+  if (wasRunning) {
+    await runHomepageQueueEngine();
+  }
+
   sendSuccess(res, { success: true }, "Coupon deleted");
 });
 

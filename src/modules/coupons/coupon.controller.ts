@@ -448,6 +448,8 @@ export const rejectCoupon = asyncHandler(async (req: Request, res: Response) => 
   coupon.rejectionNote = req.body?.rejectionNote;
   await coupon.save();
 
+  await releaseCategoriesIfUnused(coupon);
+
   if (coupon.homepageStatus === "running") {
     await runHomepageQueueEngine();
   }

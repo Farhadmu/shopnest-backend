@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { FilterQuery } from "mongoose";
-import { Coupon, ICoupon, computeDiscount } from "./coupon.model";
+import { Coupon, ICoupon, computeDiscount, isFreeShippingCouponApplicable, CartLineItem } from "./coupon.model";
 import { Store } from "../sellers/store.model";
 import { Category } from "../categories/category.model";
 import { getSettingsSingleton } from "../settings/admin-settings.model";
@@ -21,12 +21,13 @@ function resolveCategoryNames(source: { categories?: string[]; category?: string
 
 /**
  * Creation-time guard: a seller cannot submit a "specific-category" coupon
- * (any placement) for a category already locked/assigned to a different seller.
+ * (homepage placement only) for a category already locked/assigned to a different seller.
  */
 async function assertCategoriesNotLockedToOtherSeller(
-  body: { scope?: string; categories?: string[]; category?: string },
+  body: { scope?: string; placement?: string; categories?: string[]; category?: string },
   sellerId: string
 ) {
+  if (body.placement !== "homepage") return;
   if (body.scope !== "specific-category") return;
   const catNames = resolveCategoryNames(body);
   if (catNames.length === 0) return;
@@ -43,10 +44,13 @@ async function assertCategoriesNotLockedToOtherSeller(
 
 /**
  * Creation/Update-time guard: enforces that seller cannot select more categories
- * than the admin-configured global category_length limit for homepage coupons.
+ * than the admin-configured category_length limit for homepage coupons.
+ * This is a PER-SELLER limit: each seller can use up to `category_length` categories
+ * for their homepage coupons.
  */
 async function assertCategoryLimitNotExceeded(
-  body: { scope?: string; placement?: string; categories?: string[]; category?: string }
+  body: { scope?: string; placement?: string; categories?: string[]; category?: string },
+  sellerId: string
 ) {
   if (body.placement !== "homepage") return;
   if (body.scope !== "specific-category") return;
@@ -54,16 +58,34 @@ async function assertCategoryLimitNotExceeded(
   if (catNames.length === 0) return;
 
   const settings = await getSettingsSingleton();
-  if (catNames.length > settings.category_length) {
+  
+  // Count categories already locked to this seller for homepage coupons
+  const sellerLockedCount = await Category.countDocuments({
+    is_locked: true,
+    assigned_seller_id: sellerId,
+  });
+
+  // Total categories this seller would have after adding new ones
+  // We need to avoid double-counting categories that are already in the seller's locked categories
+  const alreadyLockedCategories = await Category.find({
+    is_locked: true,
+    assigned_seller_id: sellerId,
+    name: { $in: catNames },
+  }).select("name");
+  
+  const alreadyLockedNames = new Set(alreadyLockedCategories.map(c => c.name));
+  const newCategoriesCount = catNames.filter(name => !alreadyLockedNames.has(name)).length;
+  
+  if (sellerLockedCount + newCategoriesCount > settings.category_length) {
     throw ApiError.badRequest(
-      `You cannot select ${catNames.length} categories for homepage coupons. Platform limit set by admin is ${settings.category_length}.`
+      `You cannot select ${catNames.length} categories for homepage coupons. You already have ${sellerLockedCount} categories allocated, and this would exceed the per-seller limit of ${settings.category_length}.`
     );
   }
 }
 
 /**
  * Approval-time Category Allocation & Lock: locks every category on a
- * "specific-category" coupon to its seller, enforcing the admin's global
+ * "specific-category" coupon to its seller, enforcing the admin's per-seller
  * `category_length` limit and rejecting categories locked to someone else.
  */
 async function lockCategoriesForSeller(coupon: ICoupon) {
@@ -83,10 +105,14 @@ async function lockCategoriesForSeller(coupon: ICoupon) {
   const toLock = categoryDocs.filter((c) => !c.is_locked);
   if (toLock.length > 0) {
     const settings = await getSettingsSingleton();
-    const currentlyLocked = await Category.countDocuments({ is_locked: true });
-    if (currentlyLocked + toLock.length > settings.category_length) {
+    // Count categories already locked to THIS seller (per-seller limit)
+    const sellerLockedCount = await Category.countDocuments({
+      is_locked: true,
+      assigned_seller_id: coupon.createdBy,
+    });
+    if (sellerLockedCount + toLock.length > settings.category_length) {
       throw ApiError.badRequest(
-        `Approving this request would lock ${toLock.length} more categor${toLock.length === 1 ? "y" : "ies"}, exceeding the platform limit of ${settings.category_length}.`
+        `Approving this request would lock ${toLock.length} more categor${toLock.length === 1 ? "y" : "ies"} for this seller, exceeding the per-seller limit of ${settings.category_length}.`
       );
     }
   }
@@ -95,6 +121,36 @@ async function lockCategoriesForSeller(coupon: ICoupon) {
     { _id: { $in: categoryDocs.map((c) => c._id) } },
     { $set: { is_locked: true, assigned_seller_id: coupon.createdBy, lockedAt: new Date() } }
   );
+}
+
+/**
+ * Release category locks for a coupon if no other valid homepage coupon
+ * from the same seller is using those categories.
+ * Valid coupons: placement=homepage, approvalStatus=approved, homepageStatus=running|queued
+ */
+async function releaseCategoriesIfUnused(coupon: ICoupon): Promise<void> {
+  if (coupon.scope !== "specific-category") return;
+  const catNames = resolveCategoryNames(coupon);
+  if (catNames.length === 0) return;
+
+  for (const catName of catNames) {
+    const otherCoupon = await Coupon.findOne({
+      placement: "homepage",
+      approvalStatus: "approved",
+      homepageStatus: { $in: ["running", "queued"] },
+      scope: "specific-category",
+      createdBy: coupon.createdBy,
+      _id: { $ne: coupon._id },
+      $or: [{ category: catName }, { categories: catName }],
+    });
+
+    if (!otherCoupon) {
+      await Category.updateOne(
+        { name: catName, assigned_seller_id: coupon.createdBy },
+        { $set: { is_locked: false, assigned_seller_id: null, lockedAt: null } }
+      );
+    }
+  }
 }
 
 /**
@@ -143,11 +199,15 @@ async function runHomepageQueueEngine(): Promise<void> {
 
   // Process each expired/exhausted runner
   for (const expired of expiredRunners) {
-    // Find the oldest queued coupon
+    // Find the oldest queued coupon that is eligible to start (no future promoStartDate)
     const nextQueued = await Coupon.findOne({
       placement: "homepage",
       approvalStatus: "approved",
       homepageStatus: "queued",
+      $or: [
+        { promoStartDate: { $exists: false } },
+        { promoStartDate: { $lte: now } },
+      ],
     }).sort({ approvedAt: 1, createdAt: 1 });
 
     if (!nextQueued) {
@@ -155,6 +215,8 @@ async function runHomepageQueueEngine(): Promise<void> {
       expired.homepageStatus = "expired";
       expired.isActive = false;
       await expired.save();
+      // Release category locks since coupon is no longer valid
+      await releaseCategoriesIfUnused(expired);
       continue;
     }
 
@@ -175,10 +237,48 @@ async function runHomepageQueueEngine(): Promise<void> {
     expired.homepageStatus = "expired";
     expired.isActive = false;
     await expired.save();
+    // Release category locks since coupon is no longer valid
+    await releaseCategoriesIfUnused(expired);
   }
 
   // Recompute queue positions for all remaining queued coupons
   await recomputeQueuePositions();
+
+  // Fill any remaining empty slots with queued coupons
+  const runningCount = await Coupon.countDocuments({
+    placement: "homepage",
+    approvalStatus: "approved",
+    homepageStatus: "running",
+  });
+
+  let slotsToFill = HOMEPAGE_RUNNING_SLOTS - runningCount;
+  while (slotsToFill > 0) {
+    const nextQueued = await Coupon.findOne({
+      placement: "homepage",
+      approvalStatus: "approved",
+      homepageStatus: "queued",
+      $or: [
+        { promoStartDate: { $exists: false } },
+        { promoStartDate: { $lte: now } },
+      ],
+    }).sort({ approvedAt: 1, createdAt: 1 });
+
+    if (!nextQueued) break;
+
+    const durationDays = nextQueued.durationDays ?? 7;
+    const startsAt = nextQueued.promoStartDate && nextQueued.promoStartDate > now
+      ? nextQueued.promoStartDate
+      : now;
+
+    nextQueued.startsAt = startsAt;
+    nextQueued.expiresAt = new Date(startsAt.getTime() + durationDays * DAY_MS);
+    nextQueued.homepageStatus = "running";
+    nextQueued.queuePosition = undefined;
+    nextQueued.isActive = true;
+    await nextQueued.save();
+
+    slotsToFill--;
+  }
 }
 
 /** GET /coupons - sellers see their own coupons, admins see every coupon on the platform. */
@@ -206,8 +306,14 @@ export const createCoupon = asyncHandler(async (req: Request, res: Response) => 
 
   const role = req.user!.role as "seller" | "admin";
 
+  if (role === "admin" && req.body.placement === "homepage") {
+    throw ApiError.badRequest(
+      "Admins cannot create homepage-placement coupons — only sellers can request homepage placement."
+    );
+  }
+
   if (role === "seller") {
-    await assertCategoryLimitNotExceeded(req.body);
+    await assertCategoryLimitNotExceeded(req.body, req.user!.id);
     await assertCategoriesNotLockedToOtherSeller(req.body, req.user!.id);
   }
 
@@ -242,9 +348,18 @@ export const approveCoupon = asyncHandler(async (req: Request, res: Response) =>
   if (req.body.promoStartDate) coupon.promoStartDate = new Date(req.body.promoStartDate);
 
   await lockCategoriesForSeller(coupon);
+
+  // 1. First, update the coupon to approved status and save it
+  const now = new Date();
+  coupon.approvalStatus = "approved";
+  coupon.rejectionNote = undefined;
+  coupon.approvedAt = now;
+  await coupon.save();
+
+  // 2. Run the homepage queue engine (now sees the newly approved coupon)
   await runHomepageQueueEngine();
 
-  const now = new Date();
+  // 3. Count running coupons AFTER queue engine has processed expirations
   const durationDays = coupon.durationDays ?? 7;
   const runningCount = await Coupon.countDocuments({
     placement: "homepage",
@@ -252,10 +367,7 @@ export const approveCoupon = asyncHandler(async (req: Request, res: Response) =>
     homepageStatus: "running",
   });
 
-  coupon.approvalStatus = "approved";
-  coupon.rejectionNote = undefined;
-  coupon.approvedAt = now;
-
+  // 4. Determine if the new coupon should be running or queued
   if (runningCount < HOMEPAGE_RUNNING_SLOTS) {
     const startsAt = coupon.promoStartDate && coupon.promoStartDate > now ? coupon.promoStartDate : now;
     coupon.startsAt = startsAt;
@@ -336,6 +448,12 @@ export const rejectCoupon = asyncHandler(async (req: Request, res: Response) => 
   coupon.rejectionNote = req.body?.rejectionNote;
   await coupon.save();
 
+  await releaseCategoriesIfUnused(coupon);
+
+  if (coupon.homepageStatus === "running") {
+    await runHomepageQueueEngine();
+  }
+
   const reportMsg = coupon.rejectionNote
     ? `Your coupon "${coupon.code}" has been rejected. Admin report: ${coupon.rejectionNote}`
     : `Your coupon "${coupon.code}" has been rejected by an admin.`;
@@ -370,6 +488,13 @@ export const reportCoupon = asyncHandler(async (req: Request, res: Response) => 
   coupon.rejectionNote = reportNote.trim();
   await coupon.save();
 
+  if (coupon.placement === "homepage" && coupon.homepageStatus === "running") {
+    await runHomepageQueueEngine();
+  }
+
+  // Release category locks since coupon is no longer valid
+  await releaseCategoriesIfUnused(coupon);
+
   await createNotification({
     userId: coupon.createdBy,
     recipientType: "seller",
@@ -397,10 +522,18 @@ export const resolveReportCoupon = asyncHandler(async (req: Request, res: Respon
     throw ApiError.badRequest("Only reported coupons can have their report resolved");
   }
 
+  // Re-acquire category locks for homepage specific-category coupons
+  if (coupon.placement === "homepage" && coupon.scope === "specific-category") {
+    await lockCategoriesForSeller(coupon);
+  }
+
   coupon.approvalStatus = "approved";
   coupon.isActive = true;
   coupon.rejectionNote = undefined;
   await coupon.save();
+
+  // Run queue engine to place the coupon in running or queued
+  await runHomepageQueueEngine();
 
   await createNotification({
     userId: coupon.createdBy,
@@ -423,7 +556,24 @@ export const deleteCoupon = asyncHandler(async (req: Request, res: Response) => 
   if (req.user!.role !== "admin" && coupon.createdBy !== req.user!.id) {
     throw ApiError.forbidden("You do not own this coupon");
   }
+
+  // Release category locks if no other valid homepage coupon from the same seller uses them
+  await releaseCategoriesIfUnused(coupon);
+
+  const wasRunning = coupon.placement === "homepage" && coupon.homepageStatus === "running";
+
+  coupon.isActive = false;
+  if (coupon.placement === "homepage") {
+    coupon.homepageStatus = "expired";
+  }
+  await coupon.save();
+
   await coupon.deleteOne();
+
+  if (wasRunning) {
+    await runHomepageQueueEngine();
+  }
+
   sendSuccess(res, { success: true }, "Coupon deleted");
 });
 
@@ -447,16 +597,23 @@ export const updateCoupon = asyncHandler(async (req: Request, res: Response) => 
     if (exists) throw ApiError.conflict("Coupon code already exists");
   }
 
+  // Capture pre-update state for category lock synchronization
+  const wasApprovedHomepageSpecificCategory =
+    coupon.placement === "homepage" &&
+    coupon.approvalStatus === "approved" &&
+    coupon.scope === "specific-category";
+  const oldCategories = wasApprovedHomepageSpecificCategory ? resolveCategoryNames(coupon) : [];
+
   if (req.user!.role === "seller") {
     await assertCategoryLimitNotExceeded({
       scope: req.body.scope ?? coupon.scope,
-      placement: req.body.placement ?? coupon.placement,
+      placement: req.body.placement,
       category: req.body.category,
       categories: req.body.categories,
-    });
+    }, req.user!.id);
     if (req.body.category || req.body.categories) {
       await assertCategoriesNotLockedToOtherSeller(
-        { scope: req.body.scope ?? coupon.scope, category: req.body.category, categories: req.body.categories },
+        { scope: req.body.scope ?? coupon.scope, category: req.body.category, categories: req.body.categories, placement: req.body.placement },
         req.user!.id
       );
     }
@@ -481,20 +638,110 @@ export const updateCoupon = asyncHandler(async (req: Request, res: Response) => 
   }
 
   await coupon.save();
+
+  // Synchronize category locks after update
+  const isNowApprovedHomepageSpecificCategory =
+    coupon.placement === "homepage" &&
+    coupon.approvalStatus === "approved" &&
+    coupon.scope === "specific-category";
+  const newCategories = isNowApprovedHomepageSpecificCategory ? resolveCategoryNames(coupon) : [];
+
+  if (wasApprovedHomepageSpecificCategory || isNowApprovedHomepageSpecificCategory) {
+    const removedCategories = oldCategories.filter((c) => !newCategories.includes(c));
+    const addedCategories = newCategories.filter((c) => !oldCategories.includes(c));
+
+    // Release locks for removed categories if no other valid coupon uses them
+    for (const catName of removedCategories) {
+      const otherCoupon = await Coupon.findOne({
+        placement: "homepage",
+        approvalStatus: "approved",
+        homepageStatus: { $in: ["running", "queued"] },
+        scope: "specific-category",
+        createdBy: coupon.createdBy,
+        _id: { $ne: coupon._id },
+        $or: [{ category: catName }, { categories: catName }],
+      });
+      if (!otherCoupon) {
+        await Category.updateOne(
+          { name: catName, assigned_seller_id: coupon.createdBy },
+          { $set: { is_locked: false, assigned_seller_id: null, lockedAt: null } }
+        );
+      }
+    }
+
+    // Lock newly added categories (for admin edits where coupon stays approved)
+    if (addedCategories.length > 0 && isNowApprovedHomepageSpecificCategory) {
+      // Validate conflicts with other sellers
+      const conflict = await Category.findOne({
+        name: { $in: addedCategories },
+        is_locked: true,
+        assigned_seller_id: { $ne: coupon.createdBy },
+      });
+      if (conflict) {
+        throw ApiError.conflict(`Category "${conflict.name}" is already locked to another seller`);
+      }
+
+      // For sellers, category limit is checked on next approval (coupon goes to pending)
+      // For admins editing their own approved coupon, check limit now
+      if (req.user!.role === "admin" && coupon.createdByRole === "admin") {
+        const settings = await getSettingsSingleton();
+        const sellerLockedCount = await Category.countDocuments({
+          is_locked: true,
+          assigned_seller_id: coupon.createdBy,
+        });
+        const alreadyLockedNames = new Set(
+          (await Category.find({ is_locked: true, assigned_seller_id: coupon.createdBy, name: { $in: addedCategories } }).select("name")).map((c) => c.name)
+        );
+        const newCategoriesCount = addedCategories.filter((name) => !alreadyLockedNames.has(name)).length;
+        if (sellerLockedCount + newCategoriesCount > settings.category_length) {
+          throw ApiError.badRequest(
+            `Approving this change would lock ${newCategoriesCount} more categor${newCategoriesCount === 1 ? "y" : "ies"} for this seller, exceeding the per-seller limit of ${settings.category_length}.`
+          );
+        }
+      }
+
+      await Category.updateMany(
+        { name: { $in: addedCategories } },
+        { $set: { is_locked: true, assigned_seller_id: coupon.createdBy, lockedAt: new Date() } }
+      );
+    }
+
+    // If coupon was approved homepage specific-category but no longer is (e.g., seller edit -> pending),
+    // release all old categories that weren't retained (already handled by removedCategories above)
+    // Note: retained categories keep their locks automatically
+  }
+
   sendSuccess(res, coupon.toJSON(), "Coupon updated");
 });
 
 export const validateCoupon = asyncHandler(async (req: Request, res: Response) => {
   const { code } = req.params as { code: string };
-  const subtotal = Number(req.query.subtotal ?? 0);
+  const { items } = req.body as { items: CartLineItem[] };
 
   const coupon = await Coupon.findOne({ code: code.toUpperCase() });
   if (!coupon) throw ApiError.notFound("Invalid coupon code");
 
-  const discount = computeDiscount(coupon, subtotal);
+  // free-shipping coupons don't reduce the product subtotal — they waive the
+  // delivery fee, so they're validated through the shipping-applicability path
+  // rather than computeDiscount (which returns 0 for this type).
+  if (coupon.type === "free-shipping") {
+    if (!isFreeShippingCouponApplicable(coupon, items)) {
+      throw ApiError.badRequest("Coupon is not applicable to this order");
+    }
+    sendSuccess(res, {
+      code: coupon.code,
+      discount: 0,
+      type: coupon.type,
+      value: coupon.value,
+      freeShipping: true,
+    });
+    return;
+  }
+
+  const discount = computeDiscount(coupon, items);
   if (discount <= 0) throw ApiError.badRequest("Coupon is not applicable to this order");
 
-  sendSuccess(res, { code: coupon.code, discount, type: coupon.type, value: coupon.value });
+  sendSuccess(res, { code: coupon.code, discount, type: coupon.type, value: coupon.value, freeShipping: false });
 });
 
 /**
@@ -554,6 +801,25 @@ export const getPublicHomepageCoupons = asyncHandler(async (_req: Request, res: 
 export const getCategoryLimit = asyncHandler(async (_req: Request, res: Response) => {
   const settings = await getSettingsSingleton();
   sendSuccess(res, { category_length: settings.category_length });
+});
+
+/** GET /coupons/seller-locked-categories/:sellerId - returns categories locked to a specific seller. */
+export const getSellerLockedCategories = asyncHandler(async (req: Request, res: Response) => {
+  let sellerId = req.params.sellerId;
+  if (!sellerId || sellerId === "me") {
+    sellerId = req.user!.id;
+  }
+  // Only allow sellers to see their own, admins can see any
+  if (req.user!.role !== "admin" && sellerId !== req.user!.id) {
+    throw ApiError.forbidden("You can only view your own locked categories");
+  }
+  
+  const lockedCategories = await Category.find({
+    is_locked: true,
+    assigned_seller_id: sellerId,
+  }).select("name");
+  
+  sendSuccess(res, lockedCategories.map(c => c.name));
 });
 
 /** GET /coupons/public/store/:sellerId - approved, currently-live coupons for one seller's public store page. */

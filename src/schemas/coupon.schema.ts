@@ -63,6 +63,18 @@ export const applyCouponSchema = z.object({
   code: z.string().min(1),
 });
 
+export const validateCouponSchema = z.object({
+  items: z.array(
+    z.object({
+      productId: z.string(),
+      category: z.string(),
+      sellerId: z.string(),
+      price: z.number().nonnegative(),
+      quantity: z.number().int().positive(),
+    })
+  ),
+});
+
 export const approveCouponSchema = z.object({
   // Admin can optionally override duration/launch
   durationDays: z.number().positive().max(60).optional(),

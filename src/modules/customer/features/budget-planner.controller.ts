@@ -1,16 +1,18 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
 import { Product } from "../../products/product.model";
 import { ACTIVE_PRODUCT_FILTER } from "../../../utils/activeProductFilter";
+import { resolveCategoryNames } from "../../../utils/category.utils";
 
 // SMART BUDGET PLANNER
 export const generateBudgetPlan = asyncHandler(async (req: Request, res: Response) => {
   const { budget, purpose } = req.body;
   const targetBudget = Number(budget);
 
-  if (!targetBudget || targetBudget <= 0) {
+  if (!Number.isFinite(targetBudget) || targetBudget <= 0) {
     throw ApiError.badRequest("Please provide a valid budget amount");
   }
   if (!purpose) {
@@ -18,10 +20,12 @@ export const generateBudgetPlan = asyncHandler(async (req: Request, res: Respons
   }
 
   // Fetch approved, in-stock products for the category
+  // (resolves slug/name -> actual category names + subcategories, same as product listing)
+  const categoryNames = await resolveCategoryNames(purpose);
   const categoryProducts = await Product.find({
     ...ACTIVE_PRODUCT_FILTER,
     stock: { $gt: 0 },
-    category: { $regex: new RegExp(`^${purpose}$`, "i") },
+    category: { $in: categoryNames.map((n) => new RegExp(`^${n}$`, "i")) },
   });
 
   if (categoryProducts.length === 0) {
@@ -69,13 +73,13 @@ export const generateBudgetPlan = asyncHandler(async (req: Request, res: Respons
     product: (typeof categoryProducts)[number],
     allocatedBudget: number
   ) => {
-    const pool = categoryProducts.filter((p) => p.id !== product.id);
+    const pool = categoryProducts.filter((p) => p.id !== product.id && p.stock > 0);
     const cheaper = pool.filter((p) => p.price < product.price).sort((a, b) => b.price - a.price).slice(0, 2);
     const premium = pool.filter((p) => p.price > product.price).sort((a, b) => a.price - b.price).slice(0, 2);
 
     plannedItems.push({
       role,
-      allocatedBudget: Math.round(allocatedBudget),
+      allocatedBudget: product.price,
       selectedProduct: {
         id: product.id,
         title: product.title,

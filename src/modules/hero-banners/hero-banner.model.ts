@@ -14,6 +14,10 @@ export interface IHeroBanner {
   price?: string | null;
   buttonText?: string | null;
   targetUrl?: string | null;
+  overlayColor?: string | null;
+  overlayOpacity?: number | null;
+  lightTextColor?: string | null;
+  darkTextColor?: string | null;
   bgClassName?: string | null;
   textTheme: "light" | "dark";
   isActive: boolean;
@@ -35,6 +39,10 @@ const heroBannerSchema = new Schema<IHeroBanner>(
     price: { type: String, default: null },
     buttonText: { type: String, default: null },
     targetUrl: { type: String, default: null },
+    overlayColor: { type: String, default: null },
+    overlayOpacity: { type: Number, min: 0, max: 100, default: null },
+    lightTextColor: { type: String, default: null },
+    darkTextColor: { type: String, default: null },
     bgClassName: { type: String, default: null },
     textTheme: { type: String, enum: ["light", "dark"], default: "light" },
     isActive: { type: Boolean, default: true, index: true },

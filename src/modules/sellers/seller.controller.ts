@@ -2,9 +2,11 @@ import { Request, Response } from "express";
 import { Store } from "./store.model";
 import { Product } from "../products/product.model";
 import { Order } from "../orders/order.model";
+import { Review } from "../reviews/review.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+import mongoose from "mongoose";
 
 /**
  * Helper: Converts any string into a URL-friendly slug.
@@ -29,58 +31,42 @@ function slugify(input: string): string {
  * 3. Response Sent:
  *    - HTTP 201 (or 200 on resubmit): Created/updated store JSON object
  */
-export const registerStore = asyncHandler(
-  async (req: Request, res: Response) => {
-    const existing = await Store.findOne({ ownerId: req.user!.id });
-    const { storeName, description, logo, banner, businessInfo } = req.body;
+export const registerStore = asyncHandler(async (req: Request, res: Response) => {
+  const existing = await Store.findOne({ ownerId: req.user!.id });
+  const { storeName, description, logo, banner, businessInfo } = req.body;
 
-    if (existing) {
-      if (existing.status === "rejected") {
-        existing.storeName = storeName || existing.storeName;
-        existing.description = description || existing.description;
-        if (logo !== undefined) existing.logo = logo;
-        if (banner !== undefined) existing.banner = banner;
-        if (businessInfo)
-          existing.businessInfo = {
-            ...(existing.businessInfo || {}),
-            ...businessInfo,
-          };
-        existing.status = "pending";
-        existing.rejectionReason = undefined;
-        await existing.save();
-        return sendSuccess(
-          res,
-          existing.toJSON(),
-          "Application resubmitted, pending admin approval",
-          200,
-        );
-      }
-      throw ApiError.conflict("You already have a store");
+  if (existing) {
+    if (existing.status === "rejected") {
+      existing.storeName = storeName || existing.storeName;
+      existing.description = description || existing.description;
+      if (logo !== undefined) existing.logo = logo;
+      if (banner !== undefined) existing.banner = banner;
+      if (businessInfo) existing.businessInfo = { ...(existing.businessInfo || {}), ...businessInfo };
+      existing.status = "pending";
+      existing.rejectionReason = undefined;
+      await existing.save();
+      return sendSuccess(res, existing.toJSON(), "Application resubmitted, pending admin approval", 200);
     }
+    throw ApiError.conflict("You already have a store");
+  }
 
-    let slug = slugify(storeName);
-    const dup = await Store.findOne({ slug });
-    if (dup) slug = `${slug}-${Date.now().toString(36)}`;
+  let slug = slugify(storeName);
+  const dup = await Store.findOne({ slug });
+  if (dup) slug = `${slug}-${Date.now().toString(36)}`;
 
-    const store = await Store.create({
-      ownerId: req.user!.id,
-      storeName,
-      slug,
-      description,
-      logo,
-      banner,
-      businessInfo,
-      status: "pending",
-    });
+  const store = await Store.create({
+    ownerId: req.user!.id,
+    storeName,
+    slug,
+    description,
+    logo,
+    banner,
+    businessInfo,
+    status: "pending",
+  });
 
-    sendSuccess(
-      res,
-      store.toJSON(),
-      "Store created, pending admin approval",
-      201,
-    );
-  },
-);
+  sendSuccess(res, store.toJSON(), "Store created, pending admin approval", 201);
+});
 
 /**
  * Controller: Get Logged-In User's Store
@@ -109,35 +95,29 @@ export const getMyStore = asyncHandler(async (req: Request, res: Response) => {
  * 3. Response Sent:
  *    - HTTP 200: Updated Store JSON object with "Store updated" message
  */
-export const updateMyStore = asyncHandler(
-  async (req: Request, res: Response) => {
-    const store = await Store.findOne({ ownerId: req.user!.id });
-    if (!store) throw ApiError.notFound("You do not have a store yet");
+export const updateMyStore = asyncHandler(async (req: Request, res: Response) => {
+  const store = await Store.findOne({ ownerId: req.user!.id });
+  if (!store) throw ApiError.notFound("You do not have a store yet");
 
-    const { storeName, description, logo, banner, businessInfo, resubmit } =
-      req.body;
-    if (storeName) store.storeName = storeName;
-    if (description) store.description = description;
-    if (logo !== undefined) store.logo = logo;
-    if (banner !== undefined) store.banner = banner;
-    if (businessInfo) {
-      store.businessInfo = {
-        ...(store.businessInfo || {}),
-        ...businessInfo,
-      };
-    }
-    if (
-      resubmit &&
-      (store.status === "rejected" || store.status === "pending")
-    ) {
-      store.status = "pending";
-      store.rejectionReason = undefined;
-    }
+  const { storeName, description, logo, banner, businessInfo, resubmit } = req.body;
+  if (storeName) store.storeName = storeName;
+  if (description) store.description = description;
+  if (logo !== undefined) store.logo = logo;
+  if (banner !== undefined) store.banner = banner;
+  if (businessInfo) {
+    store.businessInfo = {
+      ...(store.businessInfo || {}),
+      ...businessInfo,
+    };
+  }
+  if (resubmit && (store.status === "rejected" || store.status === "pending")) {
+    store.status = "pending";
+    store.rejectionReason = undefined;
+  }
 
-    await store.save();
-    sendSuccess(res, store.toJSON(), "Store updated");
-  },
-);
+  await store.save();
+  sendSuccess(res, store.toJSON(), "Store updated");
+});
 
 /**
  * Controller: Get Public Store Details By ID
@@ -149,26 +129,52 @@ export const updateMyStore = asyncHandler(
  * 3. Response Sent:
  *    - HTTP 200: Public storefront profile { id, storeName, description, trustScore, logo, banner, rating, ... }
  */
-export const getStoreById = asyncHandler(
-  async (req: Request, res: Response) => {
-    const store = await Store.findById(req.params.storeId);
-    if (!store || store.status === "rejected")
-      throw ApiError.notFound("Store not found");
+export const getStoreById = asyncHandler(async (req: Request, res: Response) => {
+  const identifier = req.params.storeId;
+  const store = await Store.findOne({
+    $or: [
+      { slug: identifier.toLowerCase() },
+      ...(mongoose.isValidObjectId(identifier) ? [{ _id: identifier }] : []),
+    ],
+  }).lean();
+  if (!store || store.status === "rejected") throw ApiError.notFound("Store not found");
 
-    sendSuccess(res, {
-      id: store.id,
-      storeName: store.storeName,
-      description: store.description,
-      trustScore: store.trustScore,
-      logo: store.logo,
-      banner: store.banner,
-      rating: store.rating,
-      ratingCount: store.ratingCount,
-      followersCount: store.followersCount,
-      status: store.status,
-    });
-  },
-);
+  const products = await Product.find({
+    storeId: { $in: [store._id.toString(), store.slug, store.ownerId] },
+    status: "approved",
+    isDeleted: false,
+  })
+    .sort({ sold: -1, createdAt: -1 })
+    .lean();
+
+  const reviews = products.length
+    ? await Review.find({ productId: { $in: products.map((product) => product._id.toString()) } })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean()
+    : [];
+
+  sendSuccess(res, {
+    id: store._id.toString(),
+    slug: store.slug,
+    ownerId: store.ownerId,
+    storeName: store.storeName,
+    description: store.description,
+    trustScore: store.trustScore,
+    logo: store.logo,
+    banner: store.banner,
+    rating: store.rating,
+    ratingCount: store.ratingCount,
+    followersCount: store.followersCount,
+    status: store.status,
+    createdAt: store.createdAt,
+    products,
+    reviews: reviews.map((review) => ({
+      ...review,
+      productId: review.productId,
+    })),
+  });
+});
 
 /**
  * Controller: Get Seller Dashboard Metrics
@@ -182,40 +188,32 @@ export const getStoreById = asyncHandler(
  * 3. Response Sent:
  *    - HTTP 200: { totalSales, totalOrders, totalProducts }
  */
-export const getSellerMetrics = asyncHandler(
-  async (req: Request, res: Response) => {
-    const store = await Store.findOne({ ownerId: req.user!.id });
-    if (!store) {
-      return sendSuccess(res, {
-        totalSales: 0,
-        totalOrders: 0,
-        totalProducts: 0,
-      });
-    }
+export const getSellerMetrics = asyncHandler(async (req: Request, res: Response) => {
+  const store = await Store.findOne({ ownerId: req.user!.id });
+  if (!store) {
+    return sendSuccess(res, { totalSales: 0, totalOrders: 0, totalProducts: 0 });
+  }
 
-    const [totalProducts, orderAgg] = await Promise.all([
-      Product.countDocuments({ storeId: store.id, isDeleted: false }),
-      Order.aggregate([
-        { $unwind: "$items" },
-        { $match: { "items.storeId": store.id } },
-        {
-          $group: {
-            _id: null,
-            totalSales: {
-              $sum: { $multiply: ["$items.price", "$items.quantity"] },
-            },
-            totalOrders: { $addToSet: "$_id" },
-          },
+  const [totalProducts, orderAgg] = await Promise.all([
+    Product.countDocuments({ storeId: store.id, isDeleted: false }),
+    Order.aggregate([
+      { $unwind: "$items" },
+      { $match: { "items.storeId": store.id } },
+      {
+        $group: {
+          _id: null,
+          totalSales: { $sum: { $multiply: ["$items.price", "$items.quantity"] } },
+          totalOrders: { $addToSet: "$_id" },
         },
-      ]),
-    ]);
+      },
+    ]),
+  ]);
 
-    const totalSales = orderAgg[0]?.totalSales ?? 0;
-    const totalOrders = orderAgg[0]?.totalOrders?.length ?? 0;
+  const totalSales = orderAgg[0]?.totalSales ?? 0;
+  const totalOrders = orderAgg[0]?.totalOrders?.length ?? 0;
 
-    sendSuccess(res, { totalSales, totalOrders, totalProducts });
-  },
-);
+  sendSuccess(res, { totalSales, totalOrders, totalProducts });
+});
 
 /**
  * Controller: List All Stores (Public / Admin Filterable)
@@ -230,7 +228,11 @@ export const getSellerMetrics = asyncHandler(
 export const listStores = asyncHandler(async (req: Request, res: Response) => {
   const filter = { status: "approved" as const };
   const stores = await Store.find(filter).sort({ createdAt: -1 }).lean();
-  const storeIds = stores.map((store) => store._id.toString());
+  const storeIds = stores.flatMap((store) => [
+    store._id.toString(),
+    store.slug,
+    store.ownerId,
+  ]);
 
   const products = await Product.find({
     storeId: { $in: storeIds },
@@ -249,11 +251,12 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
 
   res.status(200).json(
     stores.map((store) => {
-      const storeProducts = productsByStore.get(store._id.toString()) || [];
-      const salesNumber = storeProducts.reduce(
-        (total, product) => total + (product.sold || 0),
-        0,
-      );
+      const storeProducts =
+        productsByStore.get(store._id.toString()) ||
+        productsByStore.get(store.slug) ||
+        productsByStore.get(store.ownerId) ||
+        [];
+      const salesNumber = storeProducts.reduce((total, product) => total + (product.sold || 0), 0);
 
       return {
         ...store,

@@ -41,7 +41,8 @@ export const getHeroBannerById = asyncHandler(async (req: Request, res: Response
 export const createHeroBanner = asyncHandler(async (req: Request, res: Response) => {
   const {
     categoryId, imageUrl, placement, eyebrow, title, highlight, subtitle,
-    description, price, buttonText, targetUrl, bgClassName, textTheme,
+    description, price, buttonText, targetUrl, overlayColor, overlayOpacity,
+    lightTextColor, darkTextColor, bgClassName, textTheme,
     isActive, displayOrder,
   } = req.body;
 
@@ -56,6 +57,10 @@ export const createHeroBanner = asyncHandler(async (req: Request, res: Response)
     price: price ?? null,
     buttonText: buttonText ?? null,
     targetUrl: targetUrl ?? null,
+    overlayColor: overlayColor ?? null,
+    overlayOpacity: overlayOpacity ?? null,
+    lightTextColor: lightTextColor ?? null,
+    darkTextColor: darkTextColor ?? null,
     bgClassName: bgClassName ?? null,
     textTheme: textTheme ?? "light",
     isActive: isActive ?? true,

@@ -12,9 +12,13 @@ import * as abExperimentsCtrl from "./features/ab-experiments.controller";
 import * as sellerAnalyticsCtrl from "./features/seller-analytics.controller";
 import * as inventoryIntelligenceCtrl from "./features/inventory-intelligence.controller";
 import * as customerInsightsCtrl from "./features/customer-insights.controller";
+import * as commandCenterCtrl from "./features/command-center.controller";
 import { attachUserIfPresent } from "../../middlewares/auth.middleware";
 
 const router = Router();
+
+// 10. Unified Seller Command Center
+router.get("/command-center", attachUserIfPresent, commandCenterCtrl.getSellerCommandCenter);
 
 // 11. Health Score
 router.get("/health-score", attachUserIfPresent, healthScoreCtrl.getSellerHealthScore);

@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import { Product, IProduct } from "./product.model";
 import { Store } from "../sellers/store.model";
 import { asyncHandler } from "../../utils/async-handler";
@@ -7,6 +8,7 @@ import { ApiError } from "../../utils/api-error";
 import { ACTIVE_PRODUCT_FILTER } from "../../utils/activeProductFilter";
 import { getSellerStore } from "../sellers/seller-store.util";
 import { resolveCategoryNames } from "../../utils/category.utils";
+import { normalizeLeanArray, normalizeLean } from "../../utils/model-plugins";
 
 function resolveStore(identifier: string) {
   return Store.findOne({
@@ -115,7 +117,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   res.set("X-Page", String(page));
   res.set("X-Limit", String(limit));
 
-  sendSuccess(res, products);
+  sendSuccess(res, normalizeLeanArray(products as Record<string, unknown>[]));
 });
 
 export const getStoreOptions = asyncHandler(async (_req: Request, res: Response) => {
@@ -175,13 +177,18 @@ export const getTrendingProducts = asyncHandler(async (req: Request, res: Respon
     .limit(limit)
     .lean();
 
-  sendSuccess(res, { count: products.length, products });
+  const normalized = normalizeLeanArray(products as Record<string, unknown>[]);
+  sendSuccess(res, { count: normalized.length, products: normalized });
 });
 
 export const getProductById = asyncHandler(async (req: Request, res: Response) => {
-  const product = await Product.findById(req.params.id).lean();
+  const { id } = req.params;
+  if (!id || id === "undefined" || id === "null" || !mongoose.isValidObjectId(id)) {
+    throw ApiError.badRequest("Invalid product ID");
+  }
+  const product = await Product.findById(id).lean();
   if (!product) throw ApiError.notFound("Product not found");
-  sendSuccess(res, product);
+  sendSuccess(res, normalizeLean(product as Record<string, unknown>));
 });
 
 export const createProduct = asyncHandler(async (req: Request, res: Response) => {

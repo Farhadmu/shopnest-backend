@@ -7,7 +7,7 @@ export interface ISellerGoal {
   sellerId: string;
   storeId: string;
   title: string;
-  metricType: "revenue" | "orders" | "rating" | "products" | "fulfillment_rate";
+  metricType: "revenue" | "orders" | "rating" | "products" | "fulfillment_rate" | "customers";
   targetValue: number;
   currentValue: number;
   unit: string;
@@ -26,7 +26,7 @@ const sellerGoalSchema = new Schema<ISellerGoal>(
     title: { type: String, required: true },
     metricType: {
       type: String,
-      enum: ["revenue", "orders", "rating", "products", "fulfillment_rate"],
+      enum: ["revenue", "orders", "rating", "products", "fulfillment_rate", "customers"],
       required: true,
     },
     targetValue: { type: Number, required: true, min: 0 },

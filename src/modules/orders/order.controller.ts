@@ -10,6 +10,7 @@ import { ApiError } from "../../utils/api-error";
 import { flagSuspiciousOrder } from "../security/security.service";
 import { recomputeStoreTrustScore } from "../trust/trust.service";
 import { createNotification } from "../notifications/notification.service";
+import { Store } from "../sellers/store.model";
 import mongoose from "mongoose";
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -141,7 +142,20 @@ export const getOrderById = asyncHandler(async (req: Request, res: Response) => 
 
 /** GET /orders/seller/mine - orders that include at least one of the seller's products */
 export const getSellerOrders = asyncHandler(async (req: Request, res: Response) => {
-  const orders = await Order.find({ "items.sellerId": req.user!.id }).sort({ createdAt: -1 });
+  const userId = req.user!.id;
+  const store = await Store.findOne({ ownerId: userId });
+  const validIds = [
+    ...(store ? [store._id.toString(), store.slug, store.ownerId] : []),
+    userId,
+  ];
+
+  const orders = await Order.find({
+    $or: [
+      { "items.sellerId": { $in: validIds } },
+      { "items.storeId": { $in: validIds } },
+    ],
+  }).sort({ createdAt: -1 });
+
   res.status(200).json(orders);
 });
 
@@ -150,7 +164,17 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   const order = await Order.findById(req.params.id);
   if (!order) throw ApiError.notFound("Order not found");
 
-  const isSellerOnOrder = order.items.some((i) => i.sellerId === req.user!.id);
+  const userId = req.user!.id;
+  const store = await Store.findOne({ ownerId: userId });
+  const validIds = new Set([
+    ...(store ? [store._id.toString(), store.slug, store.ownerId] : []),
+    userId,
+  ]);
+
+  const isSellerOnOrder = order.items.some(
+    (i) => validIds.has(i.sellerId || "") || validIds.has(i.storeId || "")
+  );
+
   if (req.user!.role !== "admin" && !isSellerOnOrder) {
     throw ApiError.forbidden("You cannot update this order");
   }

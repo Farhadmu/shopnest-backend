@@ -6,6 +6,7 @@ import { Review } from "../reviews/review.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+import { getSellerContext } from "./seller-store.util";
 import mongoose from "mongoose";
 
 /**
@@ -189,30 +190,13 @@ export const getStoreById = asyncHandler(async (req: Request, res: Response) => 
  *    - HTTP 200: { totalSales, totalOrders, totalProducts }
  */
 export const getSellerMetrics = asyncHandler(async (req: Request, res: Response) => {
-  const store = await Store.findOne({ ownerId: req.user!.id });
-  if (!store) {
-    return sendSuccess(res, { totalSales: 0, totalOrders: 0, totalProducts: 0 });
-  }
-
-  const [totalProducts, orderAgg] = await Promise.all([
-    Product.countDocuments({ storeId: store.id, isDeleted: false }),
-    Order.aggregate([
-      { $unwind: "$items" },
-      { $match: { "items.storeId": store.id } },
-      {
-        $group: {
-          _id: null,
-          totalSales: { $sum: { $multiply: ["$items.price", "$items.quantity"] } },
-          totalOrders: { $addToSet: "$_id" },
-        },
-      },
-    ]),
-  ]);
-
-  const totalSales = orderAgg[0]?.totalSales ?? 0;
-  const totalOrders = orderAgg[0]?.totalOrders?.length ?? 0;
-
-  sendSuccess(res, { totalSales, totalOrders, totalProducts });
+  const userId = req.user?.id || "demo-seller";
+  const { products, totalRevenue, totalOrders } = await getSellerContext(userId);
+  sendSuccess(res, {
+    totalSales: totalRevenue,
+    totalOrders,
+    totalProducts: products.length,
+  });
 });
 
 /**

@@ -125,11 +125,14 @@ export const getComprehensiveSpendingAnalytics = asyncHandler(async (req: Reques
 
       const store = storeMap.get(item.storeId);
       const sellerName = store?.storeName || "Unknown Seller";
+      const orderIdStr = order.id || (order as any)._id?.toString();
       if (!sellerMap[item.sellerId]) {
         sellerMap[item.sellerId] = { name: sellerName, amount: 0, orders: new Set() };
       }
       sellerMap[item.sellerId].amount += itemTotal;
-      sellerMap[item.sellerId].orders.add(order.id);
+      if (orderIdStr) {
+        sellerMap[item.sellerId].orders.add(orderIdStr);
+      }
 
       if (product?.price && product.discountPrice) {
         totalDiscount += (product.price - product.discountPrice) * item.quantity;
@@ -156,21 +159,26 @@ export const getComprehensiveSpendingAnalytics = asyncHandler(async (req: Reques
     amount,
   }));
 
+  const totalCategoryAmount = Object.values(categoryMap).reduce((sum, amt) => sum + amt, 0);
   const categorySpending = Object.entries(categoryMap)
     .map(([category, amount]) => ({
       category,
       amount,
-      percentage: totalSpent > 0 ? Math.round((amount / totalSpent) * 100) : 0,
+      percentage: totalCategoryAmount > 0 ? Math.min(100, Math.round((amount / totalCategoryAmount) * 100)) : 0,
     }))
     .sort((a, b) => b.amount - a.amount);
 
   const sellerSpending = Object.entries(sellerMap)
-    .map(([sellerId, data]) => ({
-      sellerId,
-      name: data.name,
-      amount: data.amount,
-      orders: data.orders.size,
-    }))
+    .map(([sellerId, data]) => {
+      const orderIds = Array.from(data.orders);
+      return {
+        sellerId,
+        name: data.name,
+        amount: data.amount,
+        orders: data.orders.size,
+        latestOrderId: orderIds.length > 0 ? orderIds[0] : undefined,
+      };
+    })
     .sort((a, b) => b.amount - a.amount);
 
   const highestSpendingMonth = monthlySpending.length > 0

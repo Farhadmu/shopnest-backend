@@ -13,4 +13,4 @@ router.get(
   stripeController.verifyCheckoutSession
 );
 
-export default router;
+export default router;

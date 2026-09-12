@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as ctrl from "./ai.controller";
+import { runProductFinder } from "./product-finder.controller";
 import advisorRoutes from "./advisor/advisor.routes";
 import adminCopilotRoutes from "./admin-copilot/admin-copilot.routes";
 import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
@@ -13,6 +14,11 @@ import {
   aiRecommendSchema,
   aiReviewSummarySchema,
   aiVisualSearchSchema,
+  aiAnalyzeImagesSchema,
+  aiGenerateProductSchema,
+  aiTranslateSchema,
+  aiSuggestPriceSchema,
+  aiProductFinderSchema,
 } from "../../schemas/ai.schema";
 
 const router = Router();
@@ -64,6 +70,51 @@ router.post("/detect-intent", attachUserIfPresent, ctrl.detectShoppingIntent);
 
 // 39. Multi-Role AI Commerce Copilot
 router.post("/copilot", attachUserIfPresent, ctrl.commerceCopilot);
+
+// 41. AI Product Creation Studio - Image Analysis
+router.post(
+  "/analyze-product-images",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  validate({ body: aiAnalyzeImagesSchema }),
+  ctrl.analyzeProductImages
+);
+
+// 42. AI Product Creation Studio - Generate Content from Images
+router.post(
+  "/generate-product-from-images",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  validate({ body: aiGenerateProductSchema }),
+  ctrl.generateProductFromImages
+);
+
+// 43. AI Product Creation Studio - Translate Content
+router.post(
+  "/translate-content",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  validate({ body: aiTranslateSchema }),
+  ctrl.translateProductContent
+);
+
+// 44. AI Product Creation Studio - Suggest Price
+router.post(
+  "/suggest-product-price",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  validate({ body: aiSuggestPriceSchema }),
+  ctrl.suggestProductPrice
+);
+
+// 45. AI Product Finder - Complete research pipeline
+router.post(
+  "/product-finder/pipeline",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  validate({ body: aiProductFinderSchema }),
+  runProductFinder
+);
 
 // 40. Admin Copilot - AI-powered marketplace intelligence (ADMIN ONLY)
 router.use("/admin-copilot", adminCopilotRoutes);

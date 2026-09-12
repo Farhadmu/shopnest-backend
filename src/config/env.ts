@@ -29,6 +29,12 @@ const envSchema = z.object({
 
   UPLOAD_DIR: z.string().default("uploads"),
   MAX_UPLOAD_MB: z.coerce.number().default(5),
+
+  SEARCH_API_KEY: z.string().optional().default("").describe("API key for web search provider (SerpAPI, Google Custom Search, Bing, etc.)"),
+  SEARCH_API_URL: z.string().optional().default("").describe("Base URL for web search provider (e.g. https://serpapi.com, https://www.googleapis.com/customsearch/v1)"),
+
+  IMAGE_GENERATION_API_KEY: z.string().optional().default("").describe("API key for AI image generation provider (OpenAI DALL-E, Stability AI, etc.)"),
+  IMAGE_GENERATION_API_URL: z.string().optional().default("").describe("Base URL for AI image generation provider (e.g. https://api.openai.com/v1)"),
 });
 
 const parsed = envSchema.safeParse(process.env);

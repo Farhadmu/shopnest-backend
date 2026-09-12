@@ -2,7 +2,7 @@ import { CopilotIntent, CopilotResponse, CopilotMetric, CopilotInsight, CopilotS
 import { detectIntent, detectTimeRange } from "./admin-copilot.intent";
 import { buildCopilotContext, BuiltContext, ContextSection } from "./admin-copilot.context";
 import { ADMIN_COPILOT_SYSTEM_PROMPT, buildUserPrompt } from "./admin-copilot.prompts";
-import { completeWithContext, AiContext } from "../providers/claude.provider";
+import { completeWithContext, AiContext } from "../providers/gemini.provider";
 import { logAiIncident } from "../incident/incident.service";
 import { AuditLog } from "../../security/auditLog.model";
 
@@ -137,7 +137,12 @@ export async function handleAdminCopilotQuery(
     const contextString = formatContextForAI(context);
 
     const aiContext: AiContext = {
-      userContext: context.sections.reduce((acc, s) => ({ ...acc, ...(s.data || {}) }), {}),
+      userContext: {
+        intent: context.intent,
+        timeRange,
+        sections: context.sections,
+        sources: context.sources,
+      },
     };
 
     const userMessage = buildUserPrompt(query, contextString, timeRange.label);
@@ -157,7 +162,7 @@ export async function handleAdminCopilotQuery(
       await logAiIncident({
         type: "PROVIDER_ERROR",
         userId: adminId,
-        endpoint: "/ai/copilot",
+        endpoint: "/ai/admin-copilot",
         input: query,
         error: aiError instanceof Error ? aiError.message : String(aiError),
       });
@@ -212,7 +217,7 @@ export async function handleAdminCopilotQuery(
     await logAiIncident({
       type: "PROVIDER_ERROR",
       userId: adminId,
-      endpoint: "/ai/copilot",
+      endpoint: "/ai/admin-copilot",
       input: query,
       error: error instanceof Error ? error.message : String(error),
     });

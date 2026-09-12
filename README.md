@@ -62,7 +62,7 @@ x-debug-user-name: Test User
 ```bash
 cp .env.example .env
 # Fill in MONGODB_URI (same DB as frontend), BETTER_AUTH_SECRET (same
-# secret as frontend), ANTHROPIC_API_KEY (for the /ai/* routes).
+# secret as frontend), GEMINI_API_KEY (for the /ai/* routes).
 
 npm install
 npm run seed   # optional: adds demo categories + products
@@ -108,7 +108,7 @@ src/
 | `trust` | explainable 0–100 seller trust score (fulfillment rate, ratings, disputes, account age) |
 | `security` | audit log + lightweight rule-based fraud flags on checkout |
 | `admin` | dashboard metrics, seller approval workflow, reported reviews |
-| `ai` | Anthropic-backed shopping assistant, product-description generator, review sentiment summary, product comparison, pricing suggestions, visual search |
+| `ai` | Gemini-backed shopping assistant, product-description generator, review sentiment summary, product comparison, pricing suggestions, visual search |
 
 ---
 

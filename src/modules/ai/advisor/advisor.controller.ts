@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { AiConversation } from "./conversation.model";
 import { Product } from "../../products/product.model";
-import { complete } from "../providers/claude.provider";
+import { complete } from "../providers/gemini.provider";
 import { SHOPPING_ASSISTANT_SYSTEM, buildProductContext } from "../prompts";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";

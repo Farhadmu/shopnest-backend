@@ -64,6 +64,42 @@ async function run() {
       stock: 100,
       tags: ["tshirt", "cotton", "casual"],
     },
+    {
+      title: "ASUS TUF Gaming A15 Gaming Laptop",
+      description: "15.6-inch FHD 144Hz display, AMD Ryzen 7 7735HS, NVIDIA GeForce RTX 4060 8GB GPU, 16GB DDR5 RAM, 512GB NVMe SSD, RGB backlit keyboard.",
+      price: 135000,
+      category: "Electronics",
+      stock: 15,
+      tags: ["asus", "tuf", "gaming", "laptop", "rtx4060", "ryzen7"],
+      specifications: new Map([
+        ["Brand", "ASUS"],
+        ["Model", "TUF Gaming A15 FA507NV"],
+        ["Processor", "AMD Ryzen 7 7735HS"],
+        ["Graphics", "NVIDIA GeForce RTX 4060 8GB"],
+        ["RAM", "16GB DDR5"],
+        ["Storage", "512GB NVMe SSD"],
+        ["Display", "15.6 inch FHD 144Hz"],
+        ["Warranty", "2 Years Official Brand Warranty"],
+      ]),
+    },
+    {
+      title: "ASUS ROG Zephyrus G16 Gaming Laptop",
+      description: "16-inch 2.5K OLED 240Hz, Intel Core Ultra 9 185H, NVIDIA GeForce RTX 4080 12GB, 32GB LPDDR5X RAM, 1TB SSD, premium slim gaming chassis.",
+      price: 285000,
+      category: "Electronics",
+      stock: 8,
+      tags: ["asus", "rog", "zephyrus", "gaming", "laptop", "rtx4080", "oled"],
+      specifications: new Map([
+        ["Brand", "ASUS"],
+        ["Model", "ROG Zephyrus G16 GU605MZ"],
+        ["Processor", "Intel Core Ultra 9 185H"],
+        ["Graphics", "NVIDIA GeForce RTX 4080 12GB"],
+        ["RAM", "32GB LPDDR5X"],
+        ["Storage", "1TB PCIe 4.0 NVMe SSD"],
+        ["Display", "16 inch 2.5K OLED 240Hz"],
+        ["Warranty", "2 Years Official Brand Warranty"],
+      ]),
+    },
   ];
 
   for (const p of demoProducts) {

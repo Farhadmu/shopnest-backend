@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { Product } from "../products/product.model";
 import { Category } from "../categories/category.model";
-import { completeJSONWithContext, AiContext } from "./providers/claude.provider";
+import { completeJSONWithContext, AiContext } from "./providers/gemini.provider";
 import { logger } from "../../utils/logger";
 import {
   PRODUCT_ANALYSIS_SYSTEM,

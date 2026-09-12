@@ -3,6 +3,8 @@ import * as ctrl from "./ai.controller";
 import { runProductFinder } from "./product-finder.controller";
 import advisorRoutes from "./advisor/advisor.routes";
 import adminCopilotRoutes from "./admin-copilot/admin-copilot.routes";
+import customerCopilotRoutes from "./customer-copilot/customer-copilot.routes";
+import sellerCopilotRoutes from "./seller-copilot/seller-copilot.routes";
 import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
@@ -68,8 +70,11 @@ router.post("/negotiate", attachUserIfPresent, ctrl.negotiateDeal);
 // 38. AI Shopping Intent Detector
 router.post("/detect-intent", attachUserIfPresent, ctrl.detectShoppingIntent);
 
-// 39. Multi-Role AI Commerce Copilot
-router.post("/copilot", attachUserIfPresent, ctrl.commerceCopilot);
+// 39. Customer Copilot - AI shopping assistant (CUSTOMER ONLY)
+router.use("/customer-copilot", customerCopilotRoutes);
+
+// 40. Seller Copilot - AI store management & business advisor (SELLER ONLY)
+router.use("/seller-copilot", sellerCopilotRoutes);
 
 // 41. AI Product Creation Studio - Image Analysis
 router.post(
@@ -116,7 +121,7 @@ router.post(
   runProductFinder
 );
 
-// 40. Admin Copilot - AI-powered marketplace intelligence (ADMIN ONLY)
+// 46. Admin Copilot - AI-powered marketplace intelligence (ADMIN ONLY)
 router.use("/admin-copilot", adminCopilotRoutes);
 
 export default router;

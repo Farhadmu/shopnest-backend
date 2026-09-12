@@ -1,5 +1,5 @@
 import dns from 'node:dns'
-dns.setServers(['8.8.8.8','8.8.4.4'])
+dns.setServers(['8.8.8.8', '8.8.4.4'])
 
 
 import { createApp } from "./app";
@@ -16,7 +16,7 @@ async function bootstrap() {
     logger.info(`ShopNest API listening on port ${env.PORT} (${env.NODE_ENV})`);
     logger.info(`Base URL: http://localhost:${env.PORT}${env.API_PREFIX}`);
     if (!env.IS_AI_ENABLED) {
-      logger.warn("No AI provider key is configured - text AI endpoints will return a configuration error until ANTHROPIC_API_KEY or GEMINI_API_KEY is set");
+      logger.warn("No GEMINI_API_KEY is configured - text AI endpoints will use deterministic fallback responses");
     }
   });
 
@@ -38,4 +38,3 @@ bootstrap().catch((err) => {
   console.error("Failed to start server:", err);
   process.exit(1);
 });
- 

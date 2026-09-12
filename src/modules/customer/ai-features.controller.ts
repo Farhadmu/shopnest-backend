@@ -7,7 +7,7 @@ import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
 import { Review } from "../reviews/review.model";
-import { complete, completeJSON, completeWithContext, AiContext } from "../ai/providers/claude.provider";
+import { complete, completeJSON, completeWithContext, AiContext } from "../ai/providers/gemini.provider";
 import { SearchHistory, UserPreferences } from "./customer-features.model";
 import { SavedSearch } from "./customer-extras.model";
 import { logAiIncident } from "../ai/incident/incident.service";

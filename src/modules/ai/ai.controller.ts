@@ -1,10 +1,10 @@
 import { Request, Response } from "express";
 import { Product } from "../products/product.model";
-import { Store } from "../sellers/store.model";
-import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
 import { Category } from "../categories/category.model";
-import { completeJSON, completeJSONWithContext, AiContext } from "./providers/claude.provider";
+import { Order } from "../orders/order.model";
+import { Store } from "../sellers/store.model";
+import { completeJSON, completeJSONWithContext, AiContext } from "./providers/gemini.provider";
 import { logger } from "../../utils/logger";
 import {
   PRODUCT_DESCRIPTION_SYSTEM,

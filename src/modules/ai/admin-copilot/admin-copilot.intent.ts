@@ -7,11 +7,12 @@ interface DetectedIntent {
 }
 
 const INTENT_PATTERNS: Array<{ intent: CopilotIntent; patterns: string[] }> = [
+  { intent: CopilotIntent.GENERAL, patterns: ["hi", "hello", "hey", "help", "who are you", "what can you do"] },
   { intent: CopilotIntent.EXECUTIVE_SUMMARY, patterns: ["executive briefing", "executive summary", "complete summary", "full briefing", "today's briefing", "daily briefing", "marketplace briefing", "give me a complete", "full report", "comprehensive overview"] },
   { intent: CopilotIntent.PRIORITY_ACTIONS, patterns: ["what should i do", "what to do", "prioritize", "priority", "top priority", "what needs attention", "investigate first", "biggest risk", "most urgent", "action items"] },
   { intent: CopilotIntent.REVENUE_ANALYSIS, patterns: ["revenue", "earning", "income", "profit", "money made", "how much revenue", "revenue growth", "revenue decline", "revenue drop"] },
   { intent: CopilotIntent.GMV_ANALYSIS, patterns: ["gmv", "gross merchandise", "total sales value", "transaction volume"] },
-  { intent: CopilotIntent.ORDER_ANALYSIS, patterns: ["orders", "order count", "order volume", "order growth", "order trend"] },
+  { intent: CopilotIntent.ORDER_ANALYSIS, patterns: ["pending orders", "pending order", "orders pending", "orders", "order count", "order volume", "order growth", "order trend", "how many orders", "pending"] },
   { intent: CopilotIntent.CUSTOMER_ANALYSIS, patterns: ["customer", "user", "shopper", "buyer", "customer growth", "active users"] },
   { intent: CopilotIntent.SELLER_ANALYSIS, patterns: ["seller", "merchant", "vendor", "store", "best seller", "top seller", "seller performance"] },
   { intent: CopilotIntent.SELLER_RISK, patterns: ["risky seller", "high risk", "seller risk", "risky merchant", "dangerous seller", "problematic seller"] },
@@ -44,6 +45,18 @@ const INTENT_PATTERNS: Array<{ intent: CopilotIntent; patterns: string[] }> = [
 export function detectIntent(query: string): DetectedIntent {
   const normalizedQuery = query.toLowerCase().trim();
 
+  if (
+    normalizedQuery === "hi" ||
+    normalizedQuery === "hello" ||
+    normalizedQuery === "hey" ||
+    normalizedQuery.startsWith("hi ") ||
+    normalizedQuery.startsWith("hello ") ||
+    normalizedQuery.startsWith("hey ") ||
+    normalizedQuery === "help"
+  ) {
+    return { intent: CopilotIntent.GENERAL, confidence: 1, keywords: [normalizedQuery] };
+  }
+
   let bestMatch: DetectedIntent = { intent: CopilotIntent.UNKNOWN, confidence: 0, keywords: [] };
 
   for (const { intent, patterns } of INTENT_PATTERNS) {
@@ -57,8 +70,13 @@ export function detectIntent(query: string): DetectedIntent {
   }
 
   if (bestMatch.intent === CopilotIntent.UNKNOWN) {
-    if (normalizedQuery.includes("?") || normalizedQuery.length > 10) {
-      return { intent: CopilotIntent.MARKETPLACE_OVERVIEW, confidence: 0.3, keywords: [] };
+    if (
+      normalizedQuery.includes("overview") ||
+      normalizedQuery.includes("summary") ||
+      normalizedQuery.includes("how are we doing") ||
+      normalizedQuery.includes("marketplace")
+    ) {
+      return { intent: CopilotIntent.MARKETPLACE_OVERVIEW, confidence: 0.5, keywords: [] };
     }
   }
 

@@ -1,6 +1,6 @@
 import { Review } from "../../reviews/review.model";
 import { Product } from "../../products/product.model";
-import { completeJSONWithContext, AiContext } from "../providers/claude.provider";
+import { completeJSONWithContext, AiContext } from "../providers/gemini.provider";
 import { REVIEW_SUMMARY_SYSTEM, buildReviewSummaryPrompt } from "../prompts";
 import { ApiError } from "../../../utils/api-error";
 

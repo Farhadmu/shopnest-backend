@@ -24,7 +24,6 @@ export interface MarketplaceOverview {
   returnedOrders: number;
   refundedOrders: number;
   totalRevenue: number;
-  totalGmv: number;
   averageOrderValue: number;
   openIncidents: number;
   criticalAlerts: number;
@@ -32,7 +31,6 @@ export interface MarketplaceOverview {
 
 export interface RevenueMetrics {
   totalRevenue: number;
-  totalGmv: number;
   averageOrderValue: number;
   netRevenue: number;
   refundAmount: number;
@@ -136,8 +134,8 @@ export interface IncidentSummary {
 export interface TelemetrySummary {
   overallStatus: string;
   uptime: string;
-  p95LatencyMs: number;
-  averageLatencyMs: number;
+  p95LatencyMs: number | null;
+  averageLatencyMs: number | null;
   endpoints: Array<{
     service: string;
     endpoint: string;
@@ -193,12 +191,12 @@ export async function getMarketplaceOverview(): Promise<MarketplaceOverview> {
     Product.countDocuments({ status: "approved", isDeleted: false }),
     Product.countDocuments({ status: "pending", isDeleted: false }),
     Order.countDocuments({}),
-    Order.countDocuments({ status: { $in: ["delivered", "completed"] } }),
+    Order.countDocuments({ status: { $in: ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"] } }),
     Order.countDocuments({ status: "cancelled" }),
     Order.countDocuments({ status: "returned" }),
-    Order.countDocuments({ status: "refunded" }),
+    Order.countDocuments({ $or: [{ status: "refunded" }, { paymentStatus: "refunded" }] }),
     Order.aggregate([
-      { $match: { status: { $in: ["delivered", "shipped", "out_for_delivery"] } } },
+      { $match: { status: { $in: ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"] } } },
       { $group: { _id: null, total: { $sum: "$totalAmount" } } },
     ]),
     SecurityIncident.countDocuments({ status: { $in: ["new", "investigating"] } }),
@@ -225,7 +223,6 @@ export async function getMarketplaceOverview(): Promise<MarketplaceOverview> {
     returnedOrders,
     refundedOrders,
     totalRevenue,
-    totalGmv: totalRevenue,
     averageOrderValue,
     openIncidents,
     criticalAlerts,
@@ -239,18 +236,18 @@ export async function getRevenueMetrics(startDate: Date, endDate: Date): Promise
 
   const [current, previous] = await Promise.all([
     Order.aggregate([
-      { $match: { createdAt: { $gte: startDate, $lte: endDate }, status: { $in: ["delivered", "shipped", "out_for_delivery"] } } },
+      { $match: { createdAt: { $gte: startDate, $lte: endDate }, status: { $in: ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"] } } },
       { $group: { _id: null, revenue: { $sum: "$totalAmount" }, orders: { $sum: 1 }, discounts: { $sum: "$discount" } } },
     ]),
     Order.aggregate([
-      { $match: { createdAt: { $gte: previousStart, $lte: previousEnd }, status: { $in: ["delivered", "shipped", "out_for_delivery"] } } },
+      { $match: { createdAt: { $gte: previousStart, $lte: previousEnd }, status: { $in: ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"] } } },
       { $group: { _id: null, revenue: { $sum: "$totalAmount" } } },
     ]),
   ]);
 
   const [refunds, cancellations] = await Promise.all([
     Order.aggregate([
-      { $match: { status: "refunded", createdAt: { $gte: startDate, $lte: endDate } } },
+      { $match: { $or: [{ status: "refunded" }, { paymentStatus: "refunded" }], createdAt: { $gte: startDate, $lte: endDate } } },
       { $group: { _id: null, total: { $sum: "$totalAmount" } } },
     ]),
     Order.aggregate([
@@ -273,7 +270,6 @@ export async function getRevenueMetrics(startDate: Date, endDate: Date): Promise
 
   return {
     totalRevenue,
-    totalGmv: totalRevenue,
     averageOrderValue: orders > 0 ? Math.round(totalRevenue / orders) : 0,
     netRevenue: totalRevenue - refundAmount,
     refundAmount,
@@ -287,7 +283,7 @@ export async function getRevenueMetrics(startDate: Date, endDate: Date): Promise
 
 export async function getTopSellers(startDate: Date, endDate: Date, limit: number = 10): Promise<SellerMetric[]> {
   const sellerAgg = await Order.aggregate([
-    { $match: { createdAt: { $gte: startDate, $lte: endDate }, status: { $in: ["delivered", "shipped", "out_for_delivery"] } } },
+    { $match: { createdAt: { $gte: startDate, $lte: endDate }, status: { $in: ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"] } } },
     { $unwind: "$items" },
     { $group: { _id: "$items.storeId", revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } }, orders: { $addToSet: "$_id" } } },
     { $sort: { revenue: -1 } },
@@ -321,7 +317,7 @@ export async function getCategoryMetrics(startDate: Date, endDate: Date): Promis
   products.forEach((p) => productCategoryMap.set(p._id?.toString() || "", p.category || "General"));
 
   const categoryAgg = await Order.aggregate([
-    { $match: { createdAt: { $gte: startDate, $lte: endDate }, status: { $in: ["delivered", "shipped", "out_for_delivery"] } } },
+    { $match: { createdAt: { $gte: startDate, $lte: endDate }, status: { $in: ["confirmed", "processing", "shipped", "out_for_delivery", "delivered"] } } },
     { $unwind: "$items" },
     { $group: { _id: "$items.productId", revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } }, orders: { $sum: 1 } } },
   ]);
@@ -404,20 +400,12 @@ export async function getSecuritySummary(startDate: Date, endDate: Date): Promis
 }
 
 export async function getTelemetrySummary(): Promise<TelemetrySummary> {
-  const endpoints = [
-    { service: "Product Catalog API", endpoint: "/api/products", responseTimeMs: 25, errorRate: "0.00%", status: "healthy" },
-    { service: "Order & Checkout API", endpoint: "/api/orders", responseTimeMs: 35, errorRate: "0.00%", status: "healthy" },
-    { service: "Search & Filter Engine", endpoint: "/api/products/search", responseTimeMs: 20, errorRate: "0.00%", status: "healthy" },
-    { service: "Auth & Identity Gateway", endpoint: "/api/users", responseTimeMs: 18, errorRate: "0.00%", status: "healthy" },
-    { service: "Payment Processor", endpoint: "/api/orders", responseTimeMs: 40, errorRate: "0.00%", status: "healthy" },
-  ];
-
   return {
-    overallStatus: "ALL SYSTEMS OPERATIONAL",
-    uptime: "99.9%",
-    p95LatencyMs: 45,
-    averageLatencyMs: 28,
-    endpoints,
+    overallStatus: "unavailable",
+    uptime: "unavailable",
+    p95LatencyMs: null,
+    averageLatencyMs: null,
+    endpoints: [],
   };
 }
 

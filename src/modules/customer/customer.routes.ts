@@ -20,7 +20,6 @@ import * as productQnaCtrl from "./features/product-qna.controller";
 import * as dealFeedCtrl from "./features/deal-feed.controller";
 import * as compareHistoryCtrl from "./features/compare-history.controller";
 import * as productReportsCtrl from "./features/product-reports.controller";
-import * as commerceAssistantCtrl from "./features/commerce-assistant.controller";
 import * as codRiskCtrl from "./features/cod-risk.controller";
 import * as spendingAnalyticsCtrl from "./spending-analytics.controller";
 import * as activityTimelineCtrl from "./features/activity-timeline.controller";
@@ -264,6 +263,5 @@ router.post("/delivery-feedback", ...requireAuth, deliveryTracking.submitDeliver
 router.get("/delivery-feedback/:orderId", ...requireAuth, deliveryTracking.getDeliveryFeedback);
 router.post("/reports", ...requireAuth, productReportsCtrl.submitProductReport);
 router.get("/reports", ...requireAuth, productReportsCtrl.getUserProductReports);
-router.post("/commerce-assistant", ...requireAuth, aiLimiter, commerceAssistantCtrl.askPersonalCommerceAssistant);
 
 export default router;

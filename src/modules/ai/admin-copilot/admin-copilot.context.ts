@@ -80,7 +80,6 @@ export async function buildCopilotContext(
         title: "Revenue Metrics",
         metrics: [
           { label: "Revenue", value: revenue.totalRevenue, formatted: `৳${revenue.totalRevenue.toLocaleString()}`, changePercent: revenue.revenueChangePercent, trend: revenue.revenueChangePercent && revenue.revenueChangePercent < 0 ? "down" : "up" },
-          { label: "GMV", value: revenue.totalGmv, formatted: `৳${revenue.totalGmv.toLocaleString()}` },
           { label: "Average Order Value", value: revenue.averageOrderValue, formatted: `৳${revenue.averageOrderValue.toLocaleString()}` },
           { label: "Refund Amount", value: revenue.refundAmount, formatted: `৳${revenue.refundAmount.toLocaleString()}` },
           { label: "Cancelled Value", value: revenue.cancelledValue, formatted: `৳${revenue.cancelledValue.toLocaleString()}` },
@@ -236,11 +235,11 @@ export async function buildCopilotContext(
 
       sections.push({
         title: "System Telemetry",
-        metrics: [
-          { label: "Status", value: 1, formatted: telemetry.overallStatus },
-          { label: "Uptime", value: 1, formatted: telemetry.uptime },
-          { label: "P95 Latency", value: telemetry.p95LatencyMs, formatted: `${telemetry.p95LatencyMs}ms` },
-        ],
+        insights: [{
+          severity: "info",
+          title: "Telemetry unavailable",
+          description: "Operational uptime and latency telemetry is not measured by the current backend.",
+        }],
         data: telemetry,
       });
       break;

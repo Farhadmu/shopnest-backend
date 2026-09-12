@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { Order } from "../../orders/order.model";
-import { complete, completeWithContext, AiContext } from "../../ai/providers/claude.provider";
+import { complete, completeWithContext, AiContext } from "../../ai/providers/gemini.provider";
 import { logAiIncident } from "../../ai/incident/incident.service";
 import { SupportTicket } from "../customer-extras.model";
 

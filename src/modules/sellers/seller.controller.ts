@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
 import { Store } from "./store.model";
 import { Product } from "../products/product.model";
-import { Order } from "../orders/order.model";
 import { Review } from "../reviews/review.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
@@ -18,6 +17,78 @@ function slugify(input: string): string {
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
+}
+
+/**
+ * Public-safe shape of a Store document.
+ */
+export interface PublicStore {
+  id: string;
+  slug: string;
+  storeName: string;
+  description: string;
+  logo?: string;
+  banner?: string;
+  trustScore: number;
+  rating: number;
+  ratingCount: number;
+  followersCount: number;
+  status: string;
+  createdAt: Date;
+}
+
+/**
+ * Masks sensitive businessInfo fields before sending in API responses.
+ * - payoutAccountNumber -> only last 4 chars (e.g. "••••1234")
+ * - nidOrTradeLicense and taxId are omitted entirely
+ * Does NOT mutate the source object.
+ */
+function maskBusinessInfo<T extends { businessInfo?: Record<string, unknown> }>(store: T): T {
+  if (!store.businessInfo) return store;
+  const bi = { ...store.businessInfo };
+  if (typeof bi.payoutAccountNumber === "string" && bi.payoutAccountNumber.length > 4) {
+    bi.payoutAccountNumber = "••••" + bi.payoutAccountNumber.slice(-4);
+  }
+  delete bi.nidOrTradeLicense;
+  delete bi.taxId;
+  return { ...store, businessInfo: bi };
+}
+
+/**
+ * Helper: Strips a raw Store document (or lean object) down to its
+ * public-safe shape. Excludes ownerId, businessInfo, rejectionReason,
+ * verifiedAt, and verifiedBy.
+ */
+function toPublicStore(
+  store: {
+    _id: { toString(): string };
+    slug: string;
+    storeName: string;
+    description: string;
+    logo?: string;
+    banner?: string;
+    trustScore: number;
+    rating: number;
+    ratingCount: number;
+    followersCount: number;
+    status: string;
+    createdAt: Date;
+  },
+): PublicStore {
+  return {
+    id: store._id.toString(),
+    slug: store.slug,
+    storeName: store.storeName,
+    description: store.description,
+    logo: store.logo,
+    banner: store.banner,
+    trustScore: store.trustScore,
+    rating: store.rating,
+    ratingCount: store.ratingCount,
+    followersCount: store.followersCount,
+    status: store.status,
+    createdAt: store.createdAt,
+  };
 }
 
 /**
@@ -46,7 +117,7 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
       existing.status = "pending";
       existing.rejectionReason = undefined;
       await existing.save();
-      return sendSuccess(res, existing.toJSON(), "Application resubmitted, pending admin approval", 200);
+      return sendSuccess(res, maskBusinessInfo(existing.toJSON()), "Application resubmitted, pending admin approval", 200);
     }
     throw ApiError.conflict("You already have a store");
   }
@@ -55,18 +126,31 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
   const dup = await Store.findOne({ slug });
   if (dup) slug = `${slug}-${Date.now().toString(36)}`;
 
-  const store = await Store.create({
-    ownerId: req.user!.id,
-    storeName,
-    slug,
-    description,
-    logo,
-    banner,
-    businessInfo,
-    status: "pending",
-  });
+  let store;
+  try {
+    store = await Store.create({
+      ownerId: req.user!.id,
+      storeName,
+      slug,
+      description,
+      logo,
+      banner,
+      businessInfo,
+      status: "pending",
+    });
+  } catch (err) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code: number }).code === 11000
+    ) {
+      throw ApiError.conflict("You already have a store");
+    }
+    throw err;
+  }
 
-  sendSuccess(res, store.toJSON(), "Store created, pending admin approval", 201);
+  sendSuccess(res, maskBusinessInfo(store.toJSON()), "Store created, pending admin approval", 201);
 });
 
 /**
@@ -156,19 +240,8 @@ export const getStoreById = asyncHandler(async (req: Request, res: Response) => 
     : [];
 
   sendSuccess(res, {
-    id: store._id.toString(),
-    slug: store.slug,
+    ...toPublicStore(store),
     ownerId: store.ownerId,
-    storeName: store.storeName,
-    description: store.description,
-    trustScore: store.trustScore,
-    logo: store.logo,
-    banner: store.banner,
-    rating: store.rating,
-    ratingCount: store.ratingCount,
-    followersCount: store.followersCount,
-    status: store.status,
-    createdAt: store.createdAt,
     products,
     reviews: reviews.map((review) => ({
       ...review,
@@ -243,7 +316,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
       const salesNumber = storeProducts.reduce((total, product) => total + (product.sold || 0), 0);
 
       return {
-        ...store,
+        ...toPublicStore(store),
         products: storeProducts.slice(0, 3),
         salesNumber,
       };

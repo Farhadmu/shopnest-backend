@@ -9,6 +9,7 @@ import {
   ProductLifecycle,
   ProductBundle,
 } from "./customer-intelligence.model";
+import { buildPublicProductFilter, getPublicProduct } from "../../utils/activeProductFilter";
 
 // 1. SMART SHOPPING JOURNEY
 export const getShoppingJourney = asyncHandler(async (req: Request, res: Response) => {
@@ -23,10 +24,8 @@ export const getShoppingJourney = asyncHandler(async (req: Request, res: Respons
   }
 
   // Populate product details for recommendations
-  const recommendedItems = await Product.find({
-    _id: { $in: journey.recommendedProducts || [] },
-    isDeleted: false,
-  }).limit(4);
+  const filter = await buildPublicProductFilter({ _id: { $in: journey.recommendedProducts || [] } });
+  const recommendedItems = await Product.find(filter).limit(4);
 
   sendSuccess(res, {
     journey: journey.toJSON(),
@@ -93,12 +92,12 @@ export const generateBudgetPlan = asyncHandler(async (req: Request, res: Respons
   }
 
   // Fetch approved, in-stock products for the category
-  const categoryProducts = await Product.find({
-    isDeleted: false,
-    status: "approved",
-    stock: { $gt: 0 },
-    category: { $regex: new RegExp(`^${purpose}$`, "i") },
-  });
+  const categoryProducts = await Product.find(
+    await buildPublicProductFilter({
+      stock: { $gt: 0 },
+      category: { $regex: new RegExp(`^${purpose}$`, "i") },
+    })
+  );
 
   if (categoryProducts.length === 0) {
     return sendSuccess(res, {
@@ -203,11 +202,12 @@ export const generateBudgetPlan = asyncHandler(async (req: Request, res: Respons
 export const checkProductCompatibility = asyncHandler(async (req: Request, res: Response) => {
   const { productIds = [], customSpecs = [] } = req.body;
 
-  let products = await Product.find({ _id: { $in: productIds } });
+  let products = await Product.find(
+    await buildPublicProductFilter({ _id: { $in: productIds } })
+  );
 
   if (products.length < 2 && customSpecs.length < 2) {
-    // Provide a sample comparison set if single or none passed
-    const sampleProducts = await Product.find({ isDeleted: false, status: "approved" }).limit(2);
+    const sampleProducts = await Product.find(await buildPublicProductFilter({})).limit(2);
     products = sampleProducts;
   }
 
@@ -313,7 +313,7 @@ export const checkProductCompatibility = asyncHandler(async (req: Request, res: 
 // 4. SMART BUNDLE BUILDER
 export const getProductBundle = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
 
   if (!product) {
     throw ApiError.notFound("Product not found");
@@ -324,22 +324,22 @@ export const getProductBundle = asyncHandler(async (req: Request, res: Response)
 
   if (!bundle) {
     // Construct dynamic complementary bundle from related category items
-    const complementaryItems = await Product.find({
-      _id: { $ne: product._id },
-      category: product.category,
-      isDeleted: false,
-      status: "approved",
-    }).limit(3);
+    const complementaryItems = await Product.find(
+      await buildPublicProductFilter({
+        _id: { $ne: product._id },
+        category: product.category,
+      })
+    ).limit(3);
 
     const items = [
       {
-        productId: product.id,
+        productId: String(product._id),
         title: product.title,
         price: product.price,
         role: "main" as const,
       },
       ...complementaryItems.map((c) => ({
-        productId: c.id,
+        productId: String(c._id),
         title: c.title,
         price: c.price,
         role: "complementary" as const,
@@ -351,7 +351,7 @@ export const getProductBundle = asyncHandler(async (req: Request, res: Response)
 
     bundle = await ProductBundle.create({
       bundleName: `${product.title} Power Bundle`,
-      mainProductId: product.id,
+      mainProductId: String(product._id),
       category: product.category,
       items,
       originalTotal,

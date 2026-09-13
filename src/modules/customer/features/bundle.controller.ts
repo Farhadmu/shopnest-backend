@@ -4,12 +4,12 @@ import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
 import { Product } from "../../products/product.model";
 import { ProductBundle } from "../customer-intelligence.model";
-import { ACTIVE_PRODUCT_FILTER } from "../../../utils/activeProductFilter";
+import { buildPublicProductFilter, getPublicProduct } from "../../../utils/activeProductFilter";
 
 // SMART BUNDLE BUILDER
 export const getProductBundle = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
 
   if (!product) {
     throw ApiError.notFound("Product not found");
@@ -20,21 +20,22 @@ export const getProductBundle = asyncHandler(async (req: Request, res: Response)
 
   if (!bundle) {
     // Construct dynamic complementary bundle from related category items
-    const complementaryItems = await Product.find({
-      _id: { $ne: product._id },
-      category: product.category,
-      ...ACTIVE_PRODUCT_FILTER,
-    }).limit(3);
+    const complementaryItems = await Product.find(
+      await buildPublicProductFilter({
+        _id: { $ne: product._id },
+        category: product.category,
+      })
+    ).limit(3);
 
     const items = [
       {
-        productId: product.id,
+        productId: String(product._id),
         title: product.title,
         price: product.price,
         role: "main" as const,
       },
       ...complementaryItems.map((c) => ({
-        productId: c.id,
+        productId: String(c._id),
         title: c.title,
         price: c.price,
         role: "complementary" as const,
@@ -46,7 +47,7 @@ export const getProductBundle = asyncHandler(async (req: Request, res: Response)
 
     bundle = await ProductBundle.create({
       bundleName: `${product.title} Power Bundle`,
-      mainProductId: product.id,
+      mainProductId: String(product._id),
       category: product.category,
       items,
       originalTotal,

@@ -5,12 +5,10 @@ import { ApiError } from "../../utils/api-error";
 import { Product } from "../products/product.model";
 import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
-import { Coupon } from "../coupons/coupon.model";
-import { Review } from "../reviews/review.model";
-import { complete, completeJSON, completeWithContext, AiContext } from "../ai/providers/claude.provider";
 import { SearchHistory, UserPreferences } from "./customer-features.model";
-import { SavedSearch } from "./customer-extras.model";
+import { completeJSON, completeWithContext, AiContext } from "../ai/providers/claude.provider";
 import { logAiIncident } from "../ai/incident/incident.service";
+import { buildPublicProductFilter, getPublicProduct } from "../../utils/activeProductFilter";
 
 // ============================================================
 // 1. ADVANCED AI SEARCH (Feature 1)
@@ -37,7 +35,7 @@ export const advancedSearch = asyncHandler(async (req: Request, res: Response) =
   }
 
   // Build filter from structured params
-  const filter: Record<string, unknown> = { isDeleted: false, status: "approved" };
+  const filter = await buildPublicProductFilter({});
 
   // AI intent detection for natural language queries
   let detectedIntent: { category?: string; budgetMax?: number; useCase?: string } = {};
@@ -162,10 +160,11 @@ export const getSearchSuggestions = asyncHandler(async (req: Request, res: Respo
     return sendSuccess(res, { suggestions: [], recentSearches: [] });
   }
 
+  const baseFilter = await buildPublicProductFilter({});
+
   // Get popular matching products
   const matchingProducts = await Product.find({
-    isDeleted: false,
-    status: "approved",
+    ...baseFilter,
     $or: [
       { title: { $regex: q, $options: "i" } },
       { tags: { $in: [new RegExp(q, "i")] } },
@@ -208,7 +207,7 @@ export const clearSearchHistory = asyncHandler(async (req: Request, res: Respons
 // ============================================================
 export const shoppingAgentChat = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id || "anonymous";
-  const { message, context } = req.body as { message: string; context?: string };
+  const { message } = req.body as { message: string };
 
   if (!message || message.trim().length === 0) {
     throw ApiError.badRequest("Message is required");
@@ -235,7 +234,7 @@ export const shoppingAgentChat = asyncHandler(async (req: Request, res: Response
 
   // Get relevant products based on message
   const lowerMessage = message.toLowerCase();
-  const productFilter: Record<string, unknown> = { isDeleted: false, status: "approved", stock: { $gt: 0 } };
+  const productFilter = await buildPublicProductFilter({ stock: { $gt: 0 } });
 
   // Extract budget from message
   const budgetMatch = lowerMessage.match(/(?:under|below|less than|within|budget|max|মধ্যে|কম|এর নিচে)\s*(?:৳|tk|taka|rs)?\s*([\d,]+(?:\s*(?:hazar|হাজার|lakh|লক্ষ|k)?))/i);
@@ -265,7 +264,7 @@ export const shoppingAgentChat = asyncHandler(async (req: Request, res: Response
 
   let aiResponse: string;
   let isFallback = false;
-  let suggestedProducts = relevantProducts.map((p) => ({
+  const suggestedProducts = relevantProducts.map((p) => ({
     id: p.id,
     title: p.title,
     price: p.discountPrice || p.price,
@@ -338,12 +337,10 @@ export const giftFinder = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Build search filter
-  const filter: Record<string, unknown> = {
-    isDeleted: false,
-    status: "approved",
+  const filter = await buildPublicProductFilter({
     stock: { $gt: 0 },
     price: { $lte: budget },
-  };
+  });
 
   // Find products within budget
   let products = await Product.find(filter).sort({ ratingAvg: -1, sold: -1 }).limit(20);
@@ -419,7 +416,7 @@ export const generateReviewDraft = asyncHandler(async (req: Request, res: Respon
     throw ApiError.badRequest("Product ID is required");
   }
 
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
   if (!product) {
     throw ApiError.notFound("Product not found");
   }
@@ -469,23 +466,20 @@ export const generateReviewDraft = asyncHandler(async (req: Request, res: Respon
 // 5. SMART DEAL FINDER (Feature 5)
 // ============================================================
 export const smartDealFinder = asyncHandler(async (req: Request, res: Response) => {
-  const { budget, category, purpose, features } = req.body as {
+  const { budget, category, purpose } = req.body as {
     budget: number;
     category?: string;
     purpose?: string;
-    features?: string;
   };
 
   if (!budget || budget <= 0) {
     throw ApiError.badRequest("Budget is required");
   }
 
-  const filter: Record<string, unknown> = {
-    isDeleted: false,
-    status: "approved",
+  const filter = await buildPublicProductFilter({
     stock: { $gt: 0 },
     price: { $lte: budget },
-  };
+  });
 
   if (category) filter.category = { $regex: category, $options: "i" };
 

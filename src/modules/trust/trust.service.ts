@@ -2,6 +2,7 @@ import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
 import { Review } from "../reviews/review.model";
 import { Product } from "../products/product.model";
+import { buildPublicProductFilter, EXCLUDED_STORE_STATUSES } from "../../utils/activeProductFilter";
 import { logger } from "../../utils/logger";
 
 export interface TrustBreakdown {
@@ -23,7 +24,7 @@ export interface TrustBreakdown {
  */
 export async function computeTrustBreakdown(storeId: string): Promise<TrustBreakdown | null> {
   const store = await Store.findById(storeId);
-  if (!store) return null;
+  if (!store || EXCLUDED_STORE_STATUSES.includes(store.status)) return null;
 
   const orders = await Order.find({ "items.storeId": storeId });
   const total = orders.length;
@@ -33,7 +34,8 @@ export async function computeTrustBreakdown(storeId: string): Promise<TrustBreak
   const fulfillmentRate = total > 0 ? delivered / total : 1;
   const disputeRate = total > 0 ? disputed / total : 0;
 
-  const products = await Product.find({ storeId }).select("_id");
+  const productMatch = await buildPublicProductFilter({ storeId });
+  const products = await Product.find(productMatch).select("_id");
   const productIds = products.map((p) => p.id);
   const ratingAgg = await Review.aggregate([
     { $match: { productId: { $in: productIds } } },

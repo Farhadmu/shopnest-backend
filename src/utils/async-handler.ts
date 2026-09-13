@@ -5,6 +5,6 @@ type Handler = (req: Request, res: Response, next: NextFunction) => Promise<unkn
 /** Wraps async route handlers so rejected promises reach error.middleware.ts */
 export function asyncHandler(fn: Handler) {
   return (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
+    return Promise.resolve(fn(req, res, next)).catch(next);
   };
 }

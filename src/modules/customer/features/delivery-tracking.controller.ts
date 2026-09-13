@@ -3,6 +3,7 @@ import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
 import { Product } from "../../products/product.model";
+import { getPublicProduct } from "../../../utils/activeProductFilter";
 import { Order } from "../../orders/order.model";
 import { DeliveryZone } from "../../delivery/delivery-zone.model";
 import { DeliveryFeedback } from "../customer-extras.model";
@@ -17,9 +18,9 @@ export const getDeliveryEstimate = asyncHandler(async (req: Request, res: Respon
 
   let productAvailable = true;
   if (productId) {
-    const product = await Product.findById(productId);
+    const product = await getPublicProduct(productId);
     if (!product) throw ApiError.notFound("Product not found");
-    productAvailable = product.stock > 0 && product.status === "approved";
+    productAvailable = product.stock > 0;
   }
 
   const isDhaka = division.toLowerCase().includes("dhaka");

@@ -5,16 +5,19 @@ import { Store } from "../sellers/store.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
-import { ACTIVE_PRODUCT_FILTER } from "../../utils/activeProductFilter";
+import { ACTIVE_PRODUCT_FILTER, getExcludedStoreIds, EXCLUDED_STORE_STATUSES } from "../../utils/activeProductFilter";
 import { getSellerStore } from "../sellers/seller-store.util";
 import { resolveCategoryNames } from "../../utils/category.utils";
 import { normalizeLeanArray, normalizeLean } from "../../utils/model-plugins";
 
 function resolveStore(identifier: string) {
+  const normalizedIdentifier = identifier.toLowerCase();
+
   return Store.findOne({
     $or: [
-      { slug: identifier.toLowerCase() },
-      ...(identifier.length === 24 ? [{ _id: identifier }] : []),
+      { slug: normalizedIdentifier },
+      { ownerId: identifier },
+      ...(mongoose.isValidObjectId(identifier) ? [{ _id: identifier }] : []),
     ],
   }).lean();
 }
@@ -26,7 +29,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 12));
   const skip = (page - 1) * limit;
 
-  const filter: Record<string, unknown> = { isDeleted: false };
+  const filter: Record<string, unknown> = { ...ACTIVE_PRODUCT_FILTER };
 
   if (query.search) {
     filter.$text = { $search: query.search };
@@ -84,8 +87,25 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   if (query.maxPrice !== undefined) {
     filter.price = { ...(filter.price as Record<string, unknown> || {}), $lte: Number(query.maxPrice) };
   }
-  if (query.status) {
-    filter.status = query.status;
+  if (query.status && query.status !== "approved") {
+    filter.$and = [
+      ...(Array.isArray(filter.$and) ? (filter.$and as unknown[]) : []),
+      { status: query.status },
+    ];
+  }
+
+  const excludedStoreIds = await getExcludedStoreIds();
+  if (excludedStoreIds.length) {
+    if (filter.storeId === undefined) {
+      filter.storeId = { $nin: excludedStoreIds };
+    } else {
+      filter.$and = [
+        { storeId: filter.storeId },
+        { storeId: { $nin: excludedStoreIds } },
+        ...(Array.isArray(filter.$and) ? (filter.$and as unknown[]) : []),
+      ];
+      delete filter.storeId;
+    }
   }
 
   let sortOption: Record<string, 1 | -1> = { createdAt: -1 };
@@ -169,8 +189,11 @@ export const getSellerOptions = asyncHandler(async (_req: Request, res: Response
 export const getTrendingProducts = asyncHandler(async (req: Request, res: Response) => {
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 8));
 
+  const excludedStoreIds = await getExcludedStoreIds();
+
   const products = await Product.find({
     ...ACTIVE_PRODUCT_FILTER,
+    ...(excludedStoreIds.length ? { storeId: { $nin: excludedStoreIds } } : {}),
     stock: { $gt: 0 },
   })
     .sort({ sold: -1, ratingAvg: -1 })
@@ -188,6 +211,28 @@ export const getProductById = asyncHandler(async (req: Request, res: Response) =
   }
   const product = await Product.findById(id).lean();
   if (!product) throw ApiError.notFound("Product not found");
+
+  const user = req.user;
+  const isOwnerOrAdmin =
+    !!user && (user.role === "admin" || String(user.id) === String(product.sellerId));
+
+  if (!isOwnerOrAdmin) {
+    if (
+      product.isDeleted !== ACTIVE_PRODUCT_FILTER.isDeleted ||
+      product.status !== ACTIVE_PRODUCT_FILTER.status
+    ) {
+      throw ApiError.notFound("Product not found");
+    }
+
+    const store = mongoose.isValidObjectId(product.storeId)
+      ? await Store.findById(product.storeId).select("status").lean()
+      : await resolveStore(product.storeId);
+
+    if (!store || EXCLUDED_STORE_STATUSES.includes(store.status)) {
+      throw ApiError.notFound("Product not found");
+    }
+  }
+
   sendSuccess(res, normalizeLean(product as Record<string, unknown>));
 });
 
@@ -249,7 +294,7 @@ export const moderateProduct = asyncHandler(async (req: Request, res: Response) 
   const product = await Product.findById(req.params.id);
   if (!product) throw ApiError.notFound("Product not found");
 
-  const { status, rejectionReason } = req.body as { status?: "pending" | "approved" | "rejected"; rejectionReason?: string };
+  const { status } = req.body as { status?: "pending" | "approved" | "rejected" };
 
   if (status) {
     product.status = status;

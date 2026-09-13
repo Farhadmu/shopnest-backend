@@ -4,7 +4,7 @@ import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
 import { Product } from "../../products/product.model";
-import { ACTIVE_PRODUCT_FILTER } from "../../../utils/activeProductFilter";
+import { buildPublicProductFilter } from "../../../utils/activeProductFilter";
 import { resolveCategoryNames } from "../../../utils/category.utils";
 
 // SMART BUDGET PLANNER
@@ -22,11 +22,12 @@ export const generateBudgetPlan = asyncHandler(async (req: Request, res: Respons
   // Fetch approved, in-stock products for the category
   // (resolves slug/name -> actual category names + subcategories, same as product listing)
   const categoryNames = await resolveCategoryNames(purpose);
-  const categoryProducts = await Product.find({
-    ...ACTIVE_PRODUCT_FILTER,
-    stock: { $gt: 0 },
-    category: { $in: categoryNames.map((n) => new RegExp(`^${n}$`, "i")) },
-  });
+  const categoryProducts = await Product.find(
+    await buildPublicProductFilter({
+      stock: { $gt: 0 },
+      category: { $in: categoryNames.map((n) => new RegExp(`^${n}$`, "i")) },
+    })
+  );
 
   if (categoryProducts.length === 0) {
     return sendSuccess(res, {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { ApiError } from "../../src/utils/api-error";
+import { asyncHandler } from "../../src/utils/async-handler";
 import { sendSuccess, sendPaginated } from "../../src/utils/api-response";
 import { normalizeCustomerActivityType } from "../../src/modules/customer/features/journey.controller";
 import { Response } from "express";
@@ -33,6 +34,19 @@ describe("ApiError", () => {
   it("creates notFound error with 404", () => {
     const err = ApiError.notFound("User not found");
     expect(err.statusCode).toBe(404);
+  });
+});
+
+describe("asyncHandler", () => {
+  it("returns the handler promise and forwards rejections", async () => {
+    const error = ApiError.internal("Failed");
+    const handler = asyncHandler(async () => {
+      throw error;
+    });
+    const next = vi.fn();
+
+    await expect(handler({} as never, {} as never, next)).resolves.toBeUndefined();
+    expect(next).toHaveBeenCalledWith(error);
   });
 });
 

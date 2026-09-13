@@ -2,14 +2,14 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
-import { Product } from "../../products/product.model";
+import { getPublicProduct } from "../../../utils/activeProductFilter";
 import { StockAlert } from "../customer-extras.model";
 import { PriceAlert } from "../customer-extras.model";
 
 export const subscribePriceAlert = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
   const { productId, targetPrice } = req.body;
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
   const alert = await PriceAlert.findOneAndUpdate(
@@ -43,7 +43,7 @@ export const deletePriceAlert = asyncHandler(async (req: Request, res: Response)
 export const subscribeStockAlert = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
   const { productId, userEmail } = req.body;
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
   const alert = await StockAlert.findOneAndUpdate(

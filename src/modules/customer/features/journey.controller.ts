@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { Product } from "../../products/product.model";
+import { buildPublicProductFilter } from "../../../utils/activeProductFilter";
 import { ShoppingJourney } from "../customer-intelligence.model";
 import { SearchHistory } from "../customer-features.model";
 import { CustomerActivity } from "../customer-extras.model";
@@ -50,10 +51,9 @@ export const getShoppingJourney = asyncHandler(async (req: Request, res: Respons
   }
 
   // Populate product details for recommendations
-  const recommendedItems = await Product.find({
-    _id: { $in: journey.recommendedProducts || [] },
-    isDeleted: false,
-  }).limit(4);
+  const recommendedItems = await Product.find(
+    await buildPublicProductFilter({ _id: { $in: journey.recommendedProducts || [] } })
+  ).limit(4);
 
   sendSuccess(res, {
     journey: journey.toJSON(),

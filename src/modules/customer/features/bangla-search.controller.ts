@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { Product } from "../../products/product.model";
+import { buildPublicProductFilter } from "../../../utils/activeProductFilter";
 
 export const searchBanglaBanglish = asyncHandler(async (req: Request, res: Response) => {
   const { q } = req.query as { q?: string };
@@ -50,7 +51,7 @@ export const searchBanglaBanglish = asyncHandler(async (req: Request, res: Respo
     .split(/\s+/)
     .filter((token) => !stopwords.includes(token) && isNaN(Number(token)));
 
-  const queryFilter: any = { isDeleted: { $ne: true } };
+  const queryFilter = await buildPublicProductFilter({});
 
   if (maxBudget) {
     queryFilter.price = { $lte: maxBudget };

@@ -2,17 +2,19 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { Product } from "../../products/product.model";
-import { ACTIVE_PRODUCT_FILTER } from "../../../utils/activeProductFilter";
+import { buildPublicProductFilter } from "../../../utils/activeProductFilter";
 
 // PRODUCT COMPATIBILITY CHECKER
 export const checkProductCompatibility = asyncHandler(async (req: Request, res: Response) => {
   const { productIds = [], customSpecs = [] } = req.body;
 
-  let products = await Product.find({ _id: { $in: productIds } });
+  let products = await Product.find(
+    await buildPublicProductFilter({ _id: { $in: productIds } })
+  );
 
   if (products.length < 2 && customSpecs.length < 2) {
     // Provide a sample comparison set if single or none passed
-    const sampleProducts = await Product.find(ACTIVE_PRODUCT_FILTER).limit(2);
+    const sampleProducts = await Product.find(await buildPublicProductFilter({})).limit(2);
     products = sampleProducts;
   }
 

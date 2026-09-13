@@ -5,7 +5,7 @@ import { Order } from "../orders/order.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
-import mongoose from "mongoose";
+import { getPublicProduct } from "../../utils/activeProductFilter";
 
 /**
  * Helper: Recalculates the average rating and review count for a product
@@ -37,6 +37,8 @@ async function recalcProductRating(productId: string) {
  *    - HTTP 200: Raw array of reviews (Review[])
  */
 export const listProductReviews = asyncHandler(async (req: Request, res: Response) => {
+  const product = await getPublicProduct(req.params.id);
+  if (!product) throw ApiError.notFound("Product not found");
   const reviews = await Review.find({ productId: req.params.id }).sort({ createdAt: -1 });
   res.status(200).json(reviews);
 });
@@ -59,7 +61,7 @@ export const listProductReviews = asyncHandler(async (req: Request, res: Respons
  */
 export const addProductReview = asyncHandler(async (req: Request, res: Response) => {
   const productId = req.params.id;
-  const product = await Product.findOne({ _id: productId, isDeleted: false });
+  const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
   const alreadyReviewed = await Review.findOne({ productId, userId: req.user!.id });

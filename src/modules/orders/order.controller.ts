@@ -48,6 +48,33 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   }
   subtotal = Math.round(subtotal * 100) / 100;
 
+  // Reject the order if any product's store is no longer approved
+  // (suspended or rejected). Look up each unique store once.
+  const uniqueStoreIds = [...new Set(orderItems.map((i) => i.storeId).filter(Boolean))];
+  const validObjectIds = uniqueStoreIds.filter((id) => mongoose.isValidObjectId(id));
+  const stores = await Store.find({
+    $or: [
+      ...(validObjectIds.length > 0 ? [{ _id: { $in: validObjectIds } }] : []),
+      { ownerId: { $in: uniqueStoreIds } },
+      { slug: { $in: uniqueStoreIds.map((s) => s.toLowerCase()) } },
+    ],
+  }).lean();
+
+  const storeMap = new Map<string, (typeof stores)[number]>();
+  for (const s of stores) {
+    if (s._id) storeMap.set(s._id.toString(), s);
+    if (s.ownerId) storeMap.set(s.ownerId, s);
+    if (s.slug) storeMap.set(s.slug.toLowerCase(), s);
+  }
+
+  for (const item of orderItems) {
+    const store = storeMap.get(item.storeId) || storeMap.get(item.storeId.toLowerCase());
+    if (!store || store.status !== "approved") {
+      throw ApiError.badRequest(`"${item.title}" is no longer available because its store is not approved`);
+    }
+  }
+
+
   let discount = 0;
   let freeShipping = false;
   if (couponCode) {

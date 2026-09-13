@@ -5,7 +5,6 @@ import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
 import { Category } from "../categories/category.model";
 import { completeJSON, completeJSONWithContext, AiContext } from "./providers/claude.provider";
-import { logger } from "../../utils/logger";
 import {
   PRODUCT_DESCRIPTION_SYSTEM,
   buildDescriptionPrompt,
@@ -23,6 +22,7 @@ import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { logAiIncident } from "./incident/incident.service";
 import { getSellerStore } from "../sellers/seller-store.util";
+import { buildPublicProductFilter, getPublicProduct } from "../../utils/activeProductFilter";
 
 /**
  * Controller: Recommend Products
@@ -37,7 +37,7 @@ import { getSellerStore } from "../sellers/seller-store.util";
 export const recommend = asyncHandler(async (req: Request, res: Response) => {
   const { query, budgetMax, category } = req.body as { query?: string; budgetMax?: number; category?: string };
 
-  const filter: Record<string, unknown> = { isDeleted: false, status: "approved" };
+  const filter = await buildPublicProductFilter({});
   if (budgetMax) filter.price = { $lte: budgetMax };
   if (category) filter.category = category;
   if (query) filter.$text = { $search: query };
@@ -106,7 +106,8 @@ export const reviewSummary = asyncHandler(async (req: Request, res: Response) =>
  */
 export const compareProducts = asyncHandler(async (req: Request, res: Response) => {
   const { productIds } = req.body as { productIds: string[] };
-  const products = await Product.find({ _id: { $in: productIds }, isDeleted: false });
+  const filter = await buildPublicProductFilter({ _id: { $in: productIds } });
+  const products = await Product.find(filter);
   if (products.length < 2) throw ApiError.badRequest("Could not find enough matching products to compare");
 
   const result = await completeJSON(
@@ -147,8 +148,9 @@ export const pricingSuggestion = asyncHandler(async (req: Request, res: Response
   const product = await Product.findOne({ _id: productId, isDeleted: false });
   if (!product) throw ApiError.notFound("Product not found");
 
+  const categoryMatch = await buildPublicProductFilter({ category: product.category });
   const categoryAgg = await Product.aggregate([
-    { $match: { category: product.category, isDeleted: false, status: "approved" } },
+    { $match: categoryMatch },
     { $group: { _id: null, avgPrice: { $avg: "$price" } } },
   ]);
   const categoryAvgPrice = Math.round((categoryAgg[0]?.avgPrice ?? product.price) * 100) / 100;
@@ -205,19 +207,22 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
   }
 
   const searchTerms = description.replace(/[^a-zA-Z\s]/g, " ").trim();
-  const products = await Product.find({
-    isDeleted: false,
-    status: "approved",
+  const baseFilter = await buildPublicProductFilter({});
+  const filter: Record<string, unknown> = {
+    ...baseFilter,
     $or: [
       { $text: { $search: searchTerms } },
       { tags: { $in: searchTerms.split(" ").filter((w) => w.length > 2).map((w) => new RegExp(w, "i")) } },
       { category: { $regex: searchTerms.split(" ")[0] || "", $options: "i" } },
     ],
-  }).limit(10);
+  };
 
+  const products = await Product.find(filter).limit(10);
+
+  const fallbackFilter = await buildPublicProductFilter({});
   const fallbackProducts =
     products.length === 0
-      ? await Product.find({ isDeleted: false, status: "approved" }).sort({ sold: -1 }).limit(10)
+      ? await Product.find(fallbackFilter).sort({ sold: -1 }).limit(10)
       : products;
 
   sendSuccess(res, {
@@ -289,7 +294,7 @@ export const clearAiCommerceMemory = asyncHandler(async (req: Request, res: Resp
 export const negotiateDeal = asyncHandler(async (req: Request, res: Response) => {
   const { productId, cartSubtotal = 5000 } = req.body;
 
-  const product = productId ? await Product.findById(productId) : null;
+  const product = productId ? await getPublicProduct(productId) : null;
   const originalPrice = product ? (product.discountPrice || product.price) : Number(cartSubtotal);
 
   const activeCoupons = await Coupon.find({ isActive: true });
@@ -422,10 +427,7 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
 
   const cleanSearchQuery = searchTokens.join(" ");
 
-  const filter: Record<string, any> = {
-    isDeleted: false,
-    status: "approved",
-  };
+  const filter: Record<string, unknown> = await buildPublicProductFilter({});
 
   if (maxPrice !== null && maxPrice > 0) {
     filter.price = { $lte: maxPrice };
@@ -461,10 +463,7 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
     .lean();
 
   if (matchingProducts.length === 0 && searchTokens.length > 1) {
-    const broaderFilter: Record<string, any> = {
-      isDeleted: false,
-      status: "approved",
-    };
+    const broaderFilter: Record<string, unknown> = await buildPublicProductFilter({});
     if (maxPrice !== null && maxPrice > 0) {
       broaderFilter.price = { $lte: maxPrice };
     }
@@ -627,7 +626,6 @@ export const analyzeProductImages = asyncHandler(async (req: Request, res: Respo
     throw ApiError.badRequest("Please provide at least one product image URL.");
   }
 
-  const userId = req.user?.id;
   let categoryContext: string[] = [];
   let priceContext: { avgPrice: number; minPrice: number; maxPrice: number } | null = null;
 
@@ -642,8 +640,9 @@ export const analyzeProductImages = asyncHandler(async (req: Request, res: Respo
   }
 
   if (categoryContext.length > 0) {
+    const categoryMatch = await buildPublicProductFilter({ category: { $in: categoryContext } });
     const agg = await Product.aggregate([
-      { $match: { category: { $in: categoryContext }, isDeleted: false, status: "approved" } },
+      { $match: categoryMatch },
       {
         $group: {
           _id: null,
@@ -785,7 +784,7 @@ export const generateProductFromImages = asyncHandler(async (req: Request, res: 
   let categoryAvgPrice = 0;
   const detectedCat = typeof analysis?.detectedCategory === "string" ? (analysis.detectedCategory as string) : "";
   const hintCat = typeof hints?.category === "string" ? (hints.category as string) : "";
-  let suggestedCategory = hintCat || detectedCat || "General";
+  const suggestedCategory = hintCat || detectedCat || "General";
 
   if (suggestedCategory && suggestedCategory !== "General") {
     const escaped = suggestedCategory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -797,8 +796,9 @@ export const generateProductFromImages = asyncHandler(async (req: Request, res: 
     }).limit(5);
     if (catNames.length > 0) {
       const catNameList = catNames.map((c) => c.name);
+      const categoryMatch = await buildPublicProductFilter({ category: { $in: catNameList } });
       const agg = await Product.aggregate([
-        { $match: { category: { $in: catNameList }, isDeleted: false, status: "approved" } },
+        { $match: categoryMatch },
         { $group: { _id: null, avgPrice: { $avg: "$price" } } },
       ]);
       if (agg[0]?.avgPrice) categoryAvgPrice = Math.round(agg[0].avgPrice);
@@ -1110,8 +1110,9 @@ export const suggestProductPrice = asyncHandler(async (req: Request, res: Respon
     }).limit(5);
     if (catNames.length > 0) {
       const catNameList = catNames.map((c) => c.name);
+      const categoryMatch = await buildPublicProductFilter({ category: { $in: catNameList } });
       const agg = await Product.aggregate([
-        { $match: { category: { $in: catNameList }, isDeleted: false, status: "approved" } },
+        { $match: categoryMatch },
         { $group: { _id: null, avgPrice: { $avg: "$price" }, count: { $sum: 1 } } },
       ]);
       if (agg[0]) {

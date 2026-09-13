@@ -8,10 +8,11 @@ import { Order } from "../../orders/order.model";
 import { Review } from "../../reviews/review.model";
 import { ProductQualityScore } from "../customer-features.model";
 import { PriceHistory } from "../customer-intelligence.model";
+import { buildPublicProductFilter, EXCLUDED_STORE_STATUSES, getPublicProduct } from "../../../utils/activeProductFilter";
 
 export const getProductQualityScore = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
   const store = await Store.findById(product.storeId);
@@ -57,7 +58,9 @@ export const getProductQualityScore = asyncHandler(async (req: Request, res: Res
 export const getSellerTrustScore = asyncHandler(async (req: Request, res: Response) => {
   const { storeId } = req.params;
   const store = await Store.findById(storeId);
-  if (!store) throw ApiError.notFound("Store not found");
+  if (!store || EXCLUDED_STORE_STATUSES.includes(store.status)) {
+    throw ApiError.notFound("Store not found");
+  }
 
   const totalOrders = await Order.countDocuments({ "items.storeId": storeId });
   const completedOrders = await Order.countDocuments({ "items.storeId": storeId, status: "delivered" });
@@ -97,7 +100,7 @@ export const getSellerTrustScore = asyncHandler(async (req: Request, res: Respon
 
 export const getPriceIntelligence = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
   let priceRecord = await PriceHistory.findOne({ productId });
@@ -142,7 +145,7 @@ export const getPriceIntelligence = asyncHandler(async (req: Request, res: Respo
 
 export const getProductTrustReport = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
   const store = await Store.findById(product.storeId);
@@ -198,7 +201,7 @@ export const getProductTrustReport = asyncHandler(async (req: Request, res: Resp
 
 export const getValueForMoneyScore = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
   const discountRatio = product.discountPrice ? (product.price - product.discountPrice) / product.price : 0;
@@ -236,10 +239,9 @@ export const getBudgetShoppingRecommendations = asyncHandler(async (req: Request
   };
 
   const budgetNum = Number(budget) || 30000;
-  const query: any = {
-    isDeleted: { $ne: true },
+  const query = await buildPublicProductFilter({
     price: { $lte: budgetNum },
-  };
+  });
 
   if (category && category !== "All") {
     query.category = new RegExp(category, "i");

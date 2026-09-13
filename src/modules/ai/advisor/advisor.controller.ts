@@ -7,13 +7,14 @@ import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
 import { logAiIncident } from "../incident/incident.service";
+import { buildPublicProductFilter } from "../../../utils/activeProductFilter";
 
 /** Very lightweight keyword extraction to pull candidate products before asking the model to reason over them. */
 async function findCandidateProducts(message: string) {
   const budgetMatch = message.match(/(\d{2,7})/);
   const maxPrice = budgetMatch ? Number(budgetMatch[1]) : undefined;
 
-  const filter: Record<string, unknown> = { isDeleted: false, status: "approved" };
+  const filter = await buildPublicProductFilter({});
   if (maxPrice) filter.price = { $lte: maxPrice };
 
   const textSearch = message.replace(/[^a-zA-Z\s]/g, " ").trim();
@@ -21,7 +22,8 @@ async function findCandidateProducts(message: string) {
 
   let products = await Product.find(query).limit(8).select("title price category ratingAvg stock");
   if (products.length === 0) {
-    products = await Product.find(filter).sort({ ratingAvg: -1 }).limit(8).select("title price category ratingAvg stock");
+    const fallbackFilter = await buildPublicProductFilter({});
+    products = await Product.find(fallbackFilter).sort({ ratingAvg: -1 }).limit(8).select("title price category ratingAvg stock");
   }
   return products.map((p) => ({
     id: p.id,

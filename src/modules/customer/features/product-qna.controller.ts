@@ -2,12 +2,13 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
-import { Product } from "../../products/product.model";
+import { getPublicProduct } from "../../../utils/activeProductFilter";
 import { ProductQuestion } from "../customer-extras.model";
 
 export const getProductQuestions = asyncHandler(async (req: Request, res: Response) => {
-  const { productId } = req.params;
-  const questions = await ProductQuestion.find({ productId }).sort({ createdAt: -1 });
+  const product = await getPublicProduct(req.params.productId);
+  if (!product) throw ApiError.notFound("Product not found");
+  const questions = await ProductQuestion.find({ productId: req.params.productId }).sort({ createdAt: -1 });
   sendSuccess(res, questions);
 });
 
@@ -16,7 +17,7 @@ export const askProductQuestion = asyncHandler(async (req: Request, res: Respons
   const userName = req.user!.name || "Customer";
   const { productId, question } = req.body;
 
-  const product = await Product.findById(productId);
+  const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
   const newQ = await ProductQuestion.create({

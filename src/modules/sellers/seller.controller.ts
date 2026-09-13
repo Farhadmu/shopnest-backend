@@ -222,7 +222,13 @@ export const getStoreById = asyncHandler(async (req: Request, res: Response) => 
       ...(mongoose.isValidObjectId(identifier) ? [{ _id: identifier }] : []),
     ],
   }).lean();
-  if (!store || store.status === "rejected") throw ApiError.notFound("Store not found");
+  if (!store) throw ApiError.notFound("Store not found");
+
+  const isOwner = req.user?.id === store.ownerId;
+  const isAdmin = req.user?.role === "admin";
+
+  if (store.status === "rejected" || (store.status === "suspended" && !isOwner && !isAdmin))
+    throw ApiError.notFound("Store not found");
 
   const products = await Product.find({
     storeId: { $in: [store._id.toString(), store.slug, store.ownerId] },

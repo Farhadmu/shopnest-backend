@@ -5,6 +5,7 @@ import { getSellerContext } from "../seller-store.util";
 import { Order } from "../../orders/order.model";
 import { Product } from "../../products/product.model";
 import { Category } from "../../categories/category.model";
+import { buildPublicProductFilter } from "../../../utils/activeProductFilter";
 
 // 13. DEMAND HEATMAP - REAL CATEGORY TELEMETRY & BEHAVIORAL DEMAND DYNAMICS
 export const getDemandHeatmap = asyncHandler(async (req: Request, res: Response) => {
@@ -16,7 +17,8 @@ export const getDemandHeatmap = asyncHandler(async (req: Request, res: Response)
 
   // 1. Resolve distinct categories from seller's catalog, db products, and category collections
   const sellerCategories = Array.from(new Set(sellerProducts.map((p) => p.category).filter(Boolean)));
-  const dbCategories = await Product.distinct("category");
+  const publicProductFilter = await buildPublicProductFilter({});
+  const dbCategories = await Product.distinct("category", publicProductFilter);
   const collectionCategories = await Category.find().select("name").limit(10).lean();
   const catNamesFromCollection = collectionCategories.map((c) => c.name);
 
@@ -72,7 +74,7 @@ export const getDemandHeatmap = asyncHandler(async (req: Request, res: Response)
 
   // 4. Query real platform orders & product statistics per category from MongoDB
   const allOrders = await Order.find().sort({ createdAt: -1 }).limit(200).lean();
-  const allProducts = await Product.find({ isDeleted: false }).select("category sold views price").lean();
+  const allProducts = await Product.find(publicProductFilter).select("category sold views price").lean();
 
   // Compute real category velocity metrics from DB
   const categoryStats: Record<string, { totalSold: number; totalViews: number; orderCount: number; dayOrders: Record<string, number> }> = {};
@@ -125,7 +127,7 @@ export const getDemandHeatmap = asyncHandler(async (req: Request, res: Response)
   // 5. Build dynamic heatmap data
   let highestIntensity = 0;
   let topCategoryName = categories[0] || "Electronics";
-  let maxDaySum: Record<string, number> = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
+  const maxDaySum: Record<string, number> = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
 
   const heatmapData = categories.map((cat) => {
     const baseProfile = getCategoryProfile(cat);

@@ -1,12 +1,14 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
+import { ApiError } from "../../../utils/api-error";
 import { SellerGoal } from "../seller-intelligence.model";
 import { getSellerContext } from "../seller-store.util";
 
 // 19. SELLER GOALS & KPI SYSTEM
 export const getSellerGoals = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
+  const userId = req.user?.id;
+  if (!userId) throw ApiError.unauthorized("Authentication required");
   const {
     store,
     products,
@@ -15,6 +17,10 @@ export const getSellerGoals = asyncHandler(async (req: Request, res: Response) =
     totalOrders,
     uniqueBuyerIds,
   } = await getSellerContext(userId);
+
+  if (!store) {
+    return sendSuccess(res, []);
+  }
 
   const storeIdStr = store._id?.toString() || store.id;
   const goals = await SellerGoal.find({
@@ -45,7 +51,8 @@ export const getSellerGoals = asyncHandler(async (req: Request, res: Response) =
 });
 
 export const createSellerGoal = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
+  const userId = req.user?.id;
+  if (!userId) throw ApiError.unauthorized("Authentication required");
   const {
     store,
     products,
@@ -54,6 +61,10 @@ export const createSellerGoal = asyncHandler(async (req: Request, res: Response)
     totalOrders,
     uniqueBuyerIds,
   } = await getSellerContext(userId);
+
+  if (!store) {
+    throw ApiError.badRequest("You must create a store before setting goals. Please complete your store setup first.");
+  }
 
   const { title, metricType = "revenue", targetValue = 50000, unit, deadline, period } = req.body;
   const storeIdStr = store._id?.toString() || store.id;
@@ -84,8 +95,12 @@ export const createSellerGoal = asyncHandler(async (req: Request, res: Response)
 });
 
 export const deleteSellerGoal = asyncHandler(async (req: Request, res: Response) => {
+  const sellerId = req.user?.id;
+  if (!sellerId) throw ApiError.unauthorized("Authentication required");
   const { id } = req.params;
-  await SellerGoal.findByIdAndDelete(id);
+  const goal = await SellerGoal.findOne({ _id: id, sellerId });
+  if (!goal) throw ApiError.notFound("Goal not found or you do not have permission to delete it");
+  await goal.deleteOne();
   sendSuccess(res, { deleted: true }, "Goal removed");
 });
 

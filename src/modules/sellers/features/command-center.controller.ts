@@ -1,11 +1,13 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
+import { ApiError } from "../../../utils/api-error";
 import { getSellerContext, getSellerStore } from "../seller-store.util";
 import { Review } from "../../reviews/review.model";
 
 export const getSellerCommandCenter = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
+  const userId = req.user?.id;
+  if (!userId) throw ApiError.unauthorized("Authentication required");
   const {
     store,
     products,
@@ -17,6 +19,17 @@ export const getSellerCommandCenter = asyncHandler(async (req: Request, res: Res
     pendingOrders: allTimePending,
     uniqueBuyerIds,
   } = await getSellerContext(userId);
+
+  if (!store) {
+    return sendSuccess(res, {
+      store: null,
+      metrics: [],
+      insights: [],
+      actions: [],
+      profit: null,
+      healthScore: null,
+    });
+  }
 
   const { range = "30d" } = req.query as { range?: string };
 

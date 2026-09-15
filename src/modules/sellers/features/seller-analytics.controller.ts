@@ -1,15 +1,35 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
+import { ApiError } from "../../../utils/api-error";
 import { getSellerContext } from "../seller-store.util";
 
 // 21. ADVANCED SELLER ANALYTICS WITH TIME-RANGE FILTERS
 export const getSellerAnalytics = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
+  const userId = req.user?.id;
+  if (!userId) throw ApiError.unauthorized("Authentication required");
+  const { range = "30d" } = req.query as { range?: string };
+
   const { store, products, sellerOrders, totalRevenue, totalOrders, deliveredOrders, uniqueBuyerIds } =
     await getSellerContext(userId);
 
-  const { range = "30d" } = req.query as { range?: string };
+  if (!store) {
+    return sendSuccess(res, {
+      range,
+      kpis: {
+        totalRevenue: 0,
+        totalOrders: 0,
+        productsSold: 0,
+        conversionRate: 0,
+        customerGrowth: "0%",
+        avgOrderValue: 0,
+      },
+      trendPoints: [],
+      topProducts: [],
+      lowPerformingProducts: [],
+      categoryPerformance: [],
+    });
+  }
 
   const now = Date.now();
   let rangeMs = 30 * 24 * 60 * 60 * 1000;

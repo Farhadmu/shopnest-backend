@@ -1,12 +1,29 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
+import { ApiError } from "../../../utils/api-error";
 import { getSellerContext } from "../seller-store.util";
 
 // 23. CUSTOMER INSIGHTS & RETENTION TELEMETRY
 export const getCustomerInsights = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
+  const userId = req.user?.id;
+  if (!userId) throw ApiError.unauthorized("Authentication required");
   const { store, sellerOrders, totalRevenue } = await getSellerContext(userId);
+
+  if (!store) {
+    return sendSuccess(res, {
+      overview: {
+        totalCustomers: 0,
+        newCustomers: 0,
+        returningCustomers: 0,
+        repeatPurchaseRate: "0%",
+        customerSatisfaction: "5.0 / 5.0",
+        averageLifetimeValue: "৳0",
+      },
+      topCustomerSegments: [],
+      recentActivity: [],
+    });
+  }
 
   // Group orders by customer userId
   const customerMap: Record<string, { orderCount: number; totalSpend: number; lastOrder: Date }> = {};

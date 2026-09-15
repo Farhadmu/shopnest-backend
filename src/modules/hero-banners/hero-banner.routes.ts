@@ -15,6 +15,10 @@ import { idParamSchema } from "../../schemas/product.schema";
 const router = Router();
 
 router.get("/", attachUserIfPresent, validate({ query: heroBannerQuerySchema }), ctrl.listHeroBanners);
+
+// Must be registered before `/:id` so it is not captured as a banner id.
+router.get("/categories", ctrl.listBannerCategoryIds);
+
 router.get("/:id", validate({ params: idParamSchema }), ctrl.getHeroBannerById);
 
 router.post(

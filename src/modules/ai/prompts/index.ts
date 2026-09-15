@@ -9,11 +9,37 @@ Rules:
 - If no candidate products are relevant, say so honestly instead of guessing.`;
 
 export function buildProductContext(
-  products: Array<{ id: string; title: string; price: number; category: string; ratingAvg: number; stock: number }>
+  products: Array<{
+    id: string;
+    title: string;
+    price: number;
+    category: string;
+    ratingAvg: number;
+    stock: number;
+    matchScore: number;
+    reason: string;
+    strengths: string[];
+    weaknesses: string[];
+    bestFor: string;
+    specifications?: Record<string, string>;
+    warrantyMonths?: number;
+    freeDelivery?: boolean;
+    sentiment?: { positive: number; neutral: number; negative: number };
+  }>
 ) {
   if (products.length === 0) return "CANDIDATE PRODUCTS: (none found in catalog for this query)";
   const lines = products
-    .map((p) => `- [${p.id}] ${p.title} | ৳${p.price} | ${p.category} | rating ${p.ratingAvg}/5 | stock ${p.stock}`)
+    .map((p) => {
+      const specs = p.specifications && Object.keys(p.specifications).length > 0
+        ? `\n    Specs: ${Object.entries(p.specifications).map(([k, v]) => `${k}: ${v}`).join(", ")}`
+        : "";
+      const warranty = p.warrantyMonths ? `\n    Warranty: ${p.warrantyMonths} months` : "";
+      const delivery = p.freeDelivery ? "\n    Free delivery: Yes" : "";
+      const sentiment = p.sentiment ? `\n    Sentiment: +${p.sentiment.positive}/-${p.sentiment.negative}` : "";
+      const strengths = p.strengths.length > 0 ? `\n    Strengths: ${p.strengths.join(", ")}` : "";
+      const weaknesses = p.weaknesses.length > 0 ? `\n    Weaknesses: ${p.weaknesses.join(", ")}` : "";
+      return `- [${p.id}] ${p.title} | ৳${p.price} | ${p.category} | rating ${p.ratingAvg}/5 | stock ${p.stock} | match ${p.matchScore}% | ${p.reason}${specs}${warranty}${delivery}${sentiment}${strengths}${weaknesses}\n    Best for: ${p.bestFor}`;
+    })
     .join("\n");
   return `CANDIDATE PRODUCTS:\n${lines}`;
 }

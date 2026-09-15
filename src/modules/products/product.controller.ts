@@ -239,6 +239,9 @@ export const getProductById = asyncHandler(async (req: Request, res: Response) =
 export const createProduct = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
   const store = await getSellerStore(userId);
+  if (!store) {
+    throw ApiError.badRequest("You must create a store before adding products. Please complete your store setup first.");
+  }
 
   const data = req.body as Partial<IProduct>;
 
@@ -265,6 +268,9 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response) =>
   }
 
   const store = await getSellerStore(userId);
+  if (!store) {
+    throw ApiError.badRequest("You must create a store before updating products. Please complete your store setup first.");
+  }
   Object.assign(product, req.body, { storeId: store._id.toString(), sellerId: userId });
   await product.save();
 

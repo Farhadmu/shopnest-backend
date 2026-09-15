@@ -38,6 +38,32 @@ export const getHeroBannerById = asyncHandler(async (req: Request, res: Response
   sendSuccess(res, banner);
 });
 
+/**
+ * Public: the category ids that have at least one active, admin-configured
+ * banner image. The homepage banner lists ONLY these categories, so a category
+ * appears/disappears as the admin adds/removes its banner.
+ */
+export const listBannerCategoryIds = asyncHandler(async (_req: Request, res: Response) => {
+  const banners = await HeroBanner.find({ categoryId: { $ne: null }, isActive: true })
+    .select("categoryId imageUrl")
+    .lean();
+
+  const categoryIds = Array.from(
+    new Set(
+      banners
+        .filter(
+          (b) =>
+            b.categoryId &&
+            typeof b.imageUrl === "string" &&
+            b.imageUrl.trim().length > 0
+        )
+        .map((b) => String(b.categoryId))
+    )
+  );
+
+  sendSuccess(res, { categoryIds });
+});
+
 export const createHeroBanner = asyncHandler(async (req: Request, res: Response) => {
   const {
     categoryId, imageUrl, placement, eyebrow, title, highlight, subtitle,

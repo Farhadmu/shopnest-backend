@@ -57,6 +57,8 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthUser;
+      /** The verified better-auth session token for the current request, when authenticated. */
+      sessionToken?: string;
     }
   }
 }
@@ -193,6 +195,7 @@ export const attachUserIfPresent = asyncHandler(async (req: Request, _res: Respo
     const user = await resolveUserFromSessionToken(token);
     if (user) {
       req.user = user;
+      req.sessionToken = token;
       try {
         const userAgent = req.headers["user-agent"] as string | undefined;
         const device = parseUserAgent(userAgent);

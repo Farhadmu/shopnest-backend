@@ -37,6 +37,16 @@ export interface IOrder {
   paymentStatus: "unpaid" | "paid" | "refunded";
   status: OrderStatus;
   statusHistory: { status: OrderStatus; at: Date }[];
+  deliveryManId?: string;
+  assignedAt?: Date;
+  pickedUpAt?: Date;
+  inTransitAt?: Date;
+  outForDeliveryAt?: Date;
+  deliveredAt?: Date;
+  deliveryOtp?: string;
+  deliveryProofImage?: string;
+  deliveryFailedReason?: string;
+  deliveryFailedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -87,6 +97,16 @@ const orderSchema = new Schema<IOrder>(
       type: [{ status: String, at: Date }],
       default: [],
     },
+    deliveryManId: { type: String, index: true },
+    assignedAt: { type: Date },
+    pickedUpAt: { type: Date },
+    inTransitAt: { type: Date },
+    outForDeliveryAt: { type: Date },
+    deliveredAt: { type: Date },
+    deliveryOtp: { type: String },
+    deliveryProofImage: { type: String },
+    deliveryFailedReason: { type: String },
+    deliveryFailedAt: { type: Date },
   },
   { timestamps: true }
 );

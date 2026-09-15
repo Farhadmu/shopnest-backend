@@ -19,6 +19,13 @@ export type NotificationType =
   | "payment_alert"
   | "refund_alert"
   | "delivery_alert"
+  | "new_delivery_request"
+  | "delivery_assignment"
+  | "delivery_status_update"
+  | "delivery_completed"
+  | "delivery_failed"
+  | "delivery_incident"
+  | "new_rating"
   | "inventory_alert"
   | "system_alert"
   | "ai_insight"
@@ -66,7 +73,7 @@ export type NotificationRelatedType =
   | "refund"
   | "system";
 
-export type RecipientType = "user" | "seller" | "admin" | "all";
+export type RecipientType = "user" | "seller" | "admin" | "delivery_man" | "all";
 
 export interface INotification {
   _id: Types.ObjectId;
@@ -90,7 +97,7 @@ export interface INotification {
 const notificationSchema = new Schema<INotification>(
   {
     userId: { type: String, required: true, index: true },
-    recipientType: { type: String, enum: ["user", "seller", "admin", "all"], default: "user", index: true },
+    recipientType: { type: String, enum: ["user", "seller", "admin", "delivery_man", "all"], default: "user", index: true },
     type: { type: String, required: true, index: true },
     category: { type: String, enum: ["orders", "sellers", "reviews", "security", "incidents", "payments", "refunds", "delivery", "inventory", "system", "ai_insights"], index: true },
     priority: { type: String, enum: ["info", "warning", "high", "critical"], default: "info", index: true },

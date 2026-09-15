@@ -55,6 +55,12 @@ if (!aiKeysPresent && parsed.data.NODE_ENV === "production") {
   console.warn("⚠️  Set ANTHROPIC_API_KEY or GEMINI_API_KEY in production for live AI responses.");
 }
 
+// Safe startup diagnostics for AI providers (no secrets exposed)
+// eslint-disable-next-line no-console
+console.log(`[AI] Gemini configured: ${parsed.data.GEMINI_API_KEY ? "YES" : "NO"} | model: ${parsed.data.GEMINI_MODEL || "not set"}`);
+// eslint-disable-next-line no-console
+console.log(`[AI] Anthropic configured: ${parsed.data.ANTHROPIC_API_KEY ? "YES" : "NO"} | model: ${parsed.data.ANTHROPIC_MODEL || "not set"}`);
+
 export const env = {
   ...parsed.data,
   CORS_ORIGIN_LIST: parsed.data.CORS_ORIGINS.split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean),

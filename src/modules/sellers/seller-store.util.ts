@@ -2,32 +2,30 @@ import { Store } from "./store.model";
 import { Product } from "../products/product.model";
 import { Order } from "../orders/order.model";
 
-/** Resolves the authenticated seller's store, auto-provisioning a personal store if none exists. */
+/** Resolves the authenticated seller's store. Returns null if the user does not have a store. */
 export async function getSellerStore(userId: string) {
-  let store = await Store.findOne({
+  return await Store.findOne({
     $or: [{ ownerId: userId }, { userId: userId }],
   });
-
-  if (!store) {
-    const slugSuffix = userId ? userId.replace(/[^a-zA-Z0-9]/g, "").slice(-6) : Math.random().toString(36).substring(2, 8);
-    store = await Store.create({
-      ownerId: userId,
-      storeName: "My ShopNest Store",
-      slug: `store-${slugSuffix || "seller"}`,
-      description: "Seller storefront",
-      status: "approved",
-      trustScore: 85,
-      rating: 0,
-      ratingCount: 0,
-      followersCount: 0,
-    });
-  }
-  return store;
 }
 
 /** Helper to fetch all seller-specific products and orders with extracted seller items */
 export async function getSellerContext(userId: string) {
   const store = await getSellerStore(userId);
+  if (!store) {
+    return {
+      store: null,
+      products: [],
+      sellerOrders: [],
+      totalRevenue: 0,
+      totalOrders: 0,
+      deliveredOrders: 0,
+      pendingOrders: 0,
+      returnedOrders: 0,
+      cancelledOrders: 0,
+      uniqueBuyerIds: [],
+    };
+  }
   const storeIdStr = store._id?.toString() || store.id;
 
   const products = await Product.find({
@@ -79,8 +77,9 @@ export async function getSellerContext(userId: string) {
     ["pending", "confirmed", "processing", "shipped", "out_for_delivery"].includes(o.status)
   ).length;
   const returnedOrders = sellerOrders.filter((o) =>
-    ["returned", "refunded", "cancelled"].includes(o.status)
+    ["returned", "refunded"].includes(o.status)
   ).length;
+  const cancelledOrders = sellerOrders.filter((o) => o.status === "cancelled").length;
 
   const uniqueBuyerIds = Array.from(new Set(sellerOrders.map((o) => o.userId).filter(Boolean)));
 
@@ -93,6 +92,7 @@ export async function getSellerContext(userId: string) {
     deliveredOrders,
     pendingOrders,
     returnedOrders,
+    cancelledOrders,
     uniqueBuyerIds,
   };
 }

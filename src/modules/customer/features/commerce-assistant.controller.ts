@@ -18,7 +18,7 @@ export const askPersonalCommerceAssistant = asyncHandler(async (req: Request, re
 
   // Fetch authorized context for this customer only
   const [orders, wishlist, preferences, goals] = await Promise.all([
-    Order.find({ customerId: userId }).sort({ createdAt: -1 }).limit(5),
+    Order.find({ userId }).sort({ createdAt: -1 }).limit(5),
     Wishlist.findOne({ userId }),
     UserPreferences.findOne({ userId }),
     ShoppingGoal.find({ userId }).limit(3),

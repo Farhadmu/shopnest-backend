@@ -47,7 +47,7 @@ export interface CopilotMetric {
   value: number;
   formatted: string;
   changePercent?: number;
-  trend?: "up" | "down" | "stable";
+  trend?: "up" | "down" | "neutral";
 }
 
 export interface CopilotEvidence {

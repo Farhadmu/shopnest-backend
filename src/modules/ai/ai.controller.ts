@@ -4,7 +4,7 @@ import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
 import { Category } from "../categories/category.model";
-import { completeJSON, completeJSONWithContext, AiContext } from "./providers/claude.provider";
+import { completeJSON, completeJSONWithContext, completeWithContext, AiContext } from "./providers/claude.provider";
 import {
   PRODUCT_DESCRIPTION_SYSTEM,
   buildDescriptionPrompt,
@@ -20,9 +20,29 @@ import { summarizeProductReviews } from "./trust/reviewIntelligence";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+import { logger } from "../../utils/logger";
 import { logAiIncident } from "./incident/incident.service";
 import { getSellerStore } from "../sellers/seller-store.util";
 import { buildPublicProductFilter, getPublicProduct } from "../../utils/activeProductFilter";
+import { env } from "../../config/env";
+
+/**
+ * Controller: AI Health Check
+ *
+ * Returns provider configuration status without exposing secrets.
+ */
+export const aiHealth = asyncHandler(async (_req: Request, res: Response) => {
+  sendSuccess(res, {
+    gemini: {
+      configured: Boolean(env.GEMINI_API_KEY),
+      model: env.GEMINI_MODEL || null,
+    },
+    anthropic: {
+      configured: Boolean(env.ANTHROPIC_API_KEY),
+      model: env.ANTHROPIC_MODEL || null,
+    },
+  });
+});
 
 /**
  * Controller: Recommend Products
@@ -530,15 +550,15 @@ export const detectShoppingIntent = asyncHandler(async (req: Request, res: Respo
  *    - HTTP 200: { role, query, answer, suggestedActions, isFallback }
  */
 export const commerceCopilot = asyncHandler(async (req: Request, res: Response) => {
-  const { query, role = "customer" } = req.body;
-  const userRole = req.user?.role || role;
+  const { query } = req.body;
+  const userRole = req.user?.role;
   const userId = req.user?.id;
 
   if (!query) throw ApiError.badRequest("Please provide a prompt for the AI Copilot");
+  if (!userRole) throw ApiError.unauthorized("Authentication required");
 
-  let answer = "";
-  let suggestedActions: Array<{ label: string; action: string; targetUrl?: string }> = [];
   const aiContext: AiContext = {};
+  let systemPrompt = "";
 
   if (userRole === "admin" && userId) {
     const userCount = await import("../users/user.model").then((m) => m.usersCollection().countDocuments({}));
@@ -556,17 +576,17 @@ export const commerceCopilot = asyncHandler(async (req: Request, res: Response) 
       productCount,
       totalRevenue: totalRevenue[0]?.total || 0,
     };
-    answer = `📊 **Marketplace Overview**: ${userCount} users, ${sellerCount} sellers, ${orderCount} orders, ${productCount} products. Total revenue: ৳${(totalRevenue[0]?.total || 0).toLocaleString()}.`;
-    suggestedActions = [
-      { label: "Review Anomaly Center", action: "navigate", targetUrl: "/admin/dashboard" },
-      { label: "Inspect Geographical Map", action: "filter", targetUrl: "/admin/dashboard" },
-    ];
+    systemPrompt = `You are the ShopNest Admin Copilot, an AI assistant for marketplace administrators.
+You help admins analyze platform health, review incidents, manage sellers and products, and make data-driven decisions.
+Always base your answers on the provided marketplace data. Never invent metrics or access unauthorized data.
+Be concise, professional, and actionable. If data is missing, say so honestly.`;
   } else if (userRole === "seller" && userId) {
     const store = await Store.findOne({ $or: [{ ownerId: userId }, { userId }] });
     if (store) {
-      const [orderCount, productCount] = await Promise.all([
+      const [orderCount, productCount, recentOrders] = await Promise.all([
         Order.countDocuments({ "items.sellerId": store.id }),
         Product.countDocuments({ storeId: store.id, isDeleted: false }),
+        Order.find({ "items.sellerId": userId }).sort({ createdAt: -1 }).limit(5).lean(),
       ]);
       aiContext.userContext = {
         storeName: store.storeName,
@@ -574,40 +594,96 @@ export const commerceCopilot = asyncHandler(async (req: Request, res: Response) 
         orderCount,
         productCount,
       };
-      answer = `💼 **Store Overview**: ${store.storeName} (Trust Score: ${store.trustScore}/100). ${orderCount} orders, ${productCount} active products.`;
-    } else {
-      answer = "You don't have a store registered yet. Register a store to access seller insights.";
+      aiContext.orders = recentOrders.map((o: any) => ({
+        id: String(o._id),
+        status: o.status,
+        totalAmount: o.totalAmount || 0,
+      }));
     }
-    suggestedActions = [
-      { label: "Run Campaign Simulator", action: "open_simulator" },
-      { label: "View Profitability Waterfall", action: "navigate" },
-    ];
+    systemPrompt = `You are the ShopNest Seller Copilot, an AI business assistant for authenticated sellers.
+You help sellers analyze their store performance, manage products and inventory, understand orders and revenue, and grow their business.
+Always base your answers on the provided seller data. Never expose other sellers' data or customer private information.
+Be concise, professional, and actionable. If data is missing, say so honestly. Focus on the seller's own store only.`;
   } else {
     if (userId) {
       const [orders, wishlist] = await Promise.all([
-        Order.find({ customerId: userId }).sort({ createdAt: -1 }).limit(5),
+        Order.find({ userId }).sort({ createdAt: -1 }).limit(5).lean(),
         import("../wishlist/wishlist.model").then((m) => m.Wishlist.findOne({ userId })),
       ]);
-      aiContext.orders = orders.map((o) => ({ id: o.id, status: o.status, totalAmount: o.totalAmount }));
+      aiContext.orders = orders.map((o: any) => ({
+        id: String(o._id),
+        status: o.status,
+        totalAmount: o.totalAmount || 0,
+      }));
+      aiContext.wishlist = (wishlist?.items || []).slice(0, 5).map((item: any) => ({
+        title: item.title,
+        price: item.price || 0,
+      }));
       aiContext.userContext = { wishlistCount: wishlist?.items?.length || 0 };
-      answer = `🛍️ **Shopping Summary**: You have ${orders.length} recent orders${wishlist?.items?.length ? ` and ${wishlist.items.length} items in your wishlist` : ""}. How can I help you today?`;
-    } else {
-      answer = "Welcome to ShopNest! I can help you find products, compare prices, and manage your orders.";
     }
-    suggestedActions = [
-      { label: "Open Budget Planner", action: "open_budget" },
-      { label: "Check Product Compatibility", action: "open_compatibility" },
-    ];
+    systemPrompt = `You are the ShopNest AI Shopping Assistant, a personal shopping assistant for customers.
+You help customers find products, compare options, manage their cart and wishlist, track orders, and make confident purchase decisions.
+Always base your answers on the provided customer data. Never expose seller analytics, admin data, or other customers' private information.
+Be concise, professional, and actionable. If data is missing, say so honestly. Focus on the customer's own shopping experience.`;
   }
 
-  sendSuccess(res, {
-    role: userRole,
-    query,
-    answer,
-    suggestedActions,
-    isFallback: true,
-  });
+  try {
+    const result = await completeWithContext(
+      [{ role: "user", content: query }],
+      aiContext,
+      { system: systemPrompt, role: userRole as "customer" | "seller" | "admin" }
+    );
+    const suggestedActions = buildSuggestedActions(userRole, query);
+    return sendSuccess(res, {
+      role: userRole,
+      query,
+      answer: result.content,
+      suggestedActions,
+      isFallback: result.isFallback,
+      provider: result.provider,
+    });
+  } catch (error) {
+    logger.error("Commerce copilot AI failed", { error, role: userRole });
+    const suggestedActions = buildSuggestedActions(userRole, query);
+    return sendSuccess(res, {
+      role: userRole,
+      query,
+      answer: getRoleBasedUnavailableMessage(userRole),
+      suggestedActions,
+      isFallback: true,
+      provider: undefined,
+    });
+  }
 });
+
+function buildSuggestedActions(role: string, query: string): Array<{ label: string; action: string; targetUrl?: string }> {
+  if (role === "admin") {
+    return [
+      { label: "Review Anomaly Center", action: "navigate", targetUrl: "/dashboard/admin" },
+      { label: "Inspect Geographical Map", action: "filter", targetUrl: "/dashboard/admin" },
+    ];
+  }
+  if (role === "seller") {
+    return [
+      { label: "Run Campaign Simulator", action: "open_simulator" },
+      { label: "View Profitability Waterfall", action: "navigate", targetUrl: "/dashboard/seller" },
+    ];
+  }
+  return [
+    { label: "Open Budget Planner", action: "open_budget" },
+    { label: "Check Product Compatibility", action: "open_compatibility" },
+  ];
+}
+
+function getRoleBasedUnavailableMessage(role: string): string {
+  if (role === "seller") {
+    return "AI assistant is currently unavailable. You can still browse your products, check orders, and manage your store. Please try again later for AI-powered business insights.";
+  }
+  if (role === "admin") {
+    return "AI assistant is currently unavailable. You can still access the admin dashboard for platform analytics. Please try again later for AI-powered insights.";
+  }
+  return "AI assistant is currently unavailable. I can still help you browse products, check prices, and manage your orders. Please try again later for AI-powered recommendations.";
+}
 
 /**
  * Controller: AI Product Image Analysis (Vision)
@@ -780,6 +856,9 @@ export const generateProductFromImages = asyncHandler(async (req: Request, res: 
     throw ApiError.unauthorized("Seller authentication required");
   }
   const store = await getSellerStore(userId);
+  if (!store) {
+    throw ApiError.badRequest("You must create a store before using AI product tools. Please complete your store setup first.");
+  }
 
   let categoryAvgPrice = 0;
   const detectedCat = typeof analysis?.detectedCategory === "string" ? (analysis.detectedCategory as string) : "";
@@ -1097,6 +1176,9 @@ export const suggestProductPrice = asyncHandler(async (req: Request, res: Respon
     throw ApiError.unauthorized("Seller authentication required");
   }
   const store = await getSellerStore(userId);
+  if (!store) {
+    throw ApiError.badRequest("You must create a store before using AI pricing tools. Please complete your store setup first.");
+  }
 
   let categoryAvgPrice = 0;
   let categoryProducts = 0;

@@ -1,11 +1,13 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
+import { ApiError } from "../../../utils/api-error";
 import { getSellerContext } from "../seller-store.util";
 
 // 11. SELLER HEALTH SCORE
 export const getSellerHealthScore = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
+  const userId = req.user?.id;
+  if (!userId) throw ApiError.unauthorized("Authentication required");
   const {
     store,
     products,
@@ -15,6 +17,15 @@ export const getSellerHealthScore = asyncHandler(async (req: Request, res: Respo
     returnedOrders,
     uniqueBuyerIds,
   } = await getSellerContext(userId);
+
+  if (!store) {
+    return sendSuccess(res, {
+      overallHealth: 0,
+      metrics: [],
+      insights: [],
+      actions: [],
+    });
+  }
 
   const totalProducts = products.length;
 

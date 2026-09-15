@@ -1,12 +1,31 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
+import { ApiError } from "../../../utils/api-error";
 import { getSellerContext } from "../seller-store.util";
 
 // 12. AI SALES FORECASTING
 export const getSalesForecast = asyncHandler(async (req: Request, res: Response) => {
-  const userId = req.user?.id || "demo-seller";
+  const userId = req.user?.id;
+  if (!userId) throw ApiError.unauthorized("Authentication required");
   const { store, products, sellerOrders, totalRevenue, totalOrders } = await getSellerContext(userId);
+
+  if (!store) {
+    return sendSuccess(res, {
+      storeId: null,
+      period: "Next 30 Days",
+      expectedRevenue: 0,
+      expectedOrders: 0,
+      confidenceScore: 50,
+      growthRateProjected: "0.0%",
+      forecastDaily: [],
+      historicalRevenue30d: 0,
+      activeProductsCount: 0,
+      limitations: "Store has 0 recorded orders yet. Forecast baseline will automatically populate once initial customer orders are received.",
+    });
+  }
+
+  const storeId = store._id?.toString() || store.id;
 
   // Group orders by day to compute actual daily velocity
   const now = Date.now();
@@ -69,7 +88,7 @@ export const getSalesForecast = asyncHandler(async (req: Request, res: Response)
   const growthRateProjected = totalForecastRevenue > 0 ? "+8.5%" : "0.0%";
 
   sendSuccess(res, {
-    storeId: store._id?.toString() || store.id,
+    storeId: storeId,
     period: "Next 30 Days",
     expectedRevenue: totalForecastRevenue,
     expectedOrders: totalForecastOrders,

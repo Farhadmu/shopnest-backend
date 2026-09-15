@@ -30,17 +30,20 @@ export interface AiContext {
 export interface CompleteResult {
   content: string;
   isFallback: boolean;
+  provider?: string;
 }
 
 export interface CompleteJsonResult<T> {
   data: T;
   isFallback: boolean;
+  provider?: string;
 }
 
 interface CompleteOptions {
   system?: string;
   maxTokens?: number;
   temperature?: number;
+  role?: "customer" | "seller" | "admin";
 }
 
 function isTextOnly(messages: ChatMessage[]) {
@@ -51,6 +54,45 @@ function hasImages(messages: ChatMessage[]): boolean {
   return messages.some(
     (message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image")
   );
+}
+
+async function fetchImageAsBase64(url: string): Promise<{ inlineData: { mimeType: string; data: string } } | null> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const buffer = await response.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString("base64");
+    const contentType = response.headers.get("content-type") || "image/jpeg";
+    return { inlineData: { mimeType: contentType, data: base64 } };
+  } catch {
+    return null;
+  }
+}
+
+async function convertMessagesForGemini(messages: ChatMessage[]): Promise<Array<{ role: string; parts: Array<Record<string, unknown>> }>> {
+  const contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> = [];
+  for (const message of messages) {
+    if (typeof message.content === "string") {
+      contents.push({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] });
+      continue;
+    }
+
+    const parts: Array<Record<string, unknown>> = [];
+    for (const part of message.content) {
+      if (part.type === "text") {
+        parts.push({ text: part.text });
+      } else if (part.type === "image") {
+        const imageData = await fetchImageAsBase64(part.source.url);
+        if (imageData) {
+          parts.push(imageData);
+        } else {
+          parts.push({ text: "[image omitted]" });
+        }
+      }
+    }
+    contents.push({ role: message.role === "assistant" ? "model" : "user", parts });
+  }
+  return contents;
 }
 
 const KNOWN_VISION_MODELS = new Set([
@@ -151,10 +193,7 @@ async function completeWithClaude(messages: ChatMessage[], opts: CompleteOptions
 async function completeWithGemini(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
   if (!env.GEMINI_API_KEY) throw new Error("Gemini is not configured");
 
-  const contents = messages.map((message) => ({
-    role: message.role === "assistant" ? "model" : "user",
-    parts: [{ text: typeof message.content === "string" ? message.content : message.content.map((part) => part.type === "text" ? part.text : "[image omitted]").join(" ") }],
-  }));
+  const contents = await convertMessagesForGemini(messages);
 
   const systemInstruction = opts.system ? { parts: [{ text: opts.system }] } : undefined;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
@@ -187,7 +226,7 @@ async function completeWithGemini(messages: ChatMessage[], opts: CompleteOptions
   return (data.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? "").join("\n").trim();
 }
 
-function generateLocalFallback(messages: ChatMessage[], system?: string, context?: AiContext): string {
+function generateLocalFallback(messages: ChatMessage[], system?: string, context?: AiContext, role: "customer" | "seller" | "admin" = "customer"): string {
   const lastUserMsg = messages
     .slice()
     .reverse()
@@ -199,17 +238,17 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
     const nameMatch = content.match(/Product Name:\s*([^\n]+)/i);
     const catMatch = content.match(/Category:\s*([^\n]+)/i);
     const featMatch = content.match(/Main Features:\s*([^\n]+)/i);
-    const name = nameMatch ? nameMatch[1].trim() : (context?.productName || "Quality Product");
+    const name = nameMatch ? nameMatch[1].trim() : (context?.productName || "Product");
     const category = catMatch ? catMatch[1].trim() : (context?.category || "General");
-    const features = featMatch ? featMatch[1].split(",").map((f) => f.trim()) : (context?.features || ["Premium build", "Reliable performance"]);
+    const features = featMatch ? featMatch[1].split(",").map((f) => f.trim()) : (context?.features || []);
 
-    const featureHighlights = features.length > 0 ? features.map((f) => `Feature: ${f}`) : ["High durability", "Verified seller warranty", "Fast delivery"];
+    const featureHighlights = features.length > 0 ? features.map((f) => `Feature: ${f}`) : ["Features not specified"];
 
     return JSON.stringify({
-      description: `Introducing ${name}, a quality ${category} product designed for everyday use. ${features.length > 0 ? `Key features include ${features.join(", ")}.` : "Built with premium materials for lasting performance."} A great choice for customers looking for reliable value.`,
-      shortDescription: `${name} in ${category}. Features: ${features.slice(0, 3).join(", ")}.`,
-      seoTitle: `${name} - Best Price in BD | ShopNest`,
-      seoDescription: `Buy genuine ${name} online at best price in Bangladesh on ShopNest. Fast shipping and warranty.`,
+      description: `${name} is a ${category} product. ${features.length > 0 ? `Key features include ${features.join(", ")}.` : "Detailed AI-generated description is currently unavailable."}`,
+      shortDescription: `${name} in ${category}.${features.length > 0 ? ` Features: ${features.slice(0, 3).join(", ")}.` : ""}`,
+      seoTitle: `${name} - ${category} | ShopNest`,
+      seoDescription: `Buy ${name} online on ShopNest. Fast shipping and seller warranty available.`,
       tags: [category.toLowerCase(), ...name.toLowerCase().split(/\s+/), ...features.map((f) => f.toLowerCase().replace(/[^a-z0-9]/g, ""))].filter(Boolean).slice(0, 8),
       highlights: featureHighlights,
     });
@@ -219,8 +258,16 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
   if (content.includes("Current Price:") && content.includes("Category Average Price:")) {
     const currMatch = content.match(/Current Price:\s*৳?(\d+)/i);
     const avgMatch = content.match(/Category Average Price:\s*৳?(\d+)/i);
-    const curr = currMatch ? Number(currMatch[1]) : (context?.currentPrice || 1000);
+    const curr = currMatch ? Number(currMatch[1]) : (context?.currentPrice || 0);
     const avg = avgMatch ? Number(avgMatch[1]) : (context?.categoryAvgPrice || curr);
+
+    if (curr <= 0 || avg <= 0) {
+      return JSON.stringify({
+        suggestedMin: 0,
+        suggestedMax: 0,
+        reason: "Insufficient pricing data to generate a recommendation.",
+      });
+    }
 
     const min = Math.round(Math.min(curr * 0.95, avg * 0.95));
     const max = Math.round(Math.max(curr * 1.05, avg * 1.05));
@@ -292,9 +339,43 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
     });
   }
 
-  // Shopping agent / general assistant response - use real context
+  // Role-aware shopping/business assistant response - use real context
   if (context) {
-    const { orders, wishlist, userContext } = context;
+    const { orders, wishlist, userContext, products } = context;
+
+    if (role === "seller") {
+      if (products && products.length > 0) {
+        const productList = products.slice(0, 3).map((p) => `${p.title} (৳${p.price})`).join(", ");
+        return `I found ${products.length} products in your store: ${productList}. ${products.length > 3 ? `Showing top 3 of ${products.length}.` : ""} Store analytics are temporarily unavailable, but you can manage these products from your dashboard.`;
+      }
+      if (orders && orders.length > 0) {
+        const orderSummary = orders.slice(0, 3).map((o) => `Order #${o.id.slice(-6)} (৳${o.totalAmount}, ${o.status})`).join(", ");
+        return `Based on your recent store orders: ${orderSummary}. You have ${orders.length} total orders. What would you like to analyze?`;
+      }
+      if (userContext) {
+        return "I can help you analyze sales, manage inventory, and optimize your store performance. What would you like to know?";
+      }
+      return "I can help you analyze your store performance, manage products, and optimize sales. What would you like to know?";
+    }
+
+    if (role === "admin") {
+      if (userContext && (userContext as any).totalRevenue) {
+        const revenue = (userContext as any).totalRevenue;
+        const userCount = (userContext as any).userCount;
+        const orderCount = (userContext as any).orderCount;
+        return `Marketplace overview: ${userCount} users, ${orderCount} orders, total revenue ৳${revenue.toLocaleString()}. Platform analytics are temporarily unavailable, but you can access the full admin dashboard.`;
+      }
+      if (userContext) {
+        return "I can help you analyze platform health, review incidents, and manage marketplace operations. What would you like to know?";
+      }
+      return "I can help you analyze platform performance, review security incidents, and manage marketplace operations. What would you like to know?";
+    }
+
+    // Customer role (default)
+    if (products && products.length > 0) {
+      const productList = products.slice(0, 3).map((p) => `${p.title} (৳${p.price})`).join(", ");
+      return `I found ${products.length} matching products: ${productList}. ${products.length > 3 ? `Showing top 3 of ${products.length}.` : ""} AI-powered recommendations are currently unavailable, but you can browse these verified products from our catalog.`;
+    }
     if (orders && orders.length > 0) {
       const orderSummary = orders.slice(0, 3).map((o) => `Order #${o.id.slice(-6)} (৳${o.totalAmount}, ${o.status})`).join(", ");
       return `Based on your recent activity: ${orderSummary}. You have ${orders.length} total orders. How can I help you further?`;
@@ -308,34 +389,37 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
   }
 
   // Default: honest response indicating AI is unavailable
-  return "I'm currently operating in limited mode. I can help you browse products, check prices, and manage your orders. For more advanced assistance, please try again later.";
+  if (role === "seller") {
+    return "AI assistant is currently unavailable. You can still browse your products, check orders, and manage your store. Please try again later for AI-powered business insights.";
+  }
+  if (role === "admin") {
+    return "AI assistant is currently unavailable. You can still access the admin dashboard for platform analytics. Please try again later for AI-powered insights.";
+  }
+  return "AI assistant is currently unavailable. I can still help you browse products, check prices, and manage your orders. Please try again later for AI-powered recommendations.";
 }
 
 /**
- * AI gateway with provider fallback. Claude is preferred; text-only requests
- * automatically fall back to Gemini when Claude is unavailable, and local intelligent
- * fallback is used if no external API key is provided.
+ * AI gateway with provider fallback. Gemini is preferred for development/testing;
+ * Anthropic is the fallback. Local intelligent fallback is used if no external
+ * provider is available.
  */
 export async function complete(messages: ChatMessage[], opts: CompleteOptions = {}): Promise<CompleteResult> {
-  if (env.ANTHROPIC_API_KEY) {
+  const providers = [
+    { name: "gemini", fn: () => completeWithGemini(messages, opts), guard: () => env.GEMINI_API_KEY },
+    { name: "anthropic", fn: () => completeWithClaude(messages, opts), guard: () => env.ANTHROPIC_API_KEY },
+  ] as const;
+
+  for (const provider of providers) {
+    if (!provider.guard()) continue;
     try {
-      const content = await completeWithClaude(messages, opts);
-      return { content, isFallback: false };
+      const content = await provider.fn();
+      return { content, isFallback: false, provider: provider.name };
     } catch (error) {
-      logger.warn("Primary AI provider failed; attempting fallback", { provider: "anthropic", error });
+      logger.warn("AI provider failed; attempting next provider", { provider: provider.name, error });
     }
   }
 
-  if (env.GEMINI_API_KEY && isTextOnly(messages)) {
-    try {
-      const content = await completeWithGemini(messages, opts);
-      return { content, isFallback: false };
-    } catch (error) {
-      logger.warn("Fallback AI provider failed", { provider: "gemini", error });
-    }
-  }
-
-  const content = generateLocalFallback(messages, opts.system);
+  const content = generateLocalFallback(messages, opts.system, undefined, opts.role);
   return { content, isFallback: true };
 }
 
@@ -347,25 +431,22 @@ export async function completeWithContext(
   context: AiContext,
   opts: CompleteOptions = {}
 ): Promise<CompleteResult> {
-  if (env.ANTHROPIC_API_KEY) {
+  const providers = [
+    { name: "gemini", fn: () => completeWithGemini(messages, opts), guard: () => env.GEMINI_API_KEY },
+    { name: "anthropic", fn: () => completeWithClaude(messages, opts), guard: () => env.ANTHROPIC_API_KEY },
+  ] as const;
+
+  for (const provider of providers) {
+    if (!provider.guard()) continue;
     try {
-      const content = await completeWithClaude(messages, opts);
-      return { content, isFallback: false };
+      const content = await provider.fn();
+      return { content, isFallback: false, provider: provider.name };
     } catch (error) {
-      logger.warn("Primary AI provider failed; attempting fallback", { provider: "anthropic", error });
+      logger.warn("AI provider failed; attempting next provider", { provider: provider.name, error });
     }
   }
 
-  if (env.GEMINI_API_KEY && isTextOnly(messages)) {
-    try {
-      const content = await completeWithGemini(messages, opts);
-      return { content, isFallback: false };
-    } catch (error) {
-      logger.warn("Fallback AI provider failed", { provider: "gemini", error });
-    }
-  }
-
-  const content = generateLocalFallback(messages, opts.system, context);
+  const content = generateLocalFallback(messages, opts.system, context, opts.role);
   return { content, isFallback: true };
 }
 
@@ -378,7 +459,7 @@ export async function completeJSON<T>(messages: ChatMessage[], opts: CompleteOpt
   if (raw.isFallback) {
     try {
       const data = JSON.parse(raw.content.replace(/```json|```/g, "").trim()) as T;
-      return { data, isFallback: true };
+      return { data, isFallback: true, provider: raw.provider };
     } catch {
       throw ApiError.internal("AI returned an unexpected response format");
     }
@@ -387,12 +468,12 @@ export async function completeJSON<T>(messages: ChatMessage[], opts: CompleteOpt
   const cleaned = raw.content.replace(/```json|```/g, "").trim();
   try {
     const data = JSON.parse(cleaned) as T;
-    return { data, isFallback: false };
+    return { data, isFallback: false, provider: raw.provider };
   } catch (err) {
     logger.error("Failed to parse AI JSON response", { raw: cleaned });
     try {
-      const data = JSON.parse(generateLocalFallback(messages, opts.system)) as T;
-      return { data, isFallback: true };
+      const data = JSON.parse(generateLocalFallback(messages, opts.system, undefined, opts.role)) as T;
+      return { data, isFallback: true, provider: raw.provider };
     } catch {
       throw ApiError.internal("AI returned an unexpected response format");
     }
@@ -415,12 +496,12 @@ export async function completeJSONWithContext<T>(
   const cleaned = raw.content.replace(/```json|```/g, "").trim();
   try {
     const data = JSON.parse(cleaned) as T;
-    return { data, isFallback: raw.isFallback };
+    return { data, isFallback: raw.isFallback, provider: raw.provider };
   } catch (err) {
     logger.error("Failed to parse AI JSON response", { raw: cleaned });
     try {
-      const data = JSON.parse(generateLocalFallback(messages, opts.system, context)) as T;
-      return { data, isFallback: true };
+      const data = JSON.parse(generateLocalFallback(messages, opts.system, context, opts.role)) as T;
+      return { data, isFallback: true, provider: raw.provider };
     } catch {
       throw ApiError.internal("AI returned an unexpected response format");
     }

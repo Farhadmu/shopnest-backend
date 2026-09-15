@@ -60,15 +60,15 @@ export const getChurnPredictor = asyncHandler(async (req: Request, res: Response
         description: lowCount > 0 ? `${lowCount} active customer(s) purchased recently.` : "Awaiting first active store customers.",
       },
     },
-    retentionTriggers: [
+    retentionTriggers: total === 0 ? [] : [
       {
         trigger: "Personalized 10% Loyalty Voucher",
-        targetCount: highCount + medCount > 0 ? highCount + medCount : Math.max(1, total),
+        targetCount: highCount + medCount > 0 ? highCount + medCount : total,
         projectedWinBack: "28% projected recovery",
       },
       {
         trigger: "New Catalog Arrivals Notification",
-        targetCount: total > 0 ? total : 0,
+        targetCount: total,
         projectedWinBack: "35% open rate",
       },
     ],

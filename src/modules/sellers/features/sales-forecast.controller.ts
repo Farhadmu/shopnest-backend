@@ -37,7 +37,8 @@ export const getSalesForecast = asyncHandler(async (req: Request, res: Response)
   let totalForecastRevenue = 0;
   let totalForecastOrders = 0;
 
-  for (let i = 1; i <= 30; i++) {
+  // No sales baseline yet -> return an empty series so the UI shows its empty state.
+  for (let i = 1; baseDailyAvg > 0 && i <= 30; i++) {
     const dateObj = new Date(now + i * 24 * 3600 * 1000);
     const dayOfWeek = dateObj.getDay(); // 0: Sun, 5: Fri, 6: Sat
     // Weekend boost (Bangladesh marketplace pattern: Fri & Sat peak)

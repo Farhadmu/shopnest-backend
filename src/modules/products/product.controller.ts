@@ -186,6 +186,21 @@ export const getSellerOptions = asyncHandler(async (_req: Request, res: Response
   sendSuccess(res, options);
 });
 
+export const listMyProducts = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.id;
+  const store = await getSellerStore(userId);
+  const storeIdStr = store._id.toString();
+
+  const products = await Product.find({
+    $or: [{ sellerId: userId }, { storeId: storeIdStr }, { storeId: store._id }],
+    isDeleted: false,
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  sendSuccess(res, normalizeLeanArray(products as Record<string, unknown>[]));
+});
+
 export const getTrendingProducts = asyncHandler(async (req: Request, res: Response) => {
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 8));
 

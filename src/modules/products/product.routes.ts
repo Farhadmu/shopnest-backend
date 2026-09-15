@@ -21,6 +21,9 @@ router.get("/sellers/options", ctrl.getSellerOptions);
 // Trending products must be registered BEFORE `:id` so it is not captured as a product id.
 router.get("/trending", ctrl.getTrendingProducts);
 
+// Seller's own catalog — ownership enforced server-side from the session.
+router.get("/mine", ...requireAuth, requireRole("seller", "admin"), ctrl.listMyProducts);
+
 router.get("/:id", attachUserIfPresent, validate({ params: idParamSchema }), ctrl.getProductById);
 
 router.post(

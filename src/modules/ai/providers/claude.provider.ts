@@ -44,6 +44,56 @@ interface CompleteOptions {
   maxTokens?: number;
   temperature?: number;
   role?: "customer" | "seller" | "admin";
+  /** When false, skip the rule-based fallback and throw the real provider error. */
+  allowFallback?: boolean;
+}
+
+export type AiFailureCode =
+  | "not_configured"
+  | "authentication"
+  | "model"
+  | "provider_error";
+
+/** Typed AI failure so callers can distinguish config/auth/model/provider problems. */
+export class AiProviderError extends Error {
+  code: AiFailureCode;
+  status?: number;
+  provider?: string;
+
+  constructor(code: AiFailureCode, message: string, status?: number, provider?: string) {
+    super(message);
+    this.name = "AiProviderError";
+    this.code = code;
+    this.status = status;
+    this.provider = provider;
+  }
+}
+
+/** Maps an upstream provider HTTP failure to a diagnosable failure code. */
+function classifyProviderError(status: number, message: string): AiFailureCode {
+  const lower = message.toLowerCase();
+  if (
+    status === 401 ||
+    status === 403 ||
+    lower.includes("api key") ||
+    lower.includes("api-key") ||
+    lower.includes("authentication") ||
+    lower.includes("unauthorized") ||
+    lower.includes("permission")
+  ) {
+    return "authentication";
+  }
+  if (
+    status === 404 ||
+    (lower.includes("model") &&
+      (lower.includes("not found") ||
+        lower.includes("not_found") ||
+        lower.includes("does not exist") ||
+        lower.includes("unsupported")))
+  ) {
+    return "model";
+  }
+  return "provider_error";
 }
 
 function isTextOnly(messages: ChatMessage[]) {
@@ -161,25 +211,32 @@ async function completeWithClaude(messages: ChatMessage[], opts: CompleteOptions
 
     if (!response.ok) {
       let errorMessage = `Anthropic request failed with ${response.status}`;
+      let errorType: string | undefined;
       let errBody = "";
       try {
         errBody = await response.text();
         const parsed = JSON.parse(errBody) as { error?: { message?: string; type?: string } };
+        errorType = parsed.error?.type;
         if (parsed.error?.message) errorMessage = parsed.error.message;
-        logger.error("Anthropic API error", { status: response.status, body: errBody });
-        if (parsed.error?.type === "invalid_request_error" && errorMessage.toLowerCase().includes("image") && errorMessage.toLowerCase().includes("support")) {
-          if (hasImages(msgs)) {
-            const stripped = stripImages(msgs);
-            logger.warn("Claude API rejected image content; retrying with stripped text", { model, originalError: errorMessage });
-            const retry = await sendToClaude(stripped);
-            return { content: retry.content, stripped: true };
-          }
-        }
-        throw new Error(errorMessage);
-      } catch (err) {
-        if ((err as Error).message !== errorMessage) throw err;
+      } catch {
+        // Non-JSON error body — keep the status-based message.
       }
-      throw new Error(errorMessage);
+
+      logger.error("Anthropic API error", { status: response.status, body: errBody });
+
+      if (
+        errorType === "invalid_request_error" &&
+        errorMessage.toLowerCase().includes("image") &&
+        errorMessage.toLowerCase().includes("support") &&
+        hasImages(msgs)
+      ) {
+        const stripped = stripImages(msgs);
+        logger.warn("Claude API rejected image content; retrying with stripped text", { model, originalError: errorMessage });
+        const retry = await sendToClaude(stripped);
+        return { content: retry.content, stripped: true };
+      }
+
+      throw new AiProviderError(classifyProviderError(response.status, errorMessage), errorMessage, response.status, "anthropic");
     }
 
     const data = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
@@ -209,17 +266,18 @@ async function completeWithGemini(messages: ChatMessage[], opts: CompleteOptions
 
   if (!response.ok) {
     let errorMessage = `Gemini request failed with ${response.status}`;
+    let errBody = "";
     try {
-      const errBody = await response.text();
+      errBody = await response.text();
       const parsed = JSON.parse(errBody) as { error?: { message?: string } };
       if (parsed.error?.message) {
         errorMessage = parsed.error.message;
       }
-      logger.error("Gemini API error", { status: response.status, body: errBody });
     } catch {
-      logger.error("Gemini API error", { status: response.status });
+      // Non-JSON error body — keep the status-based message.
     }
-    throw new Error(errorMessage);
+    logger.error("Gemini API error", { status: response.status, body: errBody });
+    throw new AiProviderError(classifyProviderError(response.status, errorMessage), errorMessage, response.status, "gemini");
   }
 
   const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
@@ -400,27 +458,59 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
 
 /**
  * AI gateway with provider fallback. Gemini is preferred for development/testing;
- * Anthropic is the fallback. Local intelligent fallback is used if no external
- * provider is available.
+ * Anthropic is the fallback. Runs the configured providers in order; when every
+ * provider fails and `allowFallback` is false, throws a typed AiProviderError
+ * carrying the real upstream failure instead of silently degrading to the
+ * rule-based fallback.
  */
-export async function complete(messages: ChatMessage[], opts: CompleteOptions = {}): Promise<CompleteResult> {
+async function runProviders(
+  messages: ChatMessage[],
+  opts: CompleteOptions,
+  context?: AiContext
+): Promise<CompleteResult> {
   const providers = [
     { name: "gemini", fn: () => completeWithGemini(messages, opts), guard: () => env.GEMINI_API_KEY },
     { name: "anthropic", fn: () => completeWithClaude(messages, opts), guard: () => env.ANTHROPIC_API_KEY },
   ] as const;
 
+  let configuredCount = 0;
+  let lastError: unknown = null;
+
   for (const provider of providers) {
     if (!provider.guard()) continue;
+    configuredCount += 1;
     try {
       const content = await provider.fn();
       return { content, isFallback: false, provider: provider.name };
     } catch (error) {
-      logger.warn("AI provider failed; attempting next provider", { provider: provider.name, error });
+      lastError = error;
+      logger.warn("AI provider failed; attempting next provider", {
+        provider: provider.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
-  const content = generateLocalFallback(messages, opts.system, undefined, opts.role);
+  if (opts.allowFallback === false) {
+    if (configuredCount === 0) {
+      throw new AiProviderError(
+        "not_configured",
+        "No AI provider is configured on the server. Set ANTHROPIC_API_KEY or GEMINI_API_KEY."
+      );
+    }
+    if (lastError instanceof AiProviderError) throw lastError;
+    throw new AiProviderError(
+      "provider_error",
+      lastError instanceof Error ? lastError.message : "AI provider request failed"
+    );
+  }
+
+  const content = generateLocalFallback(messages, opts.system, context, opts.role);
   return { content, isFallback: true };
+}
+
+export async function complete(messages: ChatMessage[], opts: CompleteOptions = {}): Promise<CompleteResult> {
+  return runProviders(messages, opts);
 }
 
 /**
@@ -431,23 +521,7 @@ export async function completeWithContext(
   context: AiContext,
   opts: CompleteOptions = {}
 ): Promise<CompleteResult> {
-  const providers = [
-    { name: "gemini", fn: () => completeWithGemini(messages, opts), guard: () => env.GEMINI_API_KEY },
-    { name: "anthropic", fn: () => completeWithClaude(messages, opts), guard: () => env.ANTHROPIC_API_KEY },
-  ] as const;
-
-  for (const provider of providers) {
-    if (!provider.guard()) continue;
-    try {
-      const content = await provider.fn();
-      return { content, isFallback: false, provider: provider.name };
-    } catch (error) {
-      logger.warn("AI provider failed; attempting next provider", { provider: provider.name, error });
-    }
-  }
-
-  const content = generateLocalFallback(messages, opts.system, context, opts.role);
-  return { content, isFallback: true };
+  return runProviders(messages, opts, context);
 }
 
 export async function completeJSON<T>(messages: ChatMessage[], opts: CompleteOptions = {}): Promise<CompleteJsonResult<T>> {

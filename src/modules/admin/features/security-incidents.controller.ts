@@ -42,7 +42,7 @@ import { AnomalyLog } from "../../admin/admin-intelligence.model";
 import { SecurityLog } from "../../security/securityLog.model";
 
 interface AuthedRequest extends Request {
-  user?: { id: string; email: string; name: string; role: "customer" | "seller" | "admin" };
+  user?: { id: string; email: string; name: string; role: "customer" | "seller" | "admin" | "delivery_man" };
 }
 
 function getAdminInfo(req: AuthedRequest) {

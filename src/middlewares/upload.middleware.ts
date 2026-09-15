@@ -73,3 +73,39 @@ export const categoryImageUpload = multer({
     callback(null, true);
   },
 });
+
+const deliveryUploadDirectory = path.resolve(env.UPLOAD_DIR, "delivery");
+fs.mkdirSync(deliveryUploadDirectory, { recursive: true });
+
+const deliveryStorage = multer.diskStorage({
+  destination: (_request, _file, callback) => callback(null, deliveryUploadDirectory),
+  filename: (_request, file, callback) => {
+    const extension = path.extname(file.originalname).toLowerCase() || ".jpg";
+    callback(null, `${crypto.randomUUID()}${extension}`);
+  },
+});
+
+export const deliveryDocumentUpload = multer({
+  storage: deliveryStorage,
+  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
+  fileFilter: (_request, file, callback) => {
+    const allowed = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+    if (!allowed.includes(file.mimetype)) {
+      callback(ApiError.badRequest("Only JPEG, PNG, WebP or PDF files can be uploaded"));
+      return;
+    }
+    callback(null, true);
+  },
+});
+
+export const deliveryProofUpload = multer({
+  storage: deliveryStorage,
+  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
+  fileFilter: (_request, file, callback) => {
+    if (!file.mimetype.startsWith("image/")) {
+      callback(ApiError.badRequest("Only image files can be uploaded as delivery proof"));
+      return;
+    }
+    callback(null, true);
+  },
+});

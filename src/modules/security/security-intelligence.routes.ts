@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as ctrl from "./security-intelligence.controller";
-import { attachUserIfPresent } from "../../middlewares/auth.middleware";
+import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
 
 const router = Router();
 
@@ -10,8 +10,8 @@ router.get("/overview", attachUserIfPresent, ctrl.getSecurityOverview);
 // 22. Active Sessions & Device Manager
 router.get("/sessions", attachUserIfPresent, ctrl.getActiveSessions);
 router.post("/sessions/record", attachUserIfPresent, ctrl.recordSession);
-router.delete("/sessions/:id", attachUserIfPresent, ctrl.revokeSession);
-router.post("/sessions/revoke-all", attachUserIfPresent, ctrl.revokeAllOtherSessions);
+router.delete("/sessions/:id", ...requireAuth, ctrl.revokeSession);
+router.post("/sessions/revoke-all", ...requireAuth, ctrl.revokeAllOtherSessions);
 
 // 23. Login Risk
 router.post("/login-risk", attachUserIfPresent, ctrl.evaluateLoginRisk);

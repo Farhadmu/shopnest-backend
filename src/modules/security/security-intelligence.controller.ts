@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
@@ -8,6 +9,25 @@ import { AuditLog } from "../security/auditLog.model";
 import { getUserId } from "../../utils/getUserId";
 import { parseUserAgent, getClientIp, maskIp } from "../../utils/device";
 import { createNotification } from "../notifications/notification.service";
+
+/**
+ * Deletes the *real* authentication sessions (better-auth's `session`
+ * collection) for a user, so revoked devices can no longer authenticate.
+ * Scoped strictly to `userId`; never touches other users.
+ */
+async function deleteAuthSessions(userId: string, tokenFilter: Record<string, unknown> = {}): Promise<number> {
+  const db = mongoose.connection.db;
+  if (!db) throw ApiError.internal("Database connection unavailable");
+
+  // better-auth's mongo adapter stores session.userId as an ObjectId; match both
+  // the ObjectId and its string form so the query works across adapters.
+  const userMatch: unknown = mongoose.isValidObjectId(userId)
+    ? { $in: [userId, new mongoose.Types.ObjectId(userId)] }
+    : userId;
+
+  const result = await db.collection("session").deleteMany({ userId: userMatch, ...tokenFilter });
+  return result.deletedCount ?? 0;
+}
 
 // 21. ACCOUNT SECURITY CENTER
 export const getSecurityOverview = asyncHandler(async (req: Request, res: Response) => {
@@ -71,12 +91,14 @@ export const getActiveSessions = asyncHandler(async (req: Request, res: Response
   const userId = getUserId(req);
   const sessions = await DeviceSession.find({ userId, status: "active" }).sort({ lastActiveAt: -1 }).lean();
 
-  const currentSessionToken = (req.headers["x-session-token"] as string) || undefined;
+  // The current session comes from the verified auth token on the request,
+  // not a client-supplied header.
+  const currentToken = req.sessionToken;
 
   const mapped = sessions.map((s: any) => ({
     ...s,
     id: String(s._id),
-    isCurrentSession: currentSessionToken ? s.sessionToken === currentSessionToken : false,
+    isCurrentSession: Boolean(currentToken) && s.sessionToken === currentToken,
   }));
 
   sendSuccess(res, mapped);
@@ -151,11 +173,13 @@ export const revokeSession = asyncHandler(async (req: Request, res: Response) =>
   const session = await DeviceSession.findOne({ _id: id, userId });
   if (!session) throw ApiError.notFound("Session record not found");
 
-  if (session.isCurrentSession) {
+  if (req.sessionToken && session.sessionToken === req.sessionToken) {
     throw ApiError.badRequest("Cannot revoke your current session");
   }
 
-  await DeviceSession.findByIdAndUpdate(id, { status: "revoked" });
+  // Delete the real authentication session so this device can no longer authenticate.
+  await deleteAuthSessions(userId, { token: session.sessionToken });
+  await DeviceSession.findByIdAndUpdate(id, { status: "revoked", isCurrentSession: false });
 
   createNotification({
     userId,
@@ -175,9 +199,25 @@ export const revokeSession = asyncHandler(async (req: Request, res: Response) =>
 
 export const revokeAllOtherSessions = asyncHandler(async (req: Request, res: Response) => {
   const userId = getUserId(req);
-  const result = await DeviceSession.updateMany({ userId, isCurrentSession: false, status: "active" }, { status: "revoked" });
+  const currentToken = req.sessionToken;
 
-  if (result.modifiedCount > 0) {
+  // Without the current session token we cannot guarantee the caller stays
+  // logged in, so refuse rather than risk revoking the current session.
+  if (!currentToken) {
+    throw ApiError.badRequest("Unable to determine the current session. Please sign in again.");
+  }
+
+  // Revoke every other real authentication session for THIS user, keeping the
+  // caller's current session intact. Scoped by the authenticated user id.
+  const revokedCount = await deleteAuthSessions(userId, { token: { $ne: currentToken } });
+
+  // Keep the device-tracking records in sync for the Security Center UI.
+  await DeviceSession.updateMany(
+    { userId, sessionToken: { $ne: currentToken }, status: "active" },
+    { status: "revoked", isCurrentSession: false }
+  );
+
+  if (revokedCount > 0) {
     createNotification({
       userId,
       type: "security_alert",
@@ -191,7 +231,7 @@ export const revokeAllOtherSessions = asyncHandler(async (req: Request, res: Res
     }).catch((err) => console.warn("Failed to create revoke-all notification", err));
   }
 
-  sendSuccess(res, { success: true, revokedCount: result.modifiedCount }, "All other active sessions revoked");
+  sendSuccess(res, { success: true, revokedCount }, "All other active sessions revoked");
 });
 
 // 23. LOGIN RISK DETECTION

@@ -20,6 +20,7 @@ import spendingAnalyticsRoutes from "../modules/customer/spending-analytics.rout
 import heroBannerRoutes from "../modules/hero-banners/hero-banner.routes";
 import stripeRoutes from "../payments/stripe/stripe.routes";
 import sslcommerzRoutes from "../payments/sslcommerz/sslcommerz.route";
+import deliveryRoutes from "../modules/delivery/delivery.routes";
 
 const router = Router();
 
@@ -56,5 +57,6 @@ router.use("/customer/spending", spendingAnalyticsRoutes);
 router.use("/hero-banners", heroBannerRoutes);
 router.use("/payment/stripe", stripeRoutes);
 router.use("/payment/sslcommerz", sslcommerzRoutes);
+router.use("/delivery", deliveryRoutes);
 
 export default router;

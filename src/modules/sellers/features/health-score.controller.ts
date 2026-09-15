@@ -3,11 +3,15 @@ import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
 import { getSellerContext } from "../seller-store.util";
+import { Review } from "../../reviews/review.model";
+
+type MetricScore = number | null;
 
 // 11. SELLER HEALTH SCORE
 export const getSellerHealthScore = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   if (!userId) throw ApiError.unauthorized("Authentication required");
+
   const {
     store,
     products,
@@ -15,53 +19,66 @@ export const getSellerHealthScore = asyncHandler(async (req: Request, res: Respo
     deliveredOrders,
     pendingOrders,
     returnedOrders,
-    uniqueBuyerIds,
   } = await getSellerContext(userId);
 
   if (!store) {
     return sendSuccess(res, {
-      overallHealth: 0,
-      metrics: [],
-      insights: [],
-      actions: [],
+      storeName: "My ShopNest Store",
+      overallHealth: null,
+      metrics: {},
+      recommendations: [],
     });
   }
 
   const totalProducts = products.length;
 
-  // Real performance metrics
-  const deliveryReliability = totalOrders > 0 ? Math.round((deliveredOrders / totalOrders) * 100) : 0;
-  const returnRatePercent = totalOrders > 0 ? Math.round((returnedOrders / totalOrders) * 100) : 0;
-  
-  // Real rating or onboarding baseline
-  const hasRatings = (store.ratingCount || 0) > 0 && (store.rating || 0) > 0;
-  const customerSatisfaction = hasRatings ? Math.min(100, Math.round(store.rating * 20)) : 0;
-  const responseRate = 95; // Benchmark standard for responsive sellers
-  
-  // Catalog & Store Profile completeness scores
-  const catalogReadiness = totalProducts >= 10 ? 100 : totalProducts >= 5 ? 80 : totalProducts >= 1 ? 50 : 15;
+  // Seller-scoped reviews: only reviews left on this seller's own products.
+  const productIds = products.map((p: any) => String(p._id || p.id)).filter(Boolean);
+  const reviews =
+    productIds.length > 0
+      ? await Review.find({ productId: { $in: productIds } }).select("rating").lean()
+      : [];
+  const reviewCount = reviews.length;
+  const avgRating =
+    reviewCount > 0
+      ? reviews.reduce((sum, r: any) => sum + (Number(r.rating) || 0), 0) / reviewCount
+      : 0;
+
+  const hasOrders = totalOrders > 0;
+  const hasReviews = reviewCount > 0;
+  const hasCatalog = totalProducts > 0;
+
+  // Store profile completeness — real fields only.
   const hasLogo = Boolean(store.logo);
   const hasBanner = Boolean(store.banner);
   const hasDesc = Boolean(store.description && store.description.length > 10);
   const hasBiz = Boolean(store.businessInfo?.ownerName || store.businessInfo?.contactPhone);
   const profileScore = (hasLogo ? 25 : 0) + (hasBanner ? 25 : 0) + (hasDesc ? 25 : 0) + (hasBiz ? 25 : 0);
 
-  // Composite Weighted Score
-  let overallHealth = 0;
-  if (totalOrders > 0) {
-    overallHealth = Math.round(
-      (hasRatings ? customerSatisfaction : 80) * 0.25 +
-        responseRate * 0.15 +
-        deliveryReliability * 0.25 +
-        (100 - Math.min(100, returnRatePercent * 4)) * 0.15 +
-        catalogReadiness * 0.10 +
-        profileScore * 0.10
-    );
-  } else {
-    // For stores with no orders yet, health index reflects store readiness & setup
-    overallHealth = Math.round(catalogReadiness * 0.50 + profileScore * 0.35 + 15);
+  // Catalog readiness from the real active catalog size.
+  const catalogReadiness = totalProducts >= 10 ? 100 : totalProducts >= 5 ? 80 : totalProducts >= 1 ? 50 : 0;
+
+  // Per-pillar scores. `null` means there is no underlying data yet and the UI renders N/A.
+  const customerSatisfaction: MetricScore = hasReviews ? Math.min(100, Math.round(avgRating * 20)) : null;
+  const responseRate: MetricScore = null; // No customer interaction / response tracking exists yet.
+  const deliveryReliability: MetricScore = hasOrders ? Math.round((deliveredOrders / totalOrders) * 100) : null;
+  const returnRate: MetricScore = hasOrders ? Math.round((returnedOrders / totalOrders) * 100) : null;
+
+  // The composite score is only calculated when the store has real activity to measure.
+  let overallHealth: MetricScore = null;
+  if (hasCatalog || hasOrders || hasReviews) {
+    const pillars: Array<{ value: number; weight: number }> = [
+      { value: catalogReadiness, weight: 0.1 },
+      { value: profileScore, weight: 0.1 },
+    ];
+    if (customerSatisfaction !== null) pillars.push({ value: customerSatisfaction, weight: 0.25 });
+    if (deliveryReliability !== null) pillars.push({ value: deliveryReliability, weight: 0.25 });
+    if (returnRate !== null) pillars.push({ value: 100 - Math.min(100, returnRate * 4), weight: 0.15 });
+
+    const weightSum = pillars.reduce((sum, p) => sum + p.weight, 0);
+    const weighted = pillars.reduce((sum, p) => sum + p.value * p.weight, 0);
+    overallHealth = Math.max(0, Math.min(100, Math.round(weighted / weightSum)));
   }
-  overallHealth = Math.max(10, Math.min(100, overallHealth));
 
   const recommendations: string[] = [];
 
@@ -99,19 +116,28 @@ export const getSellerHealthScore = asyncHandler(async (req: Request, res: Respo
         score: customerSatisfaction,
         unit: "%",
         target: 95,
-        status: hasRatings ? (customerSatisfaction >= 80 ? "excellent" : "good") : "unrated",
+        status: hasReviews ? (customerSatisfaction! >= 80 ? "excellent" : "good") : "unrated",
       },
-      responseRate: { score: responseRate, unit: "%", target: 90, status: "good" },
+      responseRate: { score: responseRate, unit: "%", target: 90, status: "insufficient_data" },
       deliveryReliability: {
         score: deliveryReliability,
         unit: "%",
         target: 95,
-        status: totalOrders > 0 ? (deliveryReliability >= 85 ? "excellent" : "good") : "pending_orders",
+        status: hasOrders ? (deliveryReliability! >= 85 ? "excellent" : "good") : "pending_orders",
       },
-      catalogReadiness: { score: catalogReadiness, unit: "%", target: 100, status: catalogReadiness >= 80 ? "excellent" : "good" },
-      returnRate: { score: returnRatePercent, unit: "%", target: 5, status: returnRatePercent <= 5 ? "excellent" : "action_needed" },
+      catalogReadiness: {
+        score: catalogReadiness,
+        unit: "%",
+        target: 100,
+        status: catalogReadiness >= 80 ? "excellent" : "good",
+      },
+      returnRate: {
+        score: returnRate,
+        unit: "%",
+        target: 5,
+        status: returnRate === null ? "pending_orders" : returnRate <= 5 ? "excellent" : "action_needed",
+      },
     },
     recommendations: recommendations.slice(0, 4),
   });
 });
-

@@ -189,10 +189,14 @@ export const getSellerOptions = asyncHandler(async (_req: Request, res: Response
 export const listMyProducts = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
   const store = await getSellerStore(userId);
-  const storeIdStr = store._id.toString();
+
+  const ownership: Record<string, unknown>[] = [{ sellerId: userId }];
+  if (store) {
+    ownership.push({ storeId: store._id.toString() }, { storeId: store._id });
+  }
 
   const products = await Product.find({
-    $or: [{ sellerId: userId }, { storeId: storeIdStr }, { storeId: store._id }],
+    $or: ownership,
     isDeleted: false,
   })
     .sort({ createdAt: -1 })

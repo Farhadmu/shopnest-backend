@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { Product } from "../products/product.model";
 import { Category } from "../categories/category.model";
-import { completeJSONWithContext, AiContext } from "./providers/claude.provider";
+import { completeJSONWithContext, AiContext, AiProviderError } from "./providers/claude.provider";
 import { logger } from "../../utils/logger";
 import {
   PRODUCT_ANALYSIS_SYSTEM,
@@ -49,6 +49,40 @@ function isVisionModel(model: string): boolean {
   if (lower.includes("claude-2") || lower.includes("claude-instant")) return false;
   if (lower.includes("claude-3") || lower.includes("claude-sonnet-4") || lower.includes("claude-4") || lower.includes("claude-opus-4")) return true;
   return VISION_MODELS.has(lower);
+}
+
+/** Turns an AI provider failure into a specific, user-safe explanation. */
+function describeVisionFailure(error: unknown): { progressMessage: string; limitation: string } {
+  if (error instanceof AiProviderError) {
+    switch (error.code) {
+      case "not_configured":
+        return {
+          progressMessage: "AI vision provider is not configured on the server.",
+          limitation:
+            "AI vision is not configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY on the server and restart it.",
+        };
+      case "authentication":
+        return {
+          progressMessage: "AI vision provider rejected the server's API key.",
+          limitation:
+            "AI vision authentication failed. The server's ANTHROPIC_API_KEY/GEMINI_API_KEY is missing, invalid, or expired — update it and restart the server.",
+        };
+      case "model":
+        return {
+          progressMessage: `Vision model unavailable: ${error.message}`,
+          limitation: `Vision model unavailable (${error.message}). Verify ANTHROPIC_MODEL/GEMINI_MODEL is a vision-capable model.`,
+        };
+      default:
+        return {
+          progressMessage: `AI vision request failed: ${error.message}`,
+          limitation: `AI vision request failed (${error.message}). Please try again shortly.`,
+        };
+    }
+  }
+  return {
+    progressMessage: "Vision analysis failed. Please try again with clearer images.",
+    limitation: "Vision analysis failed unexpectedly. Please try again.",
+  };
 }
 
 function buildProgress(steps: Array<{ step: string; message: string; status: "pending" | "running" | "completed" | "failed" | "skipped"; error?: string }>) {
@@ -164,31 +198,47 @@ Return ONLY valid JSON:
     requiresConfirmation: boolean;
   };
 
-  try {
-    const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
-    const supportsVision = isVisionModel(model);
+  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 
-    if (!supportsVision) {
-      throw new Error(`Model ${model} does not support vision`);
+  try {
+    if (!isVisionModel(model)) {
+      throw new AiProviderError("model", `Configured model "${model}" does not support image input.`);
     }
+
+    logger.info("Product finder: sending images to vision analysis", {
+      imageCount: imageUrls.length,
+      model,
+      hasProductNameHint: Boolean(hints?.productName),
+    });
 
     const parsed = await completeJSONWithContext<typeof visionResult>(
       [{ role: "user" as const, content: [...imageContent, { type: "text" as const, text: visionPrompt }] }],
       { productName: hints?.productName, category: hints?.category },
-      { system: PRODUCT_ANALYSIS_SYSTEM, maxTokens: 1024, temperature: 0.2 }
+      { system: PRODUCT_ANALYSIS_SYSTEM, maxTokens: 1024, temperature: 0.2, allowFallback: false }
     );
     visionResult = parsed.data;
     progress[progress.length - 1].status = "completed";
     progress[progress.length - 1].completedAt = new Date().toISOString();
-  } catch {
+  } catch (error) {
+    // Log the real provider error so failures are diagnosable (never the API key).
+    logger.error("Product finder vision analysis failed", {
+      imageCount: imageUrls.length,
+      model,
+      code: error instanceof AiProviderError ? error.code : "unknown",
+      status: error instanceof AiProviderError ? error.status : undefined,
+      provider: error instanceof AiProviderError ? error.provider : undefined,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    const failure = describeVisionFailure(error);
     progress[progress.length - 1].status = "failed";
     progress[progress.length - 1].completedAt = new Date().toISOString();
-    progress[progress.length - 1].error = "Vision analysis failed. Please try again with clearer images.";
+    progress[progress.length - 1].error = failure.progressMessage;
     return sendSuccess(res, {
       productFound: false,
       confidence: "none",
       progress,
-      limitations: ["AI vision analysis unavailable"],
+      limitations: [failure.limitation],
       identifiedProduct: null,
       sources: [],
       verificationStatus: {},

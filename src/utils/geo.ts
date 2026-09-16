@@ -97,3 +97,44 @@ export function getApproxCoordinatesFromAddress(addressText?: string): { latitud
   }
   return null;
 }
+
+/** Check if a target coordinate is within a specified radius (in meters) from a center coordinate */
+export function isWithinRadius(
+  centerLat: number,
+  centerLng: number,
+  targetLat: number,
+  targetLng: number,
+  radiusMeters: number
+): boolean {
+  if (!isValidCoordinate(centerLat, centerLng) || !isValidCoordinate(targetLat, targetLng)) {
+    return false;
+  }
+  const dist = calculateDistanceMeters(centerLat, centerLng, targetLat, targetLng);
+  return dist <= radiusMeters;
+}
+
+/** Format distance in meters into human-readable kilometers or meters */
+export function formatDistance(distanceMeters: number): string {
+  if (!Number.isFinite(distanceMeters) || distanceMeters < 0) return "0 m";
+  if (distanceMeters < 1000) {
+    return `${Math.round(distanceMeters)} m`;
+  }
+  return `${(distanceMeters / 1000).toFixed(1)} km`;
+}
+
+/**
+ * Calculate initial compass bearing from point A to point B in degrees (0 - 360)
+ */
+export function calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const phi1 = (lat1 * Math.PI) / 180;
+  const phi2 = (lat2 * Math.PI) / 180;
+  const deltaLambda = ((lon2 - lon1) * Math.PI) / 180;
+
+  const y = Math.sin(deltaLambda) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(deltaLambda);
+  const theta = Math.atan2(y, x);
+  const bearing = ((theta * 180) / Math.PI + 360) % 360;
+
+  return Math.round(bearing);
+}
+

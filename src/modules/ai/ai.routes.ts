@@ -5,7 +5,9 @@ import advisorRoutes from "./advisor/advisor.routes";
 import adminCopilotRoutes from "./admin-copilot/admin-copilot.routes";
 import sellerCopilotRoutes from "./seller-copilot/seller-copilot.routes";
 import customerCopilotRoutes from "./customer-copilot/customer-copilot.routes";
+import deliveryCopilotRoutes from "./delivery-copilot/delivery-copilot.routes";
 import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
+
 import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { aiLimiter } from "../../middlewares/rate-limit.middleware";
@@ -127,7 +129,11 @@ router.use("/seller-copilot", sellerCopilotRoutes);
 // Customer Copilot - AI-powered customer shopping assistant (CUSTOMER ONLY)
 router.use("/customer-copilot", customerCopilotRoutes);
 
+// Delivery Copilot - AI-powered delivery partner operational assistant (DELIVERY_MAN ONLY)
+router.use("/delivery-copilot", deliveryCopilotRoutes);
+
 // AI Provider Health Check (no auth required - only shows config, no secrets)
+
 router.get("/health", ctrl.aiHealth);
 
 export default router;

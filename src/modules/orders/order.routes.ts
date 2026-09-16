@@ -17,13 +17,19 @@ router.get("/admin/all", requireRole("admin"), ctrl.listAllOrdersForAdmin);
 router.get("/admin/stats", requireRole("admin"), ctrl.getAdminOrderStats);
 router.get("/admin/search", requireRole("admin"), ctrl.searchAdminOrders);
 router.get("/admin/search", requireRole("admin"), ctrl.searchAdminOrders);
-router.patch("/:id/cancel", requireRole("admin"), ctrl.cancelOrderAdmin);
 router.get("/:id", validate({ params: idParamSchema }), ctrl.getOrderById);
+router.post(
+  "/:id/ready-for-pickup",
+  requireRole("seller", "admin"),
+  validate({ params: idParamSchema }),
+  ctrl.markReadyForPickup
+);
 router.patch(
   "/:id/status",
   requireRole("seller", "admin"),
   validate({ params: idParamSchema, body: updateOrderStatusSchema }),
   ctrl.updateOrderStatus
 );
+
 
 export default router;

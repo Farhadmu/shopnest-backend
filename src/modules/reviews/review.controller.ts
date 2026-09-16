@@ -6,6 +6,7 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { getPublicProduct } from "../../utils/activeProductFilter";
+import { usersCollection, safeObjectId } from "../users/user.model";
 
 /**
  * Helper: Recalculates the average rating and review count for a product
@@ -24,6 +25,23 @@ async function recalcProductRating(productId: string) {
     ratingAvg: Math.round(avg * 10) / 10,
     ratingCount: count,
   });
+}
+
+/**
+ * Resolve the display name + avatar for a review's author.
+ * Identity lives in better-auth's `user` collection, so we look the
+ * reviewer up there. The review's `userName` field is used as a fallback
+ * when the linked account is missing (e.g. legacy seed data).
+ */
+async function resolveReviewer(userId: string) {
+  const objectId = safeObjectId(userId);
+  const user = await usersCollection().findOne({
+    $or: [{ id: userId }, ...(objectId ? [{ _id: objectId }] : [])],
+  });
+  return {
+    name: user?.name || undefined,
+    avatarUrl: user?.image || undefined,
+  };
 }
 
 /**
@@ -261,4 +279,66 @@ export const removeReviewAdmin = asyncHandler(async (req: Request, res: Response
   await recalcProductRating(productId);
 
   sendSuccess(res, { success: true }, "Review permanently removed");
+});
+
+/**
+ * Controller: Public Platform Stats (Homepage Proof Section)
+ *
+ * Unauthenticated aggregate used by the marketing site's social-proof
+ * block. Returns the platform-wide average rating, review volume, verified
+ * purchase rate, rating distribution, and a handful of standout verified
+ * reviews to surface as shopper testimonials.
+ *
+ * 1. Inputs Extracted:
+ *    - none (read-only aggregate, no auth required)
+ * 2. Database Operation:
+ *    - Review.countDocuments / Review.aggregate for totals, avg, distribution
+ *    - Review.find for sample verified testimonials
+ * 3. Response Sent:
+ *    - HTTP 200: PublicPlatformStats object
+ */
+export const getPublicPlatformStats = asyncHandler(async (_req: Request, res: Response) => {
+  const [totalReviews, avgRatingAgg, verifiedReviews, ratingDistribution, sampleReviews] =
+    await Promise.all([
+      Review.countDocuments({}),
+      Review.aggregate([{ $group: { _id: null, avg: { $avg: "$rating" } } }]),
+      Review.countDocuments({ verifiedPurchase: true }),
+      Review.aggregate([
+        { $group: { _id: "$rating", count: { $sum: 1 } } },
+        { $sort: { _id: -1 } },
+      ]),
+      Review.find({ verifiedPurchase: true, rating: { $gte: 4 } })
+        .sort({ helpfulCount: -1, createdAt: -1 })
+        .limit(8)
+        .select("userId userName rating comment createdAt")
+        .lean(),
+    ]);
+
+  const avgRating = avgRatingAgg[0]?.avg ?? 0;
+
+  const distribution: Record<number, number> = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+  for (const r of ratingDistribution) {
+    distribution[r._id as number] = r.count;
+  }
+
+  // Resolve each reviewer's real display name + avatar from better-auth's
+  // `user` collection. The review's stored `userName` is the fallback for
+  // reviews whose linked account no longer exists.
+  const reviewers = await Promise.all(sampleReviews.map((r) => resolveReviewer(r.userId)));
+
+  sendSuccess(res, {
+    avgRating: Math.round(avgRating * 10) / 10,
+    totalReviews,
+    verifiedReviews,
+    distribution,
+    sampleReviews: sampleReviews.map((r, i) => ({
+      id: r._id.toString(),
+      userId: r.userId,
+      userName: reviewers[i].name || r.userName,
+      avatarUrl: reviewers[i].avatarUrl,
+      rating: r.rating,
+      comment: r.comment,
+      createdAt: r.createdAt,
+    })),
+  });
 });

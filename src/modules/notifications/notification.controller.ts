@@ -29,6 +29,20 @@ function mapNotification(doc: any) {
   };
 }
 
+/**
+ * Notification ids are real MongoDB ObjectIds (see `mapNotification`, which
+ * serializes `_id` as the `id` string the frontend uses).
+ *
+ * Validate before converting: a malformed id is a client/request problem, so it
+ * must surface as 400 — never as a 500 from a thrown BSONError.
+ */
+function parseNotificationId(raw: string): mongoose.Types.ObjectId {
+  if (typeof raw !== "string" || !mongoose.isValidObjectId(raw)) {
+    throw ApiError.badRequest("Invalid notification ID");
+  }
+  return new mongoose.Types.ObjectId(raw);
+}
+
 export const listNotifications = asyncHandler(async (req: Request, res: Response) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
@@ -98,7 +112,7 @@ export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const markRead = asyncHandler(async (req: Request, res: Response) => {
-  const id = new mongoose.Types.ObjectId(req.params.id);
+  const id = parseNotificationId(req.params.id);
   const userId = req.user!.id;
   const userRole = (req.user as { role?: string } | undefined)?.role;
   const allowedRecipientTypes = new Set<string>(["all"]);
@@ -131,7 +145,7 @@ export const markAllRead = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const deleteNotification = asyncHandler(async (req: Request, res: Response) => {
-  const id = new mongoose.Types.ObjectId(req.params.id);
+  const id = parseNotificationId(req.params.id);
   const userId = req.user!.id;
   const userRole = (req.user as { role?: string } | undefined)?.role;
   const allowedRecipientTypes = new Set<string>(["all"]);
@@ -251,7 +265,7 @@ export const getAdminUnreadCount = asyncHandler(async (req: Request, res: Respon
 
 export const markAdminNotificationRead = asyncHandler(async (req: Request, res: Response) => {
   ensureAdmin(req);
-  const id = new mongoose.Types.ObjectId(req.params.id);
+  const id = parseNotificationId(req.params.id);
   const result = await getCollection().findOneAndUpdate(
     { _id: id },
     { $set: { isRead: true, updatedAt: new Date() } },
@@ -263,7 +277,7 @@ export const markAdminNotificationRead = asyncHandler(async (req: Request, res: 
 
 export const markAdminNotificationUnread = asyncHandler(async (req: Request, res: Response) => {
   ensureAdmin(req);
-  const id = new mongoose.Types.ObjectId(req.params.id);
+  const id = parseNotificationId(req.params.id);
   const result = await getCollection().findOneAndUpdate(
     { _id: id },
     { $set: { isRead: false, updatedAt: new Date() } },
@@ -288,7 +302,7 @@ export const bulkMarkAdminNotificationsRead = asyncHandler(async (req: Request, 
   if (!Array.isArray(ids) || ids.length === 0) {
     throw ApiError.badRequest("ids array is required");
   }
-  const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id)).filter(Boolean);
+  const objectIds = ids.map((id) => parseNotificationId(id));
   await getCollection().updateMany(
     { _id: { $in: objectIds } },
     { $set: { isRead: true, updatedAt: new Date() } }

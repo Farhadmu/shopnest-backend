@@ -9,6 +9,7 @@ import orderRoutes from "../modules/orders/order.routes";
 import reviewRoutes from "../modules/reviews/review.routes";
 import couponRoutes from "../modules/coupons/coupon.routes";
 import { getPublicHomepageCoupons } from "../modules/coupons/coupon.controller";
+import { getPublicPlatformStats } from "../modules/reviews/review.controller";
 import trustRoutes from "../modules/trust/trust.routes";
 import securityRoutes from "../modules/security/security.routes";
 import adminRoutes from "../modules/admin/admin.routes";
@@ -20,6 +21,7 @@ import spendingAnalyticsRoutes from "../modules/customer/spending-analytics.rout
 import heroBannerRoutes from "../modules/hero-banners/hero-banner.routes";
 import stripeRoutes from "../payments/stripe/stripe.routes";
 import sslcommerzRoutes from "../payments/sslcommerz/sslcommerz.route";
+import deliveryRoutes from "../modules/delivery/delivery.routes";
 
 const router = Router();
 
@@ -44,8 +46,10 @@ router.use("/wishlist", wishlistRoutes);
 router.use("/orders", orderRoutes);
 router.use("/reviews", reviewRoutes);
 router.use("/coupons", couponRoutes);
-router.get("/homepage-coupons", getPublicHomepageCoupons);
-router.use("/trust", trustRoutes);
+  router.get("/homepage-coupons", getPublicHomepageCoupons);
+  // Public social-proof aggregates for the marketing site (no auth).
+  router.get("/platform-stats", getPublicPlatformStats);
+  router.use("/trust", trustRoutes);
 router.use("/security", securityRoutes);
 router.use("/admin", adminRoutes);
 router.use("/ai", aiRoutes);
@@ -56,5 +60,6 @@ router.use("/customer/spending", spendingAnalyticsRoutes);
 router.use("/hero-banners", heroBannerRoutes);
 router.use("/payment/stripe", stripeRoutes);
 router.use("/payment/sslcommerz", sslcommerzRoutes);
+router.use("/delivery", deliveryRoutes);
 
 export default router;

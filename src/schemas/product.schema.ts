@@ -35,4 +35,14 @@ export const listProductsQuerySchema = z.object({
   status: z.enum(["pending", "approved", "rejected"]).optional(),
 });
 
+/**
+ * Query for the category counts endpoint: the same filters as the product list
+ * minus paging/sorting, which don't affect counts.
+ */
+export const productCountsQuerySchema = listProductsQuerySchema.omit({
+  page: true,
+  limit: true,
+  sort: true,
+});
+
 export const idParamSchema = z.object({ id: z.string().min(1) });

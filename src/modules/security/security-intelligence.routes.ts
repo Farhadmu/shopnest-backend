@@ -9,7 +9,9 @@ router.get("/overview", attachUserIfPresent, ctrl.getSecurityOverview);
 
 // 22. Active Sessions & Device Manager
 router.get("/sessions", attachUserIfPresent, ctrl.getActiveSessions);
-router.post("/sessions/record", attachUserIfPresent, ctrl.recordSession);
+// Recording a device requires a verified session: without one there is no user
+// to own the record (or its "New Device Detected" notification).
+router.post("/sessions/record", ...requireAuth, ctrl.recordSession);
 router.delete("/sessions/:id", ...requireAuth, ctrl.revokeSession);
 router.post("/sessions/revoke-all", ...requireAuth, ctrl.revokeAllOtherSessions);
 

@@ -8,6 +8,8 @@ import { logger } from "../utils/logger";
 import { DeviceSession } from "../modules/security/security-intelligence.model";
 import { parseUserAgent, getClientIp, maskIp } from "../utils/device";
 
+import { DeliveryManProfile } from "../modules/delivery/delivery-man.model";
+
 const SESSION_UPDATE_INTERVAL_MS = 30 * 60 * 1000;
 const MAX_ACTIVE_SESSIONS = 2;
 
@@ -48,7 +50,7 @@ export interface AuthUser {
   id: string;
   email: string;
   name: string;
-  role: "customer" | "seller" | "admin";
+  role: "customer" | "seller" | "admin" | "delivery_man";
   image?: string | null;
 }
 
@@ -116,11 +118,30 @@ async function resolveUserFromSessionToken(token: string): Promise<AuthUser | nu
   }
   if (!userDoc) return null;
 
+  let role = (userDoc.role as AuthUser["role"]) ?? "customer";
+  if (role === "customer") {
+    try {
+      const uId = String(userDoc.id ?? userDoc._id);
+      const deliveryProfile = await DeliveryManProfile.findOne({
+        userId: uId,
+        status: "approved",
+      }).lean();
+      if (deliveryProfile) {
+        role = "delivery_man";
+        db.collection("user")
+          .updateOne({ _id: userDoc._id }, { $set: { role: "delivery_man" } })
+          .catch(() => undefined);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   return {
     id: String(userDoc.id ?? userDoc._id),
     email: userDoc.email,
     name: userDoc.name ?? userDoc.email,
-    role: (userDoc.role as AuthUser["role"]) ?? "customer",
+    role,
     image: userDoc.image ?? null,
   };
 }

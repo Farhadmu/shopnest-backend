@@ -11,6 +11,7 @@ import { flagSuspiciousOrder } from "../security/security.service";
 import { recomputeStoreTrustScore } from "../trust/trust.service";
 import { createNotification } from "../notifications/notification.service";
 import { Store } from "../sellers/store.model";
+import { DeliveryRequest } from "../delivery/delivery-request.model";
 import mongoose from "mongoose";
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -211,6 +212,53 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   order.statusHistory.push({ status: order.status, at: new Date() });
   if (status === "delivered") order.paymentStatus = "paid";
   await order.save();
+
+  if (previousStatus !== "shipped" && status === "shipped") {
+    const sellerId = req.user!.id;
+    const sellerStore = await Store.findOne({ ownerId: sellerId });
+    const sellerItem = order.items.find((i) => i.sellerId === sellerId || i.storeId === sellerStore?.slug);
+
+    const existingRequest = await DeliveryRequest.findOne({ orderId: order.id });
+    if (!existingRequest) {
+      const deliveryRequest = await DeliveryRequest.create({
+        orderId: order.id,
+        sellerId: sellerItem?.sellerId ?? sellerId,
+        customerId: order.userId,
+        status: "available",
+        priority: "normal",
+        pickupAddress: sellerStore?.businessInfo?.businessAddress || sellerItem?.storeId,
+        deliveryAddress: order.shippingAddress,
+        deliveryFee: order.deliveryFee,
+        sellerNotes: `Order #${order.id} is ready for pickup.`,
+      });
+
+      await createNotification({
+        userId: order.userId,
+        type: "delivery_alert",
+        category: "delivery",
+        priority: "info",
+        source: "delivery",
+        title: "Order Shipped",
+        message: `Your order #${order.id} has been shipped and is being prepared for delivery.`,
+        link: `/orders/${order.id}`,
+        relatedId: order.id,
+        relatedType: "order",
+      });
+
+      createNotification({
+        userId: sellerId,
+        type: "new_delivery_request",
+        category: "delivery",
+        priority: "info",
+        source: "delivery",
+        title: "New Delivery Request",
+        message: `A new delivery request has been created for order #${order.id}.`,
+        link: `/delivery/requests/${deliveryRequest.id}`,
+        relatedId: deliveryRequest.id,
+        relatedType: "delivery",
+      }).catch((err) => console.warn("Failed to create delivery notification", err));
+    }
+  }
 
   if (previousStatus !== status) {
     const statusMessages: Record<string, { title: string; message: string; type: string; category: string }> = {
@@ -458,3 +506,86 @@ export const cancelOrderAdmin = asyncHandler(async (req: Request, res: Response)
 
   sendSuccess(res, order.toJSON(), `Order cancelled${reason ? `: ${reason}` : ""}`);
 });
+
+export const markReadyForPickup = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { packageInfo, sellerNotes } = req.body as {
+    packageInfo?: { weight?: number; dimensions?: string; fragile?: boolean; specialInstructions?: string };
+    sellerNotes?: string;
+  };
+
+  const order = await Order.findById(id);
+  if (!order) throw ApiError.notFound("Order not found");
+
+  const userId = req.user!.id;
+  const store = await Store.findOne({ ownerId: userId });
+  const validIds = new Set([
+    ...(store ? [store._id.toString(), store.slug, store.ownerId] : []),
+    userId,
+  ]);
+
+  const isSellerOnOrder = order.items.some(
+    (i) => validIds.has(i.sellerId || "") || validIds.has(i.storeId || "")
+  );
+
+  if (req.user!.role !== "admin" && !isSellerOnOrder) {
+    throw ApiError.forbidden("You are not authorized to mark this order for pickup");
+  }
+
+  if (order.status === "cancelled" || order.status === "delivered" || order.status === "returned") {
+    throw ApiError.badRequest(`Cannot request delivery for order in "${order.status}" status`);
+  }
+
+  if (order.status === "confirmed" || order.status === "pending") {
+    order.status = "processing";
+    order.statusHistory.push({ status: "processing", at: new Date() });
+    await order.save();
+  }
+
+  const sellerItem = order.items.find((i) => validIds.has(i.sellerId || "") || validIds.has(i.storeId || ""));
+
+  let deliveryRequest = await DeliveryRequest.findOne({ orderId: order.id });
+  if (deliveryRequest) {
+    if (deliveryRequest.status !== "available") {
+      throw ApiError.badRequest(
+        `Cannot recreate delivery request: order delivery is already in "${deliveryRequest.status}" status`
+      );
+    }
+    if (packageInfo) deliveryRequest.packageInfo = packageInfo;
+    if (sellerNotes) deliveryRequest.sellerNotes = sellerNotes;
+    await deliveryRequest.save();
+  } else {
+    deliveryRequest = await DeliveryRequest.create({
+      orderId: order.id,
+      sellerId: sellerItem?.sellerId || userId,
+      customerId: order.userId,
+      status: "available",
+      priority: "normal",
+      packageInfo: packageInfo || {},
+      pickupAddress: store?.businessInfo?.businessAddress || sellerItem?.storeId || "Seller Warehouse",
+      deliveryAddress: order.shippingAddress,
+      deliveryFee: order.deliveryFee || (order.division === "Dhaka" ? 60 : 120),
+      sellerNotes: sellerNotes || `Order #${order.id} is packaged and ready for pickup.`,
+    });
+
+    createNotification({
+      userId: order.userId,
+      type: "delivery_alert",
+      category: "delivery",
+      priority: "info",
+      source: "delivery",
+      title: "Order Ready for Pickup",
+      message: `Your order #${order.id} has been packaged and is awaiting courier pickup.`,
+      link: `/orders/${order.id}`,
+      relatedId: order.id,
+      relatedType: "order",
+    }).catch(() => undefined);
+  }
+
+  sendSuccess(
+    res,
+    { order: order.toJSON(), deliveryRequest: deliveryRequest.toJSON() },
+    "Order marked ready for pickup and open in delivery marketplace"
+  );
+});
+

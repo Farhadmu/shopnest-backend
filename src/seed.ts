@@ -12,12 +12,62 @@ import { connectDB, disconnectDB } from "./config/db";
 import { Category } from "./modules/categories/category.model";
 import { Store } from "./modules/sellers/store.model";
 import { Product } from "./modules/products/product.model";
+import { Review } from "./modules/reviews/review.model";
 import { logger } from "./utils/logger";
 
 const DEMO_SELLER_ID = "seed-demo-seller";
 
+/**
+ * Testimonials attached to real, already-existing ShopNest customers.
+ * Identity (name + avatar) is pulled live from better-auth's `user`
+ * collection at seed time — we never invent names. The review body stays
+ * as crafted copy; only the customer identity is real.
+ */
+const DEMO_REVIEWS = [
+  {
+    email: "ashikcustomer@gmail.com",
+    rating: 5,
+    comment:
+      "The AI comparison made it much easier to decide without reading dozens of product pages. Shipping was fast and the packaging was premium.",
+  },
+  {
+    email: "customer@shopnest.com",
+    rating: 5,
+    comment:
+      "The seller trust signals give me much more confidence before ordering. I've bought twice now and both times exceeded expectations.",
+  },
+  {
+    email: "user@user.com",
+    rating: 4,
+    comment:
+      "Great value for the price. The noise cancellation on the headphones is solid for the category. Battery life is exactly as advertised.",
+  },
+  {
+    email: "ab.bakkar420@gmail.com",
+    rating: 5,
+    comment:
+      "Mechanical keyboard feels premium out of the box. Switches are responsive and the RGB software is actually useful, not gimmicky.",
+  },
+  {
+    email: "hasina.akter171407@gmail.com",
+    rating: 5,
+    comment:
+      "Cotton t-shirt fits well and held up after several washes. Exactly what I expected from a 100% cotton blend.",
+  },
+  {
+    email: "jjayjd@gmaail.com",
+    rating: 4,
+    comment:
+      "Solid product overall. The only reason for 4 stars is the lack of a carrying case, but sound quality is excellent.",
+  },
+];
+
 async function run() {
   await connectDB();
+
+  const mongoose = (await import("mongoose")).default;
+  const db = mongoose.connection.db;
+  if (!db) throw new Error("Database not connected");
 
   const categories = ["Electronics", "Fashion", "Home & Kitchen", "Beauty", "Sports", "Books"];
   for (const name of categories) {
@@ -74,6 +124,36 @@ async function run() {
     );
   }
   logger.info(`Seeded ${demoProducts.length} demo products`);
+
+  // Resolve each testimonial's author against the real `user` collection.
+  // We never invent names — if a listed email doesn't exist we skip it.
+  const seededProducts = await Product.find({ storeId: store.id });
+  let reviewCount = 0;
+  for (let i = 0; i < DEMO_REVIEWS.length; i++) {
+    const product = seededProducts[i % seededProducts.length];
+    if (!product) break;
+
+    const author = await db.collection("user").findOne({ email: DEMO_REVIEWS[i].email });
+    if (!author) {
+      logger.warn(`Skipped review — no user found for ${DEMO_REVIEWS[i].email}`);
+      continue;
+    }
+
+    await Review.findOneAndUpdate(
+      { productId: product.id, userId: String(author.id ?? author._id) },
+      {
+        productId: product.id,
+        userId: String(author.id ?? author._id),
+        userName: author.name,
+        rating: DEMO_REVIEWS[i].rating,
+        comment: DEMO_REVIEWS[i].comment,
+        verifiedPurchase: true,
+      },
+      { upsert: true, new: true }
+    );
+    reviewCount += 1;
+  }
+  logger.info(`Seeded ${reviewCount} verified shopper reviews (real customers)`);
 
   await disconnectDB();
   logger.info("Seed complete ✅");

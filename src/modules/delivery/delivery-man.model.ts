@@ -63,6 +63,9 @@ export interface IDeliveryManVehicleInfo {
   vehicleBackPhoto?: string;
   vehicleFitnessExpiryDate?: Date;
   vehicleCapacity?: number;
+  packageCapacity?: number;
+  weightCapacityKg?: number;
+  volumeCapacityLiters?: number;
 }
 
 export interface IDeliveryManBankInfo {
@@ -154,6 +157,9 @@ const deliveryManVehicleSchema = new Schema<IDeliveryManVehicleInfo>({
   vehicleBackPhoto: { type: String },
   vehicleFitnessExpiryDate: { type: Date },
   vehicleCapacity: { type: Number, min: 1 },
+  packageCapacity: { type: Number, min: 1 },
+  weightCapacityKg: { type: Number, min: 1 },
+  volumeCapacityLiters: { type: Number, min: 1 },
 });
 
 const deliveryManBankSchema = new Schema<IDeliveryManBankInfo>({
@@ -193,7 +199,7 @@ const deliveryManDetailsSchema = new Schema(
     isActive: { type: Boolean, default: false },
     availabilityStatus: {
       type: String,
-      enum: ["offline", "available", "busy"],
+      enum: ["offline", "available", "busy", "full_capacity", "on_break", "suspended"],
       default: "offline",
     },
     currentLocation: {

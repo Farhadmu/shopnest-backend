@@ -33,7 +33,7 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
   const io = new SocketIOServer(httpServer, {
     cors: {
       origin: [
-        env.FRONTEND_URL,
+        ...(Array.isArray(env.CORS_ORIGIN_LIST) ? env.CORS_ORIGIN_LIST : []),
         "http://localhost:3000",
         "http://127.0.0.1:3000",
       ],

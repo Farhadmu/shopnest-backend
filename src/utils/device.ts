@@ -77,3 +77,39 @@ export function maskIp(ip: string): string {
   }
   return cleanIp;
 }
+
+/** Header the client uses to send its persistent device id. */
+export const DEVICE_ID_HEADER = "x-device-id";
+/** Cookie the client keeps its persistent device id in (fallback transport). */
+export const DEVICE_ID_COOKIE = "shopnest_device_id";
+
+/**
+ * A device id must look like an opaque random token (uuid or hex/base64url).
+ * Anything else — empty, oversized, or containing separators a client could
+ * use to smuggle in a query — is rejected outright.
+ */
+const DEVICE_ID_PATTERN = /^[A-Za-z0-9._-]{16,128}$/;
+
+export function isValidDeviceId(value: unknown): value is string {
+  return typeof value === "string" && DEVICE_ID_PATTERN.test(value.trim());
+}
+
+/**
+ * Reads the client's persistent device id from the `x-device-id` header,
+ * falling back to the device cookie.
+ *
+ * The value is only ever used as a lookup key scoped to the authenticated
+ * user (never as a credential), and it must pass validation first — a
+ * malformed or invented value is ignored so it cannot register devices or
+ * trigger alerts.
+ */
+export function readDeviceId(req: Request): string | undefined {
+  const header = req.headers[DEVICE_ID_HEADER];
+  const headerValue = Array.isArray(header) ? header[0] : header;
+  if (isValidDeviceId(headerValue)) return headerValue.trim();
+
+  const cookieValue = (req.cookies as Record<string, string> | undefined)?.[DEVICE_ID_COOKIE];
+  if (isValidDeviceId(cookieValue)) return cookieValue.trim();
+
+  return undefined;
+}

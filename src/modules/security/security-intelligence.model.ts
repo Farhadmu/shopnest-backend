@@ -6,6 +6,13 @@ export interface IDeviceSession {
   _id: Types.ObjectId;
   userId: string;
   sessionToken: string;
+  /**
+   * Persistent, browser-scoped device identifier (opaque random id kept in a
+   * long-lived cookie by the client). This — not the IP, and not the session
+   * token — is what identifies a device across logins. Absent on legacy rows
+   * written before device tracking existed.
+   */
+  deviceId?: string;
   deviceName: string; // e.g. "Chrome on Windows 11"
   deviceType: "desktop" | "mobile" | "tablet" | "unknown";
   browser: string;
@@ -24,6 +31,7 @@ const deviceSessionSchema = new Schema<IDeviceSession>(
   {
     userId: { type: String, required: true, index: true },
     sessionToken: { type: String, required: true, index: true },
+    deviceId: { type: String },
     deviceName: { type: String, default: "Current Browser" },
     deviceType: {
       type: String,
@@ -45,6 +53,19 @@ const deviceSessionSchema = new Schema<IDeviceSession>(
     lastActiveAt: { type: Date, default: Date.now },
   },
   { timestamps: true }
+);
+
+/**
+ * One row per (user, device): makes the recognition lookup an indexed
+ * point-query and lets device registration be an atomic upsert, so two
+ * concurrent logins can never register the same device twice (which would
+ * produce a duplicate "New Device Detected" alert).
+ * Partial, so legacy rows written before `deviceId` existed are not indexed
+ * and cannot collide.
+ */
+deviceSessionSchema.index(
+  { userId: 1, deviceId: 1 },
+  { unique: true, partialFilterExpression: { deviceId: { $type: "string" } } }
 );
 
 applyToJSON(deviceSessionSchema);

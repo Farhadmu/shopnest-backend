@@ -7,7 +7,7 @@ import { DeviceSession, SecurityRiskLog } from "./security-intelligence.model";
 import { SecurityLog } from "../security/securityLog.model";
 import { AuditLog } from "../security/auditLog.model";
 import { getUserId } from "../../utils/getUserId";
-import { parseUserAgent, getClientIp, maskIp } from "../../utils/device";
+import { parseUserAgent, getClientIp, maskIp, readDeviceId } from "../../utils/device";
 import { createNotification } from "../notifications/notification.service";
 
 /**
@@ -27,6 +27,42 @@ async function deleteAuthSessions(userId: string, tokenFilter: Record<string, un
 
   const result = await db.collection("session").deleteMany({ userId: userMatch, ...tokenFilter });
   return result.deletedCount ?? 0;
+}
+
+/**
+ * The notification bell only reads the recipient scope matching the signed-in
+ * role (`user` / `seller` / `admin`), so the audience must be set accordingly
+ * or the alert would be invisible to its owner.
+ */
+function recipientTypeForRole(role?: string): "user" | "seller" | "admin" {
+  if (role === "admin") return "admin";
+  if (role === "seller") return "seller";
+  return "user";
+}
+
+/** Each role has its own Security Center page. */
+function securityCenterPathForRole(role?: string): string {
+  if (role === "admin") return "/dashboard/admin/security";
+  if (role === "seller") return "/dashboard/seller/security";
+  return "/dashboard/user/security";
+}
+
+/** Human-readable device class for the notification copy (never the raw UA). */
+function deviceKindLabel(deviceType: string): string {
+  switch (deviceType) {
+    case "mobile":
+      return "Mobile";
+    case "tablet":
+      return "Tablet";
+    case "desktop":
+      return "Desktop";
+    default:
+      return "Unknown device";
+  }
+}
+
+function isDuplicateKeyError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: number }).code === 11000;
 }
 
 // 21. ACCOUNT SECURITY CENTER
@@ -95,47 +131,47 @@ export const getActiveSessions = asyncHandler(async (req: Request, res: Response
   // not a client-supplied header.
   const currentToken = req.sessionToken;
 
+  // Whitelisted on purpose: `sessionToken` is a live credential, so it is only
+  // compared here and never serialized to the client.
   const mapped = sessions.map((s: any) => ({
-    ...s,
     id: String(s._id),
+    userId: s.userId,
+    deviceId: s.deviceId,
+    deviceName: s.deviceName,
+    deviceType: s.deviceType,
+    browser: s.browser,
+    os: s.os,
+    ipAddress: s.ipAddress,
+    locationCity: s.locationCity,
+    isTrusted: s.isTrusted,
+    status: s.status,
+    lastActiveAt: s.lastActiveAt,
+    createdAt: s.createdAt,
     isCurrentSession: Boolean(currentToken) && s.sessionToken === currentToken,
   }));
 
   sendSuccess(res, mapped);
 });
 
+/**
+ * Records the device the current session is running on.
+ *
+ * Device identity is the client's persistent `deviceId` — an opaque random id
+ * kept in a long-lived cookie — and never the IP address (which changes with
+ * the network) or the session token (which is new on every login). That is
+ * what lets a device be recognized across logins, refreshes, logouts, browser
+ * restarts and IP changes, while a genuinely different browser or device
+ * carries its own id and is reported exactly once.
+ */
 export const recordSession = asyncHandler(async (req: Request, res: Response) => {
   const userId = getUserId(req);
   const userAgent = req.headers["user-agent"] as string | undefined;
   const ip = getClientIp(req);
   const device = parseUserAgent(userAgent);
-  const sessionToken = (req.headers["x-session-token"] as string) || `sess-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const deviceId = readDeviceId(req);
+  const sessionToken = req.sessionToken;
 
-  const activeSessions = await DeviceSession.countDocuments({ userId, status: "active" });
-
-  if (activeSessions >= 2) {
-    const oldest = await DeviceSession.findOne({ userId, status: "active" }).sort({ createdAt: 1 }).lean();
-    if (oldest) {
-      await DeviceSession.findByIdAndUpdate(oldest._id, { status: "revoked" });
-    }
-  }
-
-  const existing = await DeviceSession.findOne({ userId, sessionToken }).lean();
-  if (existing) {
-    await DeviceSession.findByIdAndUpdate(existing._id, {
-      lastActiveAt: new Date(),
-      ipAddress: maskIp(ip),
-      browser: device.browser,
-      os: device.os,
-      deviceType: device.deviceType,
-      deviceName: `${device.browser} on ${device.os}`,
-    });
-    return sendSuccess(res, { sessionToken, status: "active" });
-  }
-
-  const created = await DeviceSession.create({
-    userId,
-    sessionToken,
+  const deviceFields = {
     deviceName: `${device.browser} on ${device.os}`,
     deviceType: device.deviceType,
     browser: device.browser,
@@ -144,26 +180,92 @@ export const recordSession = asyncHandler(async (req: Request, res: Response) =>
     locationCity: "Unknown",
     isCurrentSession: true,
     isTrusted: true,
-    status: "active",
+    status: "active" as const,
     lastActiveAt: new Date(),
-  });
+  };
 
-  await DeviceSession.updateMany({ userId, status: "active", _id: { $ne: created._id } }, { isCurrentSession: false });
+  // No usable persistent device id (older client or non-browser caller): key
+  // off the verified session token as before and never alert, since devices
+  // cannot be told apart without an id.
+  if (!deviceId) {
+    if (!sessionToken) return sendSuccess(res, { status: "active" });
 
-  createNotification({
-    userId,
-    type: "security_alert",
-    category: "security",
-    priority: "info",
-    source: "security",
-    title: "New Login Detected",
-    message: `A new session was created from ${device.browser} on ${device.os}. If this was not you, please review your active sessions.`,
-    link: "/dashboard/user/security",
-    relatedId: created.id,
-    relatedType: "security_event",
-  }).catch((err) => console.warn("Failed to create security notification", err));
+    const existing = await DeviceSession.findOne({ userId, sessionToken }).lean();
+    if (existing) {
+      await DeviceSession.updateOne({ _id: existing._id }, { $set: deviceFields });
+    } else {
+      await DeviceSession.create({ userId, sessionToken, ...deviceFields });
+      await DeviceSession.updateMany(
+        { userId, status: "active", sessionToken: { $ne: sessionToken } },
+        { isCurrentSession: false }
+      );
+    }
+    return sendSuccess(res, { status: "active" });
+  }
 
-  sendSuccess(res, created.toJSON(), "Session recorded", 201);
+  // Already-recognized device for this user: refresh it and stop. Every repeat
+  // login/refresh from the same browser takes this path, so it stays a single
+  // indexed lookup and raises no alert.
+  const known = await DeviceSession.findOne({ userId, deviceId }).lean();
+  if (known) {
+    await DeviceSession.updateOne(
+      { _id: known._id },
+      { $set: { ...deviceFields, sessionToken: sessionToken ?? known.sessionToken } }
+    );
+    await DeviceSession.updateMany(
+      { userId, status: "active", _id: { $ne: known._id } },
+      { $set: { isCurrentSession: false } }
+    );
+    return sendSuccess(res, { status: "active", deviceName: known.deviceName });
+  }
+
+  // A device id this user has never been seen on. Raise the alert only when the
+  // user already had a recognized device: a brand-new account — and any account
+  // created before device tracking existed — must register its first device
+  // silently, otherwise every existing user would be told their own browser is
+  // "new" on their next login.
+  const hadRecognizedDevice = await DeviceSession.exists({ userId, deviceId: { $type: "string" } });
+
+  let newDeviceObjectId: unknown = null;
+  try {
+    // Atomic upsert against the unique (userId, deviceId) index, so two
+    // concurrent logins register one device and can alert only once.
+    const result = await DeviceSession.updateOne(
+      { userId, deviceId },
+      { $set: { ...deviceFields, sessionToken: sessionToken ?? `device:${deviceId}` } },
+      { upsert: true }
+    );
+    newDeviceObjectId = result.upsertedId ?? null;
+  } catch (err) {
+    // Lost a race with a concurrent request for the same device: that one
+    // owns the alert, so treat this as an already-known device.
+    if (!isDuplicateKeyError(err)) throw err;
+  }
+
+  if (newDeviceObjectId && hadRecognizedDevice) {
+    const role = req.user?.role;
+    try {
+      await createNotification({
+        userId,
+        recipientType: recipientTypeForRole(role),
+        type: "security_alert",
+        category: "security",
+        priority: "warning",
+        source: "security",
+        title: "New Device Detected",
+        message: `Your account was accessed from a new device: ${device.browser} on ${device.os} (${deviceKindLabel(device.deviceType)}). If this was not you, review your active sessions and change your password.`,
+        link: securityCenterPathForRole(role),
+        relatedId: String(newDeviceObjectId),
+        relatedType: "security_event",
+      });
+    } catch (err) {
+      // The device is already registered, so this alert cannot be retried on
+      // the next login — log loudly instead of failing the login request.
+      console.error("Failed to create new-device notification", err);
+    }
+  }
+
+  return sendSuccess(res, { status: "active", deviceName: deviceFields.deviceName });
 });
 
 export const revokeSession = asyncHandler(async (req: Request, res: Response) => {

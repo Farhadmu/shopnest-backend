@@ -133,6 +133,7 @@ router.patch(
   ctrl.approveDeliveryMan
 );
 router.get("/admin/active-operations", requireRole("admin"), ctrl.listAdminActiveDeliveries);
+router.get("/admin/heatmap", requireRole("admin"), ctrl.getAdminDeliveryHeatmap);
 router.get("/admin/incidents", requireRole("admin"), ctrl.listAdminIncidents);
 router.patch("/admin/incidents/:id/resolve", requireRole("admin"), ctrl.resolveAdminIncident);
 

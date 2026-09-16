@@ -64,6 +64,9 @@ export const createOrUpdateProfileSchema = z.object({
       vehicleBackPhoto: z.string().optional(),
       vehicleFitnessExpiryDate: optionalDate,
       vehicleCapacity: z.number().min(1).optional(),
+      packageCapacity: z.number().min(1).optional(),
+      weightCapacityKg: z.number().min(1).optional(),
+      volumeCapacityLiters: z.number().min(1).optional(),
     })
     .optional(),
   bank: z
@@ -89,7 +92,7 @@ export const createOrUpdateProfileSchema = z.object({
 });
 
 export const setAvailabilitySchema = z.object({
-  availabilityStatus: z.enum(["offline", "available", "busy"]).optional(),
+  availabilityStatus: z.enum(["offline", "available", "busy", "full_capacity", "on_break", "suspended"]).optional(),
   isActive: z.boolean().optional(),
 });
 

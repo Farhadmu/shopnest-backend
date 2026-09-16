@@ -199,6 +199,9 @@ const deliveryManDetailsSchema = new Schema(
     currentLocation: {
       latitude: { type: Number },
       longitude: { type: Number },
+      speed: { type: Number },
+      heading: { type: Number },
+      accuracy: { type: Number },
       updatedAt: { type: Date },
     },
     rating: { type: Number, default: 0, min: 0, max: 5 },

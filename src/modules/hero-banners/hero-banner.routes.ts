@@ -16,8 +16,9 @@ const router = Router();
 
 router.get("/", attachUserIfPresent, validate({ query: heroBannerQuerySchema }), ctrl.listHeroBanners);
 
-// Must be registered before `/:id` so it is not captured as a banner id.
+// Must be registered before `/:id` so they are not captured as a banner id.
 router.get("/categories", ctrl.listBannerCategoryIds);
+router.get("/admin/all", ...requireAuth, requireRole("admin"), ctrl.listAllHeroBannersForAdmin);
 
 router.get("/:id", validate({ params: idParamSchema }), ctrl.getHeroBannerById);
 

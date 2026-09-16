@@ -62,6 +62,29 @@ describe("Delivery Incident, Rating & Logistics Telemetry Test Suite", () => {
       expect(parsed.category).toBe("vehicle_problem");
       expect(parsed.severity).toBe("critical");
     });
+
+    it("accepts operational category synonyms (traffic, weather, vehicle_breakdown, package_damaged)", () => {
+      const traffic = createIncidentSchema.parse({
+        category: "traffic",
+        severity: "high",
+        description: "Severe gridlock on Dhaka-Chattogram highway near Comilla",
+      });
+      expect(traffic.category).toBe("traffic");
+
+      const weather = createIncidentSchema.parse({
+        category: "weather",
+        severity: "critical",
+        description: "Flash flooding preventing courier transit",
+      });
+      expect(weather.category).toBe("weather");
+
+      const breakdown = createIncidentSchema.parse({
+        category: "vehicle_breakdown",
+        severity: "medium",
+        description: "Flat tire on delivery motorcycle",
+      });
+      expect(breakdown.category).toBe("vehicle_breakdown");
+    });
   });
 
   describe("2. Customer Rating Validation & Average Calculation", () => {

@@ -275,7 +275,17 @@ export const getAvailableDeliveries = asyncHandler(async (req: Request, res: Res
     ]);
   }
 
-  sendPaginated(res, normalizeLeanArray(deliveries), total, Number(page), Number(limit));
+  // Helper to enrich lean delivery request with auto-resolved coordinates
+  const enrichDeliveryItem = (d: any) => {
+    const norm = normalizeLean(d as unknown as Record<string, unknown>);
+    return {
+      ...norm,
+      pickupCoordinates: norm.pickupCoordinates || getApproxCoordinatesFromAddress(d.pickupAddress),
+      deliveryCoordinates: norm.deliveryCoordinates || getApproxCoordinatesFromAddress(d.deliveryAddress),
+    };
+  };
+
+  sendPaginated(res, deliveries.map(enrichDeliveryItem), total, Number(page), Number(limit));
 });
 
 /** GET /delivery/requests/my - My active & historical deliveries */
@@ -324,7 +334,16 @@ export const getMyDeliveries = asyncHandler(async (req: Request, res: Response) 
     DeliveryRequest.countDocuments(filter),
   ]);
 
-  sendPaginated(res, normalizeLeanArray(deliveries), total, Number(page), Number(limit));
+  const enrichDeliveryItem = (d: any) => {
+    const norm = normalizeLean(d as unknown as Record<string, unknown>);
+    return {
+      ...norm,
+      pickupCoordinates: norm.pickupCoordinates || getApproxCoordinatesFromAddress(d.pickupAddress),
+      deliveryCoordinates: norm.deliveryCoordinates || getApproxCoordinatesFromAddress(d.deliveryAddress),
+    };
+  };
+
+  sendPaginated(res, deliveries.map(enrichDeliveryItem), total, Number(page), Number(limit));
 });
 
 /**
@@ -680,8 +699,14 @@ export const getDeliveryById = asyncHandler(async (req: Request, res: Response) 
   const pickupCoordinates = getApproxCoordinatesFromAddress(deliveryRequest.pickupAddress);
   const deliveryCoordinates = getApproxCoordinatesFromAddress(deliveryRequest.deliveryAddress);
 
+  const enrichedDeliveryRequest = {
+    ...normalizeLean(deliveryRequest as unknown as Record<string, unknown>),
+    pickupCoordinates,
+    deliveryCoordinates,
+  };
+
   sendSuccess(res, {
-    deliveryRequest: normalizeLean(deliveryRequest as unknown as Record<string, unknown>),
+    deliveryRequest: enrichedDeliveryRequest,
     pickupCoordinates,
     deliveryCoordinates,
     order,
@@ -1017,13 +1042,21 @@ export const getSellerActiveDeliveries = asyncHandler(async (req: Request, res: 
         status: profile?.status || "approved",
       };
 
-      const isLive = ["picked_up", "in_transit", "out_for_delivery"].includes(d.status);
-      if (isLive && details?.currentLocation?.latitude !== undefined) {
+      const isLive = ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"].includes(d.status);
+      if (
+        isLive &&
+        details?.currentLocation?.latitude !== undefined &&
+        details?.currentLocation?.latitude !== null &&
+        details?.currentLocation?.longitude !== undefined &&
+        details?.currentLocation?.longitude !== null
+      ) {
         currentLocation = {
           latitude: details.currentLocation.latitude,
           longitude: details.currentLocation.longitude,
           speed: details.currentLocation.speed,
-          updatedAt: details.currentLocation.updatedAt,
+          heading: details.currentLocation.heading,
+          accuracy: details.currentLocation.accuracy,
+          updatedAt: details.currentLocation.updatedAt ? new Date(details.currentLocation.updatedAt).toISOString() : new Date().toISOString(),
         };
       }
     }

@@ -4,6 +4,9 @@ import {
   calculateDistanceMeters,
   BD_DIVISION_COORDINATES,
   getApproxCoordinatesFromAddress,
+  isWithinRadius,
+  formatDistance,
+  calculateBearing,
 } from "../../src/utils/geo";
 
 describe("Google Maps & Bangladesh Geographic Logistics Integration", () => {
@@ -67,4 +70,26 @@ describe("Google Maps & Bangladesh Geographic Logistics Integration", () => {
     expect(isValidCoordinate("23.0", 90.0)).toBe(false); // Non-number
     expect(isValidCoordinate(NaN, 90.0)).toBe(false);
   });
+
+  it("accurately tests radius boundaries and distance formatting", () => {
+    const dhanmondi = BD_DIVISION_COORDINATES.dhanmondi;
+    const gulshan = BD_DIVISION_COORDINATES.gulshan;
+
+    expect(isWithinRadius(dhanmondi.latitude, dhanmondi.longitude, gulshan.latitude, gulshan.longitude, 10000)).toBe(true);
+    expect(isWithinRadius(dhanmondi.latitude, dhanmondi.longitude, gulshan.latitude, gulshan.longitude, 3000)).toBe(false);
+
+    expect(formatDistance(450)).toBe("450 m");
+    expect(formatDistance(6500)).toBe("6.5 km");
+    expect(formatDistance(-1)).toBe("0 m");
+  });
+
+  it("calculates compass bearing between geographic points", () => {
+    const dhanmondi = BD_DIVISION_COORDINATES.dhanmondi;
+    const gulshan = BD_DIVISION_COORDINATES.gulshan;
+    const bearing = calculateBearing(dhanmondi.latitude, dhanmondi.longitude, gulshan.latitude, gulshan.longitude);
+    // Gulshan is North-East of Dhanmondi (~30 degrees)
+    expect(bearing).toBeGreaterThan(15);
+    expect(bearing).toBeLessThan(45);
+  });
 });
+

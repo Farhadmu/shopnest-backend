@@ -8,6 +8,7 @@ import {
   createProductSchema,
   idParamSchema,
   listProductsQuerySchema,
+  productCountsQuerySchema,
   updateProductSchema,
 } from "../../schemas/product.schema";
 import { createReviewSchema } from "../../schemas/review.schema";
@@ -17,6 +18,11 @@ const router = Router();
 router.get("/", attachUserIfPresent, validate({ query: listProductsQuerySchema }), ctrl.listProducts);
 router.get("/stores/options", ctrl.getStoreOptions);
 router.get("/sellers/options", ctrl.getSellerOptions);
+router.get(
+  "/categories/counts",
+  validate({ query: productCountsQuerySchema }),
+  ctrl.getCategoryCounts
+);
 
 // Trending products must be registered BEFORE `:id` so it is not captured as a product id.
 router.get("/trending", ctrl.getTrendingProducts);

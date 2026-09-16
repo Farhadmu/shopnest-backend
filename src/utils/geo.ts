@@ -95,5 +95,5 @@ export function getApproxCoordinatesFromAddress(addressText?: string): { latitud
       return BD_DIVISION_COORDINATES[key];
     }
   }
-  return BD_DIVISION_COORDINATES.dhaka; // default to center Dhaka
+  return null;
 }

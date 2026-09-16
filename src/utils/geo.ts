@@ -2,6 +2,12 @@
  * Geo calculation utilities for delivery tracking & geofencing
  */
 
+/** Standard 2D geographic coordinate */
+export interface GeoCoordinate {
+  latitude: number;
+  longitude: number;
+}
+
 /** Check if coordinates are valid numbers within latitude/longitude boundaries */
 export function isValidCoordinate(latitude: unknown, longitude: unknown): boolean {
   if (typeof latitude !== "number" || typeof longitude !== "number") return false;

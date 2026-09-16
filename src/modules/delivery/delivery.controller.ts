@@ -12,6 +12,8 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess, sendPaginated } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { normalizeLean, normalizeLeanArray } from "../../utils/model-plugins";
+import { emitDeliveryEvent, emitAdminOperationsEvent } from "../../realtime/socket.server";
+import { getApproxCoordinatesFromAddress } from "../../utils/geo";
 
 function generateOtp(): string {
   return crypto.randomInt(100000, 999999).toString();
@@ -339,16 +341,48 @@ export const acceptDelivery = asyncHandler(async (req: Request, res: Response) =
     throw ApiError.forbidden("Your delivery partner account is not approved.");
   }
 
-  // 2. Verify rider capacity
+  // 2. Verify rider capacity (parcel count & vehicle weight)
   const details = await DeliveryManDetails.findOne({ userId }).lean();
-  const maxActive = details?.preferences?.maxActiveDeliveries ?? details?.vehicle?.vehicleCapacity ?? 3;
-  const activeCount = await DeliveryRequest.countDocuments({
+  const maxActiveParcels = details?.preferences?.maxActiveDeliveries ?? details?.vehicle?.vehicleCapacity ?? 3;
+
+  const activeDeliveries = await DeliveryRequest.find({
     assignedDeliveryManId: userId,
     status: { $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"] },
-  });
+  }).lean();
 
-  if (activeCount >= maxActive) {
-    throw ApiError.badRequest(`Capacity full: You cannot have more than ${maxActive} active deliveries simultaneously.`);
+  if (activeDeliveries.length >= maxActiveParcels) {
+    throw ApiError.badRequest(
+      `Capacity full: You currently have ${activeDeliveries.length} active deliveries. Your maximum active capacity is ${maxActiveParcels}.`
+    );
+  }
+
+  // Check vehicle weight limit if target package specifies weight
+  const targetRequest = await DeliveryRequest.findById(id).lean();
+  if (!targetRequest) {
+    throw ApiError.notFound("Delivery request not found");
+  }
+
+  const vType = details?.vehicle?.vehicleType;
+  const maxCapacityWeight = details?.vehicle?.vehicleCapacity
+    ? details.vehicle.vehicleCapacity * 5
+    : vType === "van"
+    ? 50
+    : vType === "car"
+    ? 30
+    : vType === "motorcycle"
+    ? 20
+    : vType === "bicycle"
+    ? 10
+    : 15;
+
+  const currentLoadedWeight = activeDeliveries.reduce((sum, d) => sum + (d.packageInfo?.weight || 0), 0);
+  const incomingWeight = targetRequest.packageInfo?.weight || 0;
+
+  if (incomingWeight > 0 && currentLoadedWeight + incomingWeight > maxCapacityWeight) {
+    const remaining = Math.max(0, maxCapacityWeight - currentLoadedWeight);
+    throw ApiError.badRequest(
+      `Weight capacity exceeded: Vehicle limit is ${maxCapacityWeight}kg (currently loaded: ${currentLoadedWeight}kg, remaining: ${remaining}kg). This package weighs ${incomingWeight}kg.`
+    );
   }
 
   // 3. Atomically claim the request (1st transaction wins; subsequent parallel requests return null)
@@ -377,7 +411,7 @@ export const acceptDelivery = asyncHandler(async (req: Request, res: Response) =
       throw ApiError.notFound("Delivery request not found");
     }
     // Already claimed by another delivery man -> 409 Conflict
-    throw ApiError.conflict("This delivery has already been accepted by another delivery partner.");
+    throw ApiError.conflict("Another delivery man accepted this request first.");
   }
 
   // 4. Update corresponding Order model
@@ -388,18 +422,33 @@ export const acceptDelivery = asyncHandler(async (req: Request, res: Response) =
   });
 
   // 5. Update rider totalDeliveries and availability
-  const newActiveCount = activeCount + 1;
+  const newActiveCount = activeDeliveries.length + 1;
   await DeliveryManDetails.updateOne(
     { userId },
     {
       $inc: { totalDeliveries: 1 },
-      availabilityStatus: newActiveCount >= maxActive ? "busy" : "available",
+      availabilityStatus: newActiveCount >= maxActiveParcels ? "busy" : "available",
       isActive: true,
       lastActiveAt: new Date(),
     }
   );
 
-  // 6. Notify seller & customer
+  // 6. Broadcast Realtime Socket Events
+  emitDeliveryEvent(claimedRequest.id, "delivery:accepted", {
+    deliveryId: claimedRequest.id,
+    orderId: claimedRequest.orderId,
+    riderId: userId,
+    riderName: details?.personal?.fullName || "Courier",
+    acceptedAt: new Date().toISOString(),
+  });
+
+  emitAdminOperationsEvent("admin:delivery_assigned", {
+    deliveryId: claimedRequest.id,
+    orderId: claimedRequest.orderId,
+    riderId: userId,
+  });
+
+  // 7. Notify seller & customer
   createNotification({
     userId: claimedRequest.sellerId,
     type: "delivery_alert",
@@ -575,6 +624,22 @@ export const updateDeliveryStatus = asyncHandler(async (req: Request, res: Respo
     }).catch(() => undefined);
   }
 
+  // Real-time socket event broadcast to tracking subscribers & admin
+  emitDeliveryEvent(deliveryRequest.id, "delivery:status_change", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    status,
+    failureReason,
+    updatedAt: now.toISOString(),
+  });
+
+  emitAdminOperationsEvent("admin:delivery_status", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    status,
+    riderId: userId,
+  });
+
   sendSuccess(res, deliveryRequest.toJSON(), status === "delivered" ? "Delivery completed successfully" : "Status updated");
 });
 
@@ -612,8 +677,13 @@ export const getDeliveryById = asyncHandler(async (req: Request, res: Response) 
       .then((inc) => normalizeLeanArray(inc)),
   ]);
 
+  const pickupCoordinates = getApproxCoordinatesFromAddress(deliveryRequest.pickupAddress);
+  const deliveryCoordinates = getApproxCoordinatesFromAddress(deliveryRequest.deliveryAddress);
+
   sendSuccess(res, {
     deliveryRequest: normalizeLean(deliveryRequest as unknown as Record<string, unknown>),
+    pickupCoordinates,
+    deliveryCoordinates,
     order,
     locations,
     ratings,
@@ -638,7 +708,14 @@ export const verifyDeliveryOtp = asyncHandler(async (req: Request, res: Response
     throw ApiError.badRequest("Cannot verify OTP when order is not out for delivery");
   }
 
+  // Attempt rate guard
+  if ((deliveryRequest.attemptCount || 0) >= 5) {
+    throw ApiError.badRequest("Too many failed OTP verification attempts. Please contact customer support.");
+  }
+
   if (deliveryRequest.deliveryOtp !== otp.trim()) {
+    deliveryRequest.attemptCount = (deliveryRequest.attemptCount || 0) + 1;
+    await deliveryRequest.save();
     throw ApiError.badRequest("Invalid delivery OTP. Please verify with the customer.");
   }
 
@@ -646,6 +723,7 @@ export const verifyDeliveryOtp = asyncHandler(async (req: Request, res: Response
   deliveryRequest.deliveryOtpVerifiedAt = now;
   deliveryRequest.status = "delivered";
   deliveryRequest.deliveredAt = now;
+  deliveryRequest.attemptCount = 0;
   await deliveryRequest.save();
 
   // Sync to order
@@ -675,6 +753,19 @@ export const verifyDeliveryOtp = asyncHandler(async (req: Request, res: Response
     { userId },
     { availabilityStatus: activeCount >= maxActive ? "busy" : "available" }
   );
+
+  // Broadcast socket events
+  emitDeliveryEvent(deliveryRequest.id, "delivery:delivered", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    deliveredAt: now.toISOString(),
+  });
+
+  emitAdminOperationsEvent("admin:delivery_completed", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    riderId: userId,
+  });
 
   // Send completion notifications
   createNotification({
@@ -715,6 +806,12 @@ export const uploadDeliveryProof = asyncHandler(async (req: Request, res: Respon
     deliveryProofImage: proofUrl,
   });
 
+  emitDeliveryEvent(deliveryRequest.id, "delivery:proof_uploaded", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    deliveryProofImage: proofUrl,
+  });
+
   sendSuccess(res, { deliveryProofImage: proofUrl }, "Proof of delivery uploaded successfully");
 });
 
@@ -744,6 +841,19 @@ export const reportDeliveryIncident = asyncHandler(async (req: Request, res: Res
     description,
     evidenceImages: evidenceImages || [],
     status: "open",
+  });
+
+  emitDeliveryEvent(deliveryRequest.id, "delivery:incident_reported", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    incident: incident.toJSON(),
+  });
+
+  emitAdminOperationsEvent("admin:incident_reported", {
+    incidentId: incident.id,
+    deliveryId: deliveryRequest.id,
+    category,
+    severity,
   });
 
   // Notify seller
@@ -881,6 +991,8 @@ export const getDeliveryTracking = asyncHandler(async (req: Request, res: Respon
     },
     pickupAddress: deliveryRequest.pickupAddress,
     deliveryAddress: deliveryRequest.deliveryAddress,
+    pickupCoordinates: getApproxCoordinatesFromAddress(deliveryRequest.pickupAddress),
+    deliveryCoordinates: getApproxCoordinatesFromAddress(deliveryRequest.deliveryAddress),
   });
 });
 
@@ -1071,6 +1183,7 @@ export const listDeliveryMen = asyncHandler(async (req: Request, res: Response) 
       totalDeliveries: d?.totalDeliveries ?? 0,
       completedDeliveries: d?.completedDeliveries ?? 0,
       failedDeliveries: d?.failedDeliveries ?? 0,
+      currentLocation: d?.currentLocation ? normalizeLean(d.currentLocation as unknown as Record<string, unknown>) : undefined,
       name: d?.personal?.fullName || u?.name || "Delivery Partner",
       email: d?.personal?.email || u?.email || "",
       image: d?.personal?.profilePhoto || u?.image || "",

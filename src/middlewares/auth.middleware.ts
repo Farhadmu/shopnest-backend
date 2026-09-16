@@ -65,7 +65,7 @@ declare global {
   }
 }
 
-function verifySignedToken(raw: string): string | null {
+export function verifySignedToken(raw: string): string | null {
   const lastDot = raw.lastIndexOf(".");
   if (lastDot === -1) {
     // Unsigned cookie fallback (some better-auth configs / dev setups).
@@ -90,7 +90,7 @@ function verifySignedToken(raw: string): string | null {
   return token; // fallback to checking token in DB
 }
 
-async function resolveUserFromSessionToken(token: string): Promise<AuthUser | null> {
+export async function resolveUserFromSessionToken(token: string): Promise<AuthUser | null> {
   const db = mongoose.connection.db;
   if (!db) return null;
 

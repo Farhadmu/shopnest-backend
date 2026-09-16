@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { AiConversation } from "./advisor/conversation.model";
-import { complete } from "./providers/claude.provider";
+import { completeWithContext, AiContext } from "./providers/claude.provider";
 import { COMMERCE_COMPANION_SYSTEM, buildCompanionUserPrompt } from "./commerce-companion.prompts";
 import {
   searchProducts,
@@ -106,6 +106,38 @@ function detectIntent(message: string, _userId?: string): DetectedIntent {
   }
 
   return { type: "general_chat", confidence: 0.3 };
+}
+
+function buildDeterministicResponse(message: string, data: Record<string, any>): string {
+  const lower = message.toLowerCase();
+
+  if (data.products && data.products.length > 0) {
+    const count = data.products.length;
+    const top = data.products[0];
+    const rest = count > 1 ? ` I also found ${count - 1} other option${count > 2 ? "s" : ""} worth comparing.` : "";
+    const budgetMatch = lower.match(/(\d+[\d,]*)/);
+    const budgetText = budgetMatch ? `under ৳${Number(budgetMatch[1].replace(/,/g, "")).toLocaleString()}` : "";
+    return `I found ${count} matching product${count > 1 ? "s" : ""}${budgetText ? ` ${budgetText}` : ""}. ${top.title} at ৳${top.price.toLocaleString()}.${rest} I’m showing the verified catalog results here. AI analysis is temporarily limited, so I’m sticking to the real product data available.`;
+  }
+
+  if (data.orders && data.orders.length > 0) {
+    const latest = data.orders[0];
+    return `Your latest order is #${latest.id.slice(-6)} for ৳${latest.totalAmount.toLocaleString()}, currently ${latest.status}. You have ${data.orders.length} total order${data.orders.length > 1 ? "s" : ""} on file.`;
+  }
+
+  if (data.wishlistItems && data.wishlistItems.length > 0) {
+    return `You have ${data.wishlistItems.length} item${data.wishlistItems.length > 1 ? "s" : ""} saved in your wishlist.`;
+  }
+
+  if (data.cartItems && data.cartItems.length > 0) {
+    return `Your cart has ${data.cartItems.length} item${data.cartItems.length > 1 ? "s" : ""} totaling ৳${data.cartSummary?.subtotal?.toLocaleString() || "0"}.`;
+  }
+
+  if (data.overview) {
+    return `Here’s your current snapshot: ${data.overview.totalOrders} orders, ${data.overview.activeOrders} active, ${data.overview.wishlistCount} in wishlist, ${data.overview.cartCount} in cart, and ৳${data.overview.totalSpent.toLocaleString()} spent so far.`;
+  }
+
+  return "I couldn’t complete the AI analysis right now, but I can still help you browse available products, track orders, and navigate ShopNest. What would you like to do next?";
 }
 
 export const chat = asyncHandler(async (req: Request, res: Response) => {
@@ -323,13 +355,35 @@ export const chat = asyncHandler(async (req: Request, res: Response) => {
   const toolResultsString = toolResults.join("\n") || "No tool results for this query.";
   const userPrompt = buildCompanionUserPrompt(message, toolResultsString, history, currentPage);
 
+  const aiContext: AiContext = {
+    products: (structuredData.products || []).map((p: any) => ({
+      id: p.id,
+      title: p.title,
+      price: p.price,
+      category: p.category,
+      ratingAvg: p.ratingAvg,
+      stock: p.stock,
+    })),
+    orders: (structuredData.orders || []).map((o: any) => ({
+      id: o.id,
+      status: o.status,
+      totalAmount: o.totalAmount,
+    })),
+    wishlist: (structuredData.wishlistItems || []).map((w: any) => ({
+      title: w.title,
+      price: w.price,
+    })),
+    userContext: structuredData.overview,
+  };
+
   let reply: string;
   let isFallback = false;
   let provider: string | undefined;
 
   try {
-    const result = await complete(
+    const result = await completeWithContext(
       [...history.slice(0, -1), { role: "user" as const, content: userPrompt }],
+      aiContext,
       { system: COMMERCE_COMPANION_SYSTEM, maxTokens: 1500, temperature: 0.3 }
     );
     reply = result.content;
@@ -343,7 +397,9 @@ export const chat = asyncHandler(async (req: Request, res: Response) => {
       input: message,
       error: err instanceof Error ? err.message : String(err),
     });
-    throw err;
+    reply = buildDeterministicResponse(message, structuredData);
+    isFallback = true;
+    provider = "deterministic";
   }
 
   if (conversation) {

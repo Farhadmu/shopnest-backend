@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { Store } from "./store.model";
+import { Category } from "../categories/category.model";
 import { Product } from "../products/product.model";
 import { Review } from "../reviews/review.model";
 import { asyncHandler } from "../../utils/async-handler";
@@ -96,10 +97,11 @@ function toPublicStore(
  *
  * 1. Inputs Extracted:
  *    - req.user.id: Authenticated user ID (owner)
- *    - req.body: storeName, description, logo, banner, businessInfo
+ *    - req.body: storeName, description, logo, banner, businessInfo (including categoryId)
  * 2. Database Operation:
  *    - Store.findOne({ ownerId }) to check if store already exists or was rejected
- *    - Store.create(...) to register new store application
+ *    - Category.findById(categoryId) to verify category exists
+ *    - Store.create(...) to register new store application with categoryId ObjectId reference
  * 3. Response Sent:
  *    - HTTP 201 (or 200 on resubmit): Created/updated store JSON object
  */
@@ -107,13 +109,31 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
   const existing = await Store.findOne({ ownerId: req.user!.id });
   const { storeName, description, logo, banner, businessInfo } = req.body;
 
+  const categoryId = businessInfo?.categoryId;
+
+  if (!categoryId) {
+    throw ApiError.badRequest("Category is required");
+  }
+
+  // Verify category exists
+  const category = await Category.findById(categoryId);
+  if (!category) {
+    throw ApiError.badRequest("Invalid category: category does not exist");
+  }
+
   if (existing) {
     if (existing.status === "rejected") {
       existing.storeName = storeName || existing.storeName;
       existing.description = description || existing.description;
       if (logo !== undefined) existing.logo = logo;
       if (banner !== undefined) existing.banner = banner;
-      if (businessInfo) existing.businessInfo = { ...(existing.businessInfo || {}), ...businessInfo };
+      if (businessInfo) {
+        existing.businessInfo = {
+          ...(existing.businessInfo || {}),
+          ...businessInfo,
+          categoryId: new mongoose.Types.ObjectId(categoryId),
+        };
+      }
       existing.status = "pending";
       existing.rejectionReason = undefined;
       await existing.save();
@@ -135,7 +155,10 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
       description,
       logo,
       banner,
-      businessInfo,
+      businessInfo: {
+        ...businessInfo,
+        categoryId: new mongoose.Types.ObjectId(categoryId),
+      },
       status: "pending",
     });
   } catch (err) {
@@ -174,9 +197,10 @@ export const getMyStore = asyncHandler(async (req: Request, res: Response) => {
  *
  * 1. Inputs Extracted:
  *    - req.user.id: Authenticated seller ID
- *    - req.body: storeName, description, logo, banner, businessInfo, resubmit
+ *    - req.body: storeName, description, logo, banner, businessInfo (including categoryId), resubmit
  * 2. Database Operation:
  *    - Store.findOne({ ownerId }), updates properties, store.save()
+ *    - Category.findById(categoryId) to verify category exists if provided
  * 3. Response Sent:
  *    - HTTP 200: Updated Store JSON object with "Store updated" message
  */
@@ -190,10 +214,24 @@ export const updateMyStore = asyncHandler(async (req: Request, res: Response) =>
   if (logo !== undefined) store.logo = logo;
   if (banner !== undefined) store.banner = banner;
   if (businessInfo) {
-    store.businessInfo = {
-      ...(store.businessInfo || {}),
-      ...businessInfo,
-    };
+    const categoryId = businessInfo.categoryId;
+    if (categoryId) {
+      // Verify category exists
+      const category = await Category.findById(categoryId);
+      if (!category) {
+        throw ApiError.badRequest("Invalid category: category does not exist");
+      }
+      store.businessInfo = {
+        ...(store.businessInfo || {}),
+        ...businessInfo,
+        categoryId: new mongoose.Types.ObjectId(categoryId),
+      };
+    } else {
+      store.businessInfo = {
+        ...(store.businessInfo || {}),
+        ...businessInfo,
+      };
+    }
   }
   if (resubmit && (store.status === "rejected" || store.status === "pending")) {
     store.status = "pending";

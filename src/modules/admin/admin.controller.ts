@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import { Store } from "../sellers/store.model";
+import { Category } from "../categories/category.model";
 import { Product } from "../products/product.model";
 import { Order } from "../orders/order.model";
 import { Review } from "../reviews/review.model";
@@ -76,10 +77,10 @@ export const getDashboardMetrics = asyncHandler(async (_req: Request, res: Respo
  *    - req.query.status: Optional status filter ("pending", "approved", "rejected", "suspended")
  *    - req.query.search: Optional search term matching store name, slug, phone, NID, etc.
  * 2. Database Operation:
- *    - Store.find(filter).sort({ createdAt: -1 })
+ *    - Store.find(filter).populate('businessInfo.categoryId').sort({ createdAt: -1 })
  *    - Enriches each store with owner email, full name, and avatar from better-auth user collection
  * 3. Response Sent:
- *    - HTTP 200: Array of enriched store objects
+ *    - HTTP 200: Array of enriched store objects with populated category
  */
 export const listSellersForModeration = asyncHandler(async (req: Request, res: Response) => {
   const { status, search } = req.query as { status?: string; search?: string };
@@ -101,7 +102,9 @@ export const listSellersForModeration = asyncHandler(async (req: Request, res: R
     ];
   }
 
-  const stores = await Store.find(filter).sort({ createdAt: -1 });
+  const stores = await Store.find(filter)
+    .populate("businessInfo.categoryId", "name slug image")
+    .sort({ createdAt: -1 });
 
   const db = mongoose.connection.db;
   if (db && stores.length > 0) {
@@ -142,14 +145,14 @@ export const listSellersForModeration = asyncHandler(async (req: Request, res: R
  * 1. Inputs Extracted:
  *    - req.params.id: Store ID
  * 2. Database Operation:
- *    - Store.findById(id)
+ *    - Store.findById(id).populate('businessInfo.categoryId')
  *    - Queries user collection for owner info
  *    - Queries Product and Order for store performance metrics
  * 3. Response Sent:
- *    - HTTP 200: Detailed seller dossier { ...store, ownerEmail, ownerFullName, metrics: { totalProducts, totalOrders, totalSales }, recentProducts }
+ *    - HTTP 200: Detailed seller dossier with populated category { ...store, ownerEmail, ownerFullName, metrics: { totalProducts, totalOrders, totalSales }, recentProducts }
  */
 export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: Response) => {
-  const store = await Store.findById(req.params.id);
+  const store = await Store.findById(req.params.id).populate("businessInfo.categoryId", "name slug image");
   if (!store) throw ApiError.notFound("Store not found");
 
   const db = mongoose.connection.db;
@@ -205,11 +208,11 @@ export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: R
  *    - req.params.id: Store ID
  *    - req.body: status ("pending" | "approved" | "rejected" | "suspended"), rejectionReason
  * 2. Database Operation:
- *    - Store.findByIdAndUpdate(id, updateFields, { new: true })
+ *    - Store.findByIdAndUpdate(id, updateFields, { new: true }).populate('businessInfo.categoryId')
  *    - Updates user role in "user" collection to "seller" or "customer"
  *    - Creates an in-app notification for the seller
  * 3. Response Sent:
- *    - HTTP 200: Updated store document with status message
+ *    - HTTP 200: Updated store document with status message and populated category
  */
 export const updateSellerStatus = asyncHandler(async (req: Request, res: Response) => {
   const { status, rejectionReason } = req.body as {
@@ -225,7 +228,10 @@ export const updateSellerStatus = asyncHandler(async (req: Request, res: Respons
     updateFields.rejectionReason = "";
   }
 
-  const store = await Store.findByIdAndUpdate(req.params.id, updateFields, { new: true });
+  const store = await Store.findByIdAndUpdate(req.params.id, updateFields, { new: true }).populate(
+    "businessInfo.categoryId",
+    "name slug image"
+  );
   if (!store) throw ApiError.notFound("Store not found");
 
   // Sync role to better-auth's user collection

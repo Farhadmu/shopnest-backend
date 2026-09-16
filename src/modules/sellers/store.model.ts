@@ -1,5 +1,6 @@
 import { Schema, model, Types } from "mongoose";
 import { applyToJSON } from "../../utils/model-plugins";
+import Category from "../categories/category.model";
 
 export type StoreStatus = "pending" | "approved" | "rejected" | "suspended";
 
@@ -17,7 +18,7 @@ export interface IStore {
     businessAddress?: string;
     nidOrTradeLicense?: string;
     taxId?: string;
-    category?: string;
+    categoryId?: Types.ObjectId;
     payoutMethod?: "bank" | "bkash" | "nagad" | "rocket" | string;
     payoutAccountNumber?: string;
     payoutAccountName?: string;
@@ -49,7 +50,7 @@ const storeSchema = new Schema<IStore>(
       businessAddress: String,
       nidOrTradeLicense: String,
       taxId: String,
-      category: String,
+      categoryId: { type: Schema.Types.ObjectId, ref: 'Category' },
       payoutMethod: String,
       payoutAccountNumber: String,
       payoutAccountName: String,
@@ -66,6 +67,30 @@ const storeSchema = new Schema<IStore>(
   },
   { timestamps: true }
 );
+
+// Pre-save hook to migrate legacy `category` (string) to `categoryId` (ObjectId)
+storeSchema.pre('save', async function (next) {
+  const store = this as any;
+  const bi = store.businessInfo;
+  if (bi && bi.category && !bi.categoryId) {
+    // Legacy string category found, try to find matching Category by name or slug
+    try {
+      const legacyCategory = bi.category as string;
+      const matched = await Category.findOne({
+        $or: [{ name: legacyCategory }, { slug: legacyCategory.toLowerCase().replace(/\s+/g, '-') }]
+      }).select('_id').lean();
+      if (matched) {
+        bi.categoryId = matched._id;
+      }
+      // Remove legacy field
+      delete bi.category;
+    } catch {
+      // Ignore migration errors, leave categoryId unset
+      delete bi.category;
+    }
+  }
+  next();
+});
 
 applyToJSON(storeSchema);
 

@@ -815,62 +815,229 @@ export const uploadDeliveryProof = asyncHandler(async (req: Request, res: Respon
   sendSuccess(res, { deliveryProofImage: proofUrl }, "Proof of delivery uploaded successfully");
 });
 
-/** POST /delivery/requests/:id/incident - Report delivery incident */
-export const reportDeliveryIncident = asyncHandler(async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { category, severity, description, evidenceImages } = req.body as {
-    category: string;
-    severity: "low" | "medium" | "high" | "critical";
+/** POST /delivery/incidents - Report delivery incident (general or order-specific) */
+export const createDeliveryIncident = asyncHandler(async (req: Request, res: Response) => {
+  const { deliveryRequestId, orderId, category, severity, description, evidenceImages } = req.body as {
+    deliveryRequestId?: string;
+    orderId?: string;
+    category: any;
+    severity?: "low" | "medium" | "high" | "critical";
     description: string;
     evidenceImages?: string[];
   };
 
-  const deliveryRequest = await DeliveryRequest.findById(id);
-  if (!deliveryRequest) throw ApiError.notFound("Delivery request not found");
+  const userId = req.user!.id;
+  const isAdmin = req.user!.role === "admin";
 
-  if (deliveryRequest.assignedDeliveryManId !== req.user!.id && req.user!.role !== "admin") {
-    throw ApiError.forbidden("You can only report incidents for your assigned deliveries");
+  let linkedDelivery: any = null;
+  const targetDelId = deliveryRequestId || orderId;
+
+  if (targetDelId && targetDelId !== "general") {
+    const isObjId = mongoose.isValidObjectId(targetDelId);
+    linkedDelivery = await DeliveryRequest.findOne({
+      $or: [
+        ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(targetDelId) }] : []),
+        { orderId: targetDelId },
+      ],
+    });
+
+    if (linkedDelivery) {
+      if (linkedDelivery.assignedDeliveryManId !== userId && !isAdmin) {
+        throw ApiError.forbidden("You can only report incidents for your assigned deliveries");
+      }
+    }
   }
 
   const incident = await DeliveryIncident.create({
-    deliveryRequestId: deliveryRequest.id,
-    orderId: deliveryRequest.orderId,
-    deliveryManId: req.user!.id,
+    deliveryRequestId: linkedDelivery?.id || (deliveryRequestId && deliveryRequestId !== "general" ? deliveryRequestId : undefined),
+    orderId: linkedDelivery?.orderId || orderId || undefined,
+    deliveryManId: userId,
     category,
-    severity,
+    severity: severity || "medium",
     description,
     evidenceImages: evidenceImages || [],
     status: "open",
   });
 
-  emitDeliveryEvent(deliveryRequest.id, "delivery:incident_reported", {
-    deliveryId: deliveryRequest.id,
-    orderId: deliveryRequest.orderId,
-    incident: incident.toJSON(),
-  });
+  if (linkedDelivery) {
+    emitDeliveryEvent(linkedDelivery.id, "delivery:incident_reported", {
+      deliveryId: linkedDelivery.id,
+      orderId: linkedDelivery.orderId,
+      incident: incident.toJSON(),
+    });
+
+    createNotification({
+      userId: linkedDelivery.sellerId,
+      type: "incident_alert",
+      category: "delivery",
+      priority: severity === "critical" ? "high" : "warning",
+      source: "delivery",
+      title: "Delivery Incident Reported",
+      message: `An incident (${category.replace(/_/g, " ")}) was reported for order #${linkedDelivery.orderId}.`,
+      link: `/dashboard/seller/orders`,
+      relatedId: incident.id,
+      relatedType: "delivery",
+    }).catch(() => undefined);
+  }
 
   emitAdminOperationsEvent("admin:incident_reported", {
     incidentId: incident.id,
-    deliveryId: deliveryRequest.id,
+    deliveryId: linkedDelivery?.id,
     category,
-    severity,
+    severity: severity || "medium",
+    riderId: userId,
   });
 
-  // Notify seller
-  createNotification({
-    userId: deliveryRequest.sellerId,
-    type: "incident_alert",
-    category: "delivery",
-    priority: severity === "critical" ? "high" : "warning",
-    source: "delivery",
-    title: "Delivery Incident Reported",
-    message: `An incident (${category.replace(/_/g, " ")}) was reported for order #${deliveryRequest.orderId}.`,
-    link: `/dashboard/seller/orders`,
-    relatedId: incident.id,
-    relatedType: "delivery",
-  }).catch(() => undefined);
+  sendSuccess(res, { incident: incident.toJSON() }, "Incident reported successfully", 201);
+});
+
+/** POST /delivery/requests/:id/incident - Backward compatible delivery incident route */
+export const reportDeliveryIncident = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { category, severity, description, evidenceImages } = req.body as {
+    category: any;
+    severity?: "low" | "medium" | "high" | "critical";
+    description: string;
+    evidenceImages?: string[];
+  };
+
+  const userId = req.user!.id;
+  const isAdmin = req.user!.role === "admin";
+
+  let linkedDelivery: any = null;
+
+  if (id && id !== "general") {
+    const isObjId = mongoose.isValidObjectId(id);
+    linkedDelivery = await DeliveryRequest.findOne({
+      $or: [
+        ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(id) }] : []),
+        { orderId: id },
+      ],
+    });
+
+    if (!linkedDelivery) {
+      throw ApiError.notFound("Delivery request not found");
+    }
+
+    if (linkedDelivery.assignedDeliveryManId !== userId && !isAdmin) {
+      throw ApiError.forbidden("You can only report incidents for your assigned deliveries");
+    }
+  }
+
+  const incident = await DeliveryIncident.create({
+    deliveryRequestId: linkedDelivery?.id || (id !== "general" ? id : undefined),
+    orderId: linkedDelivery?.orderId,
+    deliveryManId: userId,
+    category,
+    severity: severity || "medium",
+    description,
+    evidenceImages: evidenceImages || [],
+    status: "open",
+  });
+
+  if (linkedDelivery) {
+    emitDeliveryEvent(linkedDelivery.id, "delivery:incident_reported", {
+      deliveryId: linkedDelivery.id,
+      orderId: linkedDelivery.orderId,
+      incident: incident.toJSON(),
+    });
+
+    createNotification({
+      userId: linkedDelivery.sellerId,
+      type: "incident_alert",
+      category: "delivery",
+      priority: severity === "critical" ? "high" : "warning",
+      source: "delivery",
+      title: "Delivery Incident Reported",
+      message: `An incident (${category.replace(/_/g, " ")}) was reported for order #${linkedDelivery.orderId}.`,
+      link: `/dashboard/seller/orders`,
+      relatedId: incident.id,
+      relatedType: "delivery",
+    }).catch(() => undefined);
+  }
+
+  emitAdminOperationsEvent("admin:incident_reported", {
+    incidentId: incident.id,
+    deliveryId: linkedDelivery?.id,
+    category,
+    severity: severity || "medium",
+    riderId: userId,
+  });
 
   sendSuccess(res, { incident: incident.toJSON() }, "Incident reported successfully", 201);
+});
+
+/** GET /delivery/seller/active-deliveries - Real-time active deliveries scoped strictly to seller */
+export const getSellerActiveDeliveries = asyncHandler(async (req: Request, res: Response) => {
+  const sellerId = req.user!.id;
+  const { status } = req.query as { status?: string };
+
+  const filter: Record<string, unknown> = {
+    sellerId,
+  };
+
+  if (status && status !== "all") {
+    filter.status = status;
+  } else {
+    filter.status = {
+      $in: ["available", "assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery", "delivered"],
+    };
+  }
+
+  const deliveries = await DeliveryRequest.find(filter)
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
+
+  const riderIds = deliveries
+    .map((d) => d.assignedDeliveryManId)
+    .filter((id): id is string => Boolean(id));
+
+  const [riderDetails, riderProfiles] = await Promise.all([
+    DeliveryManDetails.find({ userId: { $in: riderIds } }).lean(),
+    DeliveryManProfile.find({ userId: { $in: riderIds } }).lean(),
+  ]);
+
+  const detailsMap = new Map(riderDetails.map((d) => [d.userId, d]));
+  const profileMap = new Map(riderProfiles.map((p) => [p.userId, p]));
+
+  const enrichedDeliveries = deliveries.map((d) => {
+    let assignedRider: any = null;
+    let currentLocation: any = null;
+
+    if (d.assignedDeliveryManId) {
+      const details = detailsMap.get(d.assignedDeliveryManId);
+      const profile = profileMap.get(d.assignedDeliveryManId);
+
+      assignedRider = {
+        name: details?.personal?.fullName || "Assigned Courier",
+        phone: details?.personal?.phone,
+        rating: details?.rating || 5.0,
+        vehicleType: details?.vehicle?.vehicleType || "Motorcycle",
+        status: profile?.status || "approved",
+      };
+
+      const isLive = ["picked_up", "in_transit", "out_for_delivery"].includes(d.status);
+      if (isLive && details?.currentLocation?.latitude !== undefined) {
+        currentLocation = {
+          latitude: details.currentLocation.latitude,
+          longitude: details.currentLocation.longitude,
+          speed: details.currentLocation.speed,
+          updatedAt: details.currentLocation.updatedAt,
+        };
+      }
+    }
+
+    return {
+      ...normalizeLean(d as unknown as Record<string, unknown>),
+      pickupCoordinates: getApproxCoordinatesFromAddress(d.pickupAddress),
+      deliveryCoordinates: getApproxCoordinatesFromAddress(d.deliveryAddress),
+      assignedRider,
+      currentLocation,
+    };
+  });
+
+  sendSuccess(res, enrichedDeliveries);
 });
 
 /** GET /delivery/incidents - List incidents for authenticated delivery man */
@@ -996,9 +1163,9 @@ export const getDeliveryTracking = asyncHandler(async (req: Request, res: Respon
   });
 });
 
-/** POST /delivery/requests/:id/rate - Customer rates delivery partner */
+/** POST /delivery/requests/:id/rate or POST /delivery/orders/:orderId/rate - Customer rates delivery partner */
 export const rateDelivery = asyncHandler(async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const targetId = req.params.id || req.params.orderId;
   const { rating, professionalism, timeliness, communication, comment } = req.body as {
     rating: number;
     professionalism?: number;
@@ -1007,30 +1174,68 @@ export const rateDelivery = asyncHandler(async (req: Request, res: Response) => 
     comment?: string;
   };
 
-  if (rating < 1 || rating > 5) {
+  if (!rating || rating < 1 || rating > 5) {
     throw ApiError.badRequest("Rating must be between 1 and 5");
   }
 
-  const deliveryRequest = await DeliveryRequest.findById(id);
-  if (!deliveryRequest) throw ApiError.notFound("Delivery request not found");
+  // 1. Try to find delivery request by _id OR orderId
+  const isObjId = mongoose.isValidObjectId(targetId);
+  let deliveryRequest = await DeliveryRequest.findOne({
+    $or: [
+      ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(targetId) }] : []),
+      { orderId: targetId },
+    ],
+  });
 
-  if (deliveryRequest.status !== "delivered") {
+  let orderDoc: any = null;
+  if (!deliveryRequest) {
+    orderDoc = await Order.findOne({
+      $or: [
+        ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(targetId) }] : []),
+        { id: targetId },
+      ],
+    });
+    if (!orderDoc) {
+      throw ApiError.notFound("Delivery record or order not found");
+    }
+  } else {
+    orderDoc = await Order.findById(deliveryRequest.orderId);
+  }
+
+  const effectiveDeliveryManId = deliveryRequest?.assignedDeliveryManId || orderDoc?.deliveryManId;
+  const isDelivered = deliveryRequest?.status === "delivered" || orderDoc?.status === "delivered";
+  const customerId = deliveryRequest?.customerId || orderDoc?.userId;
+
+  if (!effectiveDeliveryManId) {
+    throw ApiError.badRequest("Delivery Man rating is unavailable for this order.");
+  }
+
+  if (!isDelivered) {
     throw ApiError.badRequest("You can only rate a completed delivery");
   }
 
-  if (deliveryRequest.customerId !== req.user!.id && req.user!.role !== "admin") {
+  if (customerId !== req.user!.id && req.user!.role !== "admin") {
     throw ApiError.forbidden("Only the customer of this order can submit a rating");
   }
 
-  const existing = await DeliveryRating.findOne({ deliveryRequestId: deliveryRequest.id });
+  const orderIdStr = String(deliveryRequest?.orderId || orderDoc?._id || targetId);
+  const deliveryReqIdStr = deliveryRequest ? String(deliveryRequest._id) : orderIdStr;
+
+  // Check for duplicate rating by deliveryRequestId OR orderId
+  const existing = await DeliveryRating.findOne({
+    $or: [
+      { deliveryRequestId: deliveryReqIdStr },
+      { orderId: orderIdStr },
+    ],
+  });
   if (existing) {
-    throw ApiError.badRequest("You have already rated this delivery partner");
+    throw ApiError.badRequest("You have already rated this delivery partner for this order");
   }
 
-  await DeliveryRating.create({
-    deliveryRequestId: deliveryRequest.id,
-    orderId: deliveryRequest.orderId,
-    deliveryManId: deliveryRequest.assignedDeliveryManId,
+  const savedRating = await DeliveryRating.create({
+    deliveryRequestId: deliveryReqIdStr,
+    orderId: orderIdStr,
+    deliveryManId: effectiveDeliveryManId,
     customerId: req.user!.id,
     rating,
     professionalism: professionalism ?? rating,
@@ -1041,7 +1246,7 @@ export const rateDelivery = asyncHandler(async (req: Request, res: Response) => 
 
   // Recompute rider aggregate rating
   const stats = await DeliveryRating.aggregate([
-    { $match: { deliveryManId: deliveryRequest.assignedDeliveryManId } },
+    { $match: { deliveryManId: effectiveDeliveryManId } },
     {
       $group: {
         _id: null,
@@ -1055,11 +1260,22 @@ export const rateDelivery = asyncHandler(async (req: Request, res: Response) => 
   const count = stats[0]?.count ?? 1;
 
   await DeliveryManDetails.updateOne(
-    { userId: deliveryRequest.assignedDeliveryManId },
+    { userId: effectiveDeliveryManId },
     { rating: Math.round(avg * 10) / 10, ratingCount: count }
   );
 
-  sendSuccess(res, { rating, professionalism, timeliness, communication, comment }, "Thank you! Rating submitted successfully.");
+  sendSuccess(
+    res,
+    {
+      rating: savedRating.rating,
+      professionalism: savedRating.professionalism,
+      timeliness: savedRating.timeliness,
+      communication: savedRating.communication,
+      comment: savedRating.comment,
+      createdAt: savedRating.createdAt,
+    },
+    "Thank you! Rating submitted successfully."
+  );
 });
 
 /** GET /delivery/stats - Real computed metrics for rider */

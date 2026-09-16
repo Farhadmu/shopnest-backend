@@ -1,6 +1,6 @@
 import { Schema, model, Types } from "mongoose";
 import { applyToJSON } from "../../utils/model-plugins";
-import Category from "../categories/category.model";
+import { Category } from "../categories/category.model";
 
 export type StoreStatus = "pending" | "approved" | "rejected" | "suspended";
 

@@ -276,41 +276,78 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
 
               io.to(deliveryRoom).emit("delivery:location_update", liveLocationPayload);
 
-              // ─── Geofencing Telemetry Check ───────────────────────────────
+              // ─── Geofencing Telemetry Checks ─────────────────────────────
               if (!authSocket.data.geofenceState) {
                 authSocket.data.geofenceState = {};
               }
 
-              // Check dropoff destination geofence (~250m approaching radius)
-              const dropCoords = getApproxCoordinatesFromAddress(activeReq.deliveryAddress);
-              if (dropCoords && !authSocket.data.geofenceState.dropoffNotified) {
-                const distToDrop = calculateDistanceMeters(
-                  latitude,
-                  longitude,
-                  dropCoords.latitude,
-                  dropCoords.longitude
-                );
-                if (distToDrop <= 250) {
-                  authSocket.data.geofenceState.dropoffNotified = true;
-                  io.to(deliveryRoom).emit("geofence:approaching_customer", {
-                    deliveryId: activeReq.id,
-                    orderId: activeReq.orderId,
-                    distanceMeters: distToDrop,
-                    message: "Courier is approaching your delivery destination!",
-                  });
+              // 1. Pickup Geofence Check (Store Pickup Proximity)
+              if (["assigned", "pickup_started"].includes(activeReq.status)) {
+                const pickCoords = getApproxCoordinatesFromAddress(activeReq.pickupAddress);
+                if (pickCoords && !authSocket.data.geofenceState.pickupNotified) {
+                  const distToPickup = calculateDistanceMeters(
+                    latitude,
+                    longitude,
+                    pickCoords.latitude,
+                    pickCoords.longitude
+                  );
+                  if (distToPickup <= 300) {
+                    authSocket.data.geofenceState.pickupNotified = true;
+                    io.to(deliveryRoom).emit("geofence:approaching_pickup", {
+                      deliveryId: activeReq.id,
+                      orderId: activeReq.orderId,
+                      distanceMeters: distToPickup,
+                      message: "Courier is approaching the pickup store location!",
+                    });
 
-                  createNotification({
-                    userId: activeReq.customerId,
-                    type: "delivery_alert",
-                    category: "delivery",
-                    priority: "info",
-                    source: "delivery",
-                    title: "Courier is Nearby",
-                    message: `Your courier is within 250m of your delivery address for order #${activeReq.orderId}. Please be ready with your OTP.`,
-                    link: `/orders/${activeReq.orderId}`,
-                    relatedId: activeReq.orderId,
-                    relatedType: "order",
-                  }).catch(() => undefined);
+                    createNotification({
+                      userId: activeReq.sellerId,
+                      type: "delivery_alert",
+                      category: "delivery",
+                      priority: "info",
+                      source: "delivery",
+                      title: "Courier is Arriving for Pickup",
+                      message: `Your delivery partner is within 300m of your pickup address for order #${activeReq.orderId}. Please have the package ready.`,
+                      link: `/dashboard/seller/orders`,
+                      relatedId: activeReq.orderId,
+                      relatedType: "order",
+                    }).catch(() => undefined);
+                  }
+                }
+              }
+
+              // 2. Customer Dropoff Destination Geofence Check (~300m approaching radius)
+              if (["picked_up", "in_transit", "out_for_delivery"].includes(activeReq.status)) {
+                const dropCoords = getApproxCoordinatesFromAddress(activeReq.deliveryAddress);
+                if (dropCoords && !authSocket.data.geofenceState.dropoffNotified) {
+                  const distToDrop = calculateDistanceMeters(
+                    latitude,
+                    longitude,
+                    dropCoords.latitude,
+                    dropCoords.longitude
+                  );
+                  if (distToDrop <= 300) {
+                    authSocket.data.geofenceState.dropoffNotified = true;
+                    io.to(deliveryRoom).emit("geofence:approaching_customer", {
+                      deliveryId: activeReq.id,
+                      orderId: activeReq.orderId,
+                      distanceMeters: distToDrop,
+                      message: "Courier is approaching your delivery destination!",
+                    });
+
+                    createNotification({
+                      userId: activeReq.customerId,
+                      type: "delivery_alert",
+                      category: "delivery",
+                      priority: "info",
+                      source: "delivery",
+                      title: "Courier is Nearby",
+                      message: `Your courier is within 300m of your delivery address for order #${activeReq.orderId}. Please be ready with your OTP.`,
+                      link: `/orders/${activeReq.orderId}`,
+                      relatedId: activeReq.orderId,
+                      relatedType: "order",
+                    }).catch(() => undefined);
+                  }
                 }
               }
 

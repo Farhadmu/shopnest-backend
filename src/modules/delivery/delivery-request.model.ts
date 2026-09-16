@@ -50,6 +50,8 @@ export interface IDeliveryRequest {
   sellerNotes?: string;
   cancellationReason?: string;
   cancelledBy?: string;
+  geofenceStatus?: "none" | "approaching_pickup" | "arrived_pickup" | "approaching_dropoff" | "arrived_dropoff";
+  attemptCount?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -112,14 +114,21 @@ const deliveryRequestSchema = new Schema<IDeliveryRequest>(
     sellerNotes: { type: String },
     cancellationReason: { type: String },
     cancelledBy: { type: String },
+    geofenceStatus: {
+      type: String,
+      enum: ["none", "approaching_pickup", "arrived_pickup", "approaching_dropoff", "arrived_dropoff"],
+      default: "none",
+    },
+    attemptCount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
 
 deliveryRequestSchema.index({ status: 1, assignedDeliveryManId: 1 });
-deliveryRequestSchema.index({ sellerId: 1, status: 1 });
-deliveryRequestSchema.index({ customerId: 1, status: 1 });
-deliveryRequestSchema.index({ assignedDeliveryManId: 1, status: 1 });
+deliveryRequestSchema.index({ status: 1, priority: -1, createdAt: -1 });
+deliveryRequestSchema.index({ assignedDeliveryManId: 1, status: 1, createdAt: -1 });
+deliveryRequestSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
+deliveryRequestSchema.index({ customerId: 1, status: 1, createdAt: -1 });
 
 applyToJSON(deliveryRequestSchema);
 

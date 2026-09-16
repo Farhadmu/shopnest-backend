@@ -11,6 +11,7 @@ import {
   updateDeliveryStatusSchema,
   verifyOtpSchema,
   reportIncidentSchema,
+  createIncidentSchema,
   rateDeliverySchema,
 } from "../../schemas/delivery.schema";
 import { idParamSchema } from "../../schemas/product.schema";
@@ -84,6 +85,14 @@ router.post(
   deliveryProofUpload.single("proofImage"),
   ctrl.uploadDeliveryProof
 );
+
+// Delivery Incidents
+router.post(
+  "/incidents",
+  requireRole("delivery_man", "admin"),
+  validate({ body: createIncidentSchema }),
+  ctrl.createDeliveryIncident
+);
 router.post(
   "/requests/:id/incident",
   requireRole("delivery_man", "admin"),
@@ -92,12 +101,21 @@ router.post(
 );
 router.get("/incidents", requireRole("delivery_man"), ctrl.getMyIncidents);
 
+// Seller Active Deliveries Scoped View
+router.get("/seller/active-deliveries", requireRole("seller", "admin"), ctrl.getSellerActiveDeliveries);
+
 // Customer Live Tracking & Rating
 router.get("/tracking/:orderId", ctrl.getDeliveryTracking);
 router.post(
   "/requests/:id/rate",
   requireRole("customer", "admin"),
   validate({ params: idParamSchema, body: rateDeliverySchema }),
+  ctrl.rateDelivery
+);
+router.post(
+  "/orders/:orderId/rate",
+  requireRole("customer", "admin"),
+  validate({ body: rateDeliverySchema }),
   ctrl.rateDelivery
 );
 

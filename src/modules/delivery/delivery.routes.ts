@@ -18,9 +18,14 @@ import { idParamSchema } from "../../schemas/product.schema";
 
 const router = Router();
 
+// All delivery routes require base JWT authentication
 router.use(...requireAuth);
 
-// Document upload (delivery men & applicants)
+/**
+ * @route   POST /delivery/upload-document
+ * @desc    Upload KYC, NID, license, or vehicle documents
+ * @access  Delivery Man, Customer (Applicant), Admin
+ */
 router.post(
   "/upload-document",
   requireRole("delivery_man", "customer", "admin"),

@@ -141,6 +141,28 @@ export const reportIncidentSchema = z.object({
   evidenceImages: z.array(z.string()).optional(),
 });
 
+export const createIncidentSchema = z.object({
+  deliveryRequestId: z.string().optional(),
+  orderId: z.string().optional(),
+  category: z.enum([
+    "customer_unavailable",
+    "wrong_address",
+    "customer_refused",
+    "cannot_contact_customer",
+    "access_problem",
+    "vehicle_problem",
+    "accident",
+    "package_issue",
+    "seller_issue",
+    "safety_issue",
+    "technical_issue",
+    "other",
+  ]),
+  severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
+  description: z.string().min(5, "Description is required"),
+  evidenceImages: z.array(z.string()).optional(),
+});
+
 export const rateDeliverySchema = z.object({
   rating: z.number().int().min(1, "Rating must be at least 1").max(5, "Rating must be at most 5"),
   professionalism: z.number().int().min(1).max(5).optional(),

@@ -25,6 +25,7 @@ export interface IProduct {
   storeSuspended: boolean;
   freeDelivery: boolean;
   aiPick: boolean;
+  isFeatured: boolean;
   warrantyMonths?: number;
   warrantyProvider?: string;
   sentiment?: { positive: number; neutral: number; negative: number };
@@ -54,6 +55,7 @@ const productSchema = new Schema<IProduct>(
     isDeleted: { type: Boolean, default: false, index: true },
     freeDelivery: { type: Boolean, default: false, index: true },
     aiPick: { type: Boolean, default: false, index: true },
+    isFeatured: { type: Boolean, default: false, index: true },
     warrantyMonths: { type: Number, min: 0 },
     warrantyProvider: { type: String },
     sentiment: {
@@ -68,6 +70,7 @@ const productSchema = new Schema<IProduct>(
 productSchema.index({ title: "text", description: "text", tags: "text" });
 productSchema.index({ createdAt: 1 });
 productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, createdAt: -1 });
+productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, isFeatured: 1, createdAt: -1 });
 productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, category: 1, createdAt: -1 });
 productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, price: 1 });
 productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, ratingAvg: -1 });

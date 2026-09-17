@@ -10,9 +10,14 @@ export const createProductSchema = z.object({
   discountPrice: z.coerce.number().nonnegative().optional().nullable(),
   tags: z.array(z.string()).optional().default([]),
   specifications: z.record(z.string(), z.any()).optional().default({}),
+  isFeatured: z.boolean().optional().default(false),
 });
 
 export const updateProductSchema = createProductSchema.partial();
+
+export const updateFeaturedSchema = z.object({
+  isFeatured: z.boolean({ required_error: "isFeatured is required" }),
+});
 
 export const listProductsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -29,6 +34,7 @@ export const listProductsQuerySchema = z.object({
   inStock: z.string().optional(),
   freeDelivery: z.string().optional(),
   aiPick: z.string().optional(),
+  isFeatured: z.string().optional(),
   minPrice: z.coerce.number().nonnegative().optional(),
   maxPrice: z.coerce.number().nonnegative().optional(),
   sort: z.enum(["newest", "price_asc", "price_desc", "rating", "popular"]).optional(),

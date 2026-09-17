@@ -64,7 +64,7 @@ export async function resizeImageFromUrl(
   }
 
   const contentType = response.headers.get("content-type");
-  if (!isSupportedImage(contentType)) {
+  if (!isSupportedImage(contentType ?? undefined)) {
     throw new Error(`Unsupported image type: ${contentType}`);
   }
 

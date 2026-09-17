@@ -9,6 +9,7 @@ import {
   idParamSchema,
   listProductsQuerySchema,
   productCountsQuerySchema,
+  updateFeaturedSchema,
   updateProductSchema,
 } from "../../schemas/product.schema";
 import { createReviewSchema } from "../../schemas/review.schema";
@@ -24,8 +25,9 @@ router.get(
   ctrl.getCategoryCounts
 );
 
-// Trending products must be registered BEFORE `:id` so it is not captured as a product id.
+// Trending and featured products must be registered BEFORE `:id` so it is not captured as a product id.
 router.get("/trending", ctrl.getTrendingProducts);
+router.get("/featured", ctrl.getFeaturedProducts);
 
 // Seller's own catalog — ownership enforced server-side from the session.
 router.get("/mine", ...requireAuth, requireRole("seller", "admin"), ctrl.listMyProducts);
@@ -36,7 +38,6 @@ router.post(
   "/",
   ...requireAuth,
   requireRole("seller", "admin"),
-  (req, _res, next) => { console.log("📥 [POST /products] Body:", JSON.stringify(req.body)); next(); },
   validate({ body: createProductSchema }),
   ctrl.createProduct
 );
@@ -49,6 +50,13 @@ router.put(
 );
 router.delete("/:id", ...requireAuth, requireRole("seller", "admin"), validate({ params: idParamSchema }), ctrl.deleteProduct);
 router.patch("/:id/moderate", ...requireAuth, requireRole("admin"), validate({ params: idParamSchema }), ctrl.moderateProduct);
+router.patch(
+  "/:id/featured",
+  ...requireAuth,
+  requireRole("admin"),
+  validate({ params: idParamSchema, body: updateFeaturedSchema }),
+  ctrl.updateFeaturedProduct
+);
 
 // Nested reviews: GET/POST /products/:id/reviews
 router.get("/:id/reviews", validate({ params: idParamSchema }), reviewCtrl.listProductReviews);

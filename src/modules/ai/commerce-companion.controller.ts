@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { AiConversation } from "./advisor/conversation.model";
+import { AiConversation, sanitizeAiConversationMessages } from "./advisor/conversation.model";
 import { completeWithContext, AiContext } from "./providers/claude.provider";
 import { COMMERCE_COMPANION_SYSTEM, buildCompanionUserPrompt } from "./commerce-companion.prompts";
 import {
@@ -160,6 +160,8 @@ export const chat = asyncHandler(async (req: Request, res: Response) => {
       : null;
     if (!conversation) {
       conversation = await AiConversation.create({ userId, messages: [] });
+    } else {
+      conversation.messages = sanitizeAiConversationMessages(conversation.messages || []);
     }
     conversation.messages.push({ role: "user", content: message, at: new Date() });
   }
@@ -410,7 +412,6 @@ export const chat = asyncHandler(async (req: Request, res: Response) => {
       contextReferences: contextReferences as any,
       products: structuredData.products as any,
       orders: structuredData.orders as any,
-      actions,
     } as any);
     await conversation.save();
   }

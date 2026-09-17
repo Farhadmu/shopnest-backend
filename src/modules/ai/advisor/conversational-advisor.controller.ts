@@ -6,7 +6,7 @@
  */
 
 import { Request, Response } from "express";
-import { AiConversation } from "./conversation.model";
+import { AiConversation, sanitizeAiConversationMessages } from "./conversation.model";
 import { 
   ConversationState, 
   createInitialState, 
@@ -58,6 +58,23 @@ interface ConversationalResponse {
   clarificationNeeded?: boolean;
 }
 
+type ContextReference = {
+  id: string;
+  type: string;
+  title: string;
+};
+
+function toContextReference(value: unknown): ContextReference | null {
+  if (!value || typeof value !== "object") return null;
+
+  const candidate = value as Record<string, unknown>;
+  const id = typeof candidate.id === "string" ? candidate.id : null;
+  const type = typeof candidate.type === "string" ? candidate.type : null;
+  const title = typeof candidate.title === "string" ? candidate.title : null;
+
+  return id && type && title ? { id, type, title } : null;
+}
+
 export const conversationalChat = asyncHandler(async (req: Request, res: Response) => {
   const { message, conversationId } = req.body as {
     message: string;
@@ -84,6 +101,11 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
         conversationState: createInitialState(),
         turnCount: 0,
       });
+    } else {
+      // Older persisted messages can contain metadata written before the
+      // context-reference sub-schema existed. Normalize before mutating so a
+      // legacy record never blocks the current conversation with a CastError.
+      conversation.messages = sanitizeAiConversationMessages(conversation.messages || []);
     }
   } else {
     // Guest conversation (not persisted)
@@ -128,7 +150,7 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
     delivery?: any;
     returnEligibility?: any;
   } = {};
-  const contextReferences: any[] = [];
+  const contextReferences: ContextReference[] = [];
   const actions: any[] = [];
   
   // Detect topic switch
@@ -252,7 +274,8 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
           toolResults.push(
             `${idx + 1}. [${p.id}] ${p.title} | ৳${p.price} | ${p.category} | ${p.ratingAvg}/5 stars | stock: ${p.stock}`
           );
-          contextReferences.push({ id: p.id, type: "product", title: p.title });
+          const contextReference = toContextReference({ id: p.id, type: "product", title: p.title });
+          if (contextReference) contextReferences.push(contextReference);
           
           // Add to referenced products for future resolution
           state = addReferencedProduct(state, p, idx + 1, turnNumber);
@@ -287,7 +310,8 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
           toolResults.push(
             `- Order #${o.id.slice(-6)} | ৳${o.totalAmount} | ${o.status} | ${new Date(o.createdAt).toLocaleDateString()}`
           );
-          contextReferences.push({ id: o.id, type: "order", title: `Order ${o.id.slice(-6)}` });
+          const contextReference = toContextReference({ id: o.id, type: "order", title: `Order ${o.id.slice(-6)}` });
+          if (contextReference) contextReferences.push(contextReference);
         });
       } else {
         toolResults.push("You have no orders yet.");
@@ -498,7 +522,7 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
       totalAmount: o.totalAmount,
       position: idx + 1,
     })),
-    contextReferences,
+    contextReferences: contextReferences.length > 0 ? contextReferences : undefined,
   };
   conversation.messages.push(assistantMessage);
   

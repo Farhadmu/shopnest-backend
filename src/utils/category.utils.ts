@@ -1,10 +1,18 @@
 import { Category } from "../modules/categories/category.model";
 
-/**
- * Resolves a category name or slug to itself plus all subcategory names.
- * For example, resolving "Electronics" will also return "Phones" and "Laptops".
- */
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const cache = new Map<string, { value: string[]; expiresAt: number }>();
+
+export function invalidateCategoryCache(): void {
+  cache.clear();
+}
+
 export async function resolveCategoryNames(categoryNameOrSlug: string): Promise<string[]> {
+  const cached = cache.get(categoryNameOrSlug);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   const root = await Category.findOne({
     $or: [
       { name: { $regex: `^${categoryNameOrSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } },
@@ -14,7 +22,10 @@ export async function resolveCategoryNames(categoryNameOrSlug: string): Promise<
     .select("_id name")
     .lean();
 
-  if (!root) return [categoryNameOrSlug];
+  if (!root) {
+    cache.set(categoryNameOrSlug, { value: [categoryNameOrSlug], expiresAt: Date.now() + CACHE_TTL_MS });
+    return [categoryNameOrSlug];
+  }
 
   const allCategories = await Category.find().select("_id name parent").lean();
   const byParent = new Map<string, { _id: unknown; name: string }[]>();
@@ -37,5 +48,6 @@ export async function resolveCategoryNames(categoryNameOrSlug: string): Promise<
     }
   }
 
+  cache.set(categoryNameOrSlug, { value: names, expiresAt: Date.now() + CACHE_TTL_MS });
   return names;
 }

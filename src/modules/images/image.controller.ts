@@ -17,9 +17,13 @@ export const resizeImage = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const buffer = await resizeImageFromUrl(imageUrl, { width, format });
-
-  res.set("Content-Type", `image/${format}`);
-  res.set("Cache-Control", "public, max-age=86400");
-  res.send(buffer);
+  try {
+    const buffer = await resizeImageFromUrl(imageUrl, { width, format });
+    res.set("Content-Type", `image/${format}`);
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(buffer);
+  } catch {
+    // If resizing fails for any reason, safely redirect directly to the original image
+    res.redirect(imageUrl);
+  }
 });

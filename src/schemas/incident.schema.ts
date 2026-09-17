@@ -6,7 +6,7 @@ export const incidentIdParamSchema = z.object({
 
 export const createIncidentSchema = z.object({
   title: z.string().min(1, "Title is required").max(200),
-  description: z.string().max(2000).optional(),
+  description: z.string().max(500, "Description must be 500 characters or fewer"),
   type: z.enum([
     "suspicious_login",
     "account_takeover",
@@ -20,9 +20,19 @@ export const createIncidentSchema = z.object({
     "session_anomaly",
     "data_access_anomaly",
     "system_security_incident",
+    "complaint_order",
+    "complaint_payment",
+    "complaint_product",
+    "complaint_seller",
+    "complaint_delivery",
+    "complaint_refund",
+    "complaint_return",
+    "complaint_account",
+    "complaint_technical",
+    "complaint_other",
     "other",
   ]).optional(),
-  source: z.enum(["manual", "suspicious_activity", "anomaly", "risk_signal", "security_log"]).optional(),
+  source: z.enum(["manual", "suspicious_activity", "anomaly", "risk_signal", "security_log", "customer", "delivery_man", "seller"]).optional(),
   entityType: z.enum(["user", "seller", "order", "system", "ip_cluster"]),
   entityId: z.string().min(1),
   entityName: z.string().min(1),
@@ -38,6 +48,11 @@ export const createIncidentSchema = z.object({
   relatedSecurityEvents: z.array(z.string()).optional(),
   relatedRiskSignals: z.array(z.string()).optional(),
   detectedAt: z.coerce.date().optional(),
+  orderId: z.string().optional(),
+  productId: z.string().optional(),
+  deliveryId: z.string().optional(),
+  sellerId: z.string().optional(),
+  attachments: z.array(z.string()).optional(),
 });
 
 export const incidentStatusSchema = z.object({
@@ -93,7 +108,7 @@ export const incidentQuerySchema = z.object({
   ]).optional(),
   severity: z.enum(["low", "medium", "high", "critical"]).optional(),
   type: z.string().optional(),
-  source: z.string().optional(),
+  source: z.enum(["manual", "suspicious_activity", "anomaly", "risk_signal", "security_log", "customer", "delivery_man", "seller"]).optional(),
   assignedTo: z.string().optional(),
   search: z.string().optional(),
   sortBy: z.enum(["createdAt", "updatedAt", "severity", "riskScore", "detectedAt"]).optional(),

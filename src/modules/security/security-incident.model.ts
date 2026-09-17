@@ -27,9 +27,19 @@ export type IncidentType =
   | "session_anomaly"
   | "data_access_anomaly"
   | "system_security_incident"
+  | "complaint_order"
+  | "complaint_payment"
+  | "complaint_product"
+  | "complaint_seller"
+  | "complaint_delivery"
+  | "complaint_refund"
+  | "complaint_return"
+  | "complaint_account"
+  | "complaint_technical"
+  | "complaint_other"
   | "other";
 
-export type IncidentSource = "manual" | "suspicious_activity" | "anomaly" | "risk_signal" | "security_log";
+export type IncidentSource = "manual" | "suspicious_activity" | "anomaly" | "risk_signal" | "security_log" | "customer" | "delivery_man" | "seller";
 
 export interface IIncidentNote {
   authorId: string;
@@ -89,6 +99,11 @@ export interface ISecurityIncident {
   history: IIncidentHistoryItem[];
   relatedSecurityEvents: Types.ObjectId[];
   relatedRiskSignals: Types.ObjectId[];
+  orderId?: string;
+  productId?: string;
+  deliveryId?: string;
+  sellerId?: string;
+  attachments: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -152,6 +167,16 @@ const securityIncidentSchema = new Schema<ISecurityIncident>(
         "session_anomaly",
         "data_access_anomaly",
         "system_security_incident",
+        "complaint_order",
+        "complaint_payment",
+        "complaint_product",
+        "complaint_seller",
+        "complaint_delivery",
+        "complaint_refund",
+        "complaint_return",
+        "complaint_account",
+        "complaint_technical",
+        "complaint_other",
         "other",
       ],
       default: "other",
@@ -159,7 +184,7 @@ const securityIncidentSchema = new Schema<ISecurityIncident>(
     },
     source: {
       type: String,
-      enum: ["manual", "suspicious_activity", "anomaly", "risk_signal", "security_log"],
+      enum: ["manual", "suspicious_activity", "anomaly", "risk_signal", "security_log", "customer", "delivery_man", "seller"],
       default: "manual",
       index: true,
     },
@@ -171,6 +196,11 @@ const securityIncidentSchema = new Schema<ISecurityIncident>(
     },
     entityId: { type: String, required: true, index: true },
     entityName: { type: String, required: true },
+    orderId: { type: String, index: true },
+    productId: { type: String, index: true },
+    deliveryId: { type: String, index: true },
+    sellerId: { type: String, index: true },
+    attachments: { type: [String], default: [] },
     severity: {
       type: String,
       enum: ["low", "medium", "high", "critical"],

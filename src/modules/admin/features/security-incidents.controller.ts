@@ -22,6 +22,7 @@ import {
   getRelatedRiskSignals,
   createIncidentFromSecurityLog,
   autoCreateIncidentFromAnomaly,
+  getAdminComplaintStats,
   IncidentQueryParams,
 } from "./security-incidents.service";
 import {
@@ -67,6 +68,12 @@ export const getSecurityIncidents = asyncHandler(async (req: AuthedRequest, res:
 // GET /admin/incidents/stats - Incident summary statistics
 export const getIncidentStatsRoute = asyncHandler(async (_req: Request, res: Response) => {
   const stats = await getIncidentStats();
+  sendSuccess(res, stats);
+});
+
+// GET /admin/incidents/complaint-stats - Complaint summary statistics
+export const getAdminComplaintStatsRoute = asyncHandler(async (_req: Request, res: Response) => {
+  const stats = await getAdminComplaintStats();
   sendSuccess(res, stats);
 });
 

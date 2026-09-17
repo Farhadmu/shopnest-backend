@@ -23,6 +23,7 @@ import imageRoutes from "../modules/images/image.routes";
 import stripeRoutes from "../payments/stripe/stripe.routes";
 import sslcommerzRoutes from "../payments/sslcommerz/sslcommerz.route";
 import deliveryRoutes from "../modules/delivery/delivery.routes";
+import complaintRoutes from "../modules/complaints/complaint.routes";
 
 const router = Router();
 
@@ -63,5 +64,6 @@ router.use("/images", imageRoutes);
 router.use("/payment/stripe", stripeRoutes);
 router.use("/payment/sslcommerz", sslcommerzRoutes);
 router.use("/delivery", deliveryRoutes);
+router.use("/complaints", complaintRoutes);
 
 export default router;

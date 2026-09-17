@@ -57,6 +57,16 @@ export const INCIDENT_TYPE_LABELS: Record<IncidentType, string> = {
   session_anomaly: "Session Anomaly",
   data_access_anomaly: "Data Access Anomaly",
   system_security_incident: "System Security Incident",
+  complaint_order: "Order Complaint",
+  complaint_payment: "Payment Complaint",
+  complaint_product: "Product Complaint",
+  complaint_seller: "Seller Complaint",
+  complaint_delivery: "Delivery Complaint",
+  complaint_refund: "Refund Complaint",
+  complaint_return: "Return Complaint",
+  complaint_account: "Account Complaint",
+  complaint_technical: "Technical Complaint",
+  complaint_other: "Other Complaint",
   other: "Other",
 };
 
@@ -1053,4 +1063,18 @@ function mapIncidentForDetail(incident: ISecurityIncident & { _id: Types.ObjectI
     resolvedBy: incident.resolvedBy,
     closedBy: incident.closedBy,
   };
+}
+
+export async function getAdminComplaintStats() {
+  const [total, customer, deliveryMan, seller, open, investigating, resolved] = await Promise.all([
+    SecurityIncident.countDocuments({ source: { $in: ["customer", "delivery_man", "seller"] } }),
+    SecurityIncident.countDocuments({ source: "customer" }),
+    SecurityIncident.countDocuments({ source: "delivery_man" }),
+    SecurityIncident.countDocuments({ source: "seller" }),
+    SecurityIncident.countDocuments({ source: { $in: ["customer", "delivery_man", "seller"] }, status: { $in: ["new", "open", "acknowledged", "investigating"] } }),
+    SecurityIncident.countDocuments({ source: { $in: ["customer", "delivery_man", "seller"] }, status: "investigating" }),
+    SecurityIncident.countDocuments({ source: { $in: ["customer", "delivery_man", "seller"] }, status: "resolved" }),
+  ]);
+
+  return { total, customer, deliveryMan, seller, open, investigating, resolved };
 }

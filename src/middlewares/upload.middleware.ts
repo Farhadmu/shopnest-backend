@@ -109,3 +109,27 @@ export const deliveryProofUpload = multer({
     callback(null, true);
   },
 });
+
+const complaintUploadDirectory = path.resolve(env.UPLOAD_DIR, "complaints");
+fs.mkdirSync(complaintUploadDirectory, { recursive: true });
+
+const complaintStorage = multer.diskStorage({
+  destination: (_request, _file, callback) => callback(null, complaintUploadDirectory),
+  filename: (_request, file, callback) => {
+    const extension = path.extname(file.originalname).toLowerCase() || ".jpg";
+    callback(null, `${crypto.randomUUID()}${extension}`);
+  },
+});
+
+export const complaintEvidenceUpload = multer({
+  storage: complaintStorage,
+  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024, files: 5 },
+  fileFilter: (_request, file, callback) => {
+    const allowed = ["image/jpeg", "image/png", "image/webp"];
+    if (!allowed.includes(file.mimetype)) {
+      callback(ApiError.badRequest("Only JPG, PNG, or WebP files can be uploaded"));
+      return;
+    }
+    callback(null, true);
+  },
+});

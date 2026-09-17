@@ -66,6 +66,7 @@ router.get("/fraud-alerts", fraudAlerts.getFraudAlerts);
 // 38. Security Incident Management
 router.get("/incidents", securityIncidents.getSecurityIncidents);
 router.get("/incidents/stats", securityIncidents.getIncidentStatsRoute);
+router.get("/incidents/complaint-stats", securityIncidents.getAdminComplaintStatsRoute);
 router.post("/incidents", ...requireAuth, requireRole("admin"), securityIncidents.createSecurityIncident);
 router.get("/incidents/:id", securityIncidents.getSecurityIncidentById);
 router.patch("/incidents/:id", ...requireAuth, requireRole("admin"), securityIncidents.updateSecurityIncident);

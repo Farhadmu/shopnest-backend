@@ -3,11 +3,20 @@ import sharp from "sharp";
 const IMAGE_RESIZE_CACHE_TTL_MS = 10 * 60 * 1000;
 const resizeCache = new Map<string, { value: Buffer; expiresAt: number }>();
 
-const SUPPORTED_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const SUPPORTED_CONTENT_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+  "image/tiff",
+  "image/svg+xml",
+]);
 
 function isSupportedImage(contentType: string | undefined): boolean {
-  if (!contentType) return false;
-  return SUPPORTED_CONTENT_TYPES.has(contentType.split(";")[0].trim().toLowerCase());
+  if (!contentType) return true;
+  const clean = contentType.split(";")[0].trim().toLowerCase();
+  return clean.startsWith("image/") || SUPPORTED_CONTENT_TYPES.has(clean);
 }
 
 export interface ResizeOptions {

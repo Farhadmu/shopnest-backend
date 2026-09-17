@@ -64,11 +64,24 @@ export const listBannerCategoryIds = asyncHandler(async (_req: Request, res: Res
   sendSuccess(res, { categoryIds });
 });
 
+/**
+ * Admin: every banner across every category (and the categoryId:null
+ * default slot) in one query, so the admin Hero Banners panel can render
+ * status for every category without one request per category.
+ */
+export const listAllHeroBannersForAdmin = asyncHandler(async (_req: Request, res: Response) => {
+  const banners = await HeroBanner.find({})
+    .sort({ categoryId: 1, placement: 1, displayOrder: 1, createdAt: -1 })
+    .lean();
+
+  sendSuccess(res, banners);
+});
+
 export const createHeroBanner = asyncHandler(async (req: Request, res: Response) => {
   const {
     categoryId, imageUrl, placement, eyebrow, title, highlight, subtitle,
     description, price, buttonText, targetUrl, overlayColor, overlayOpacity,
-    lightTextColor, darkTextColor, bgClassName, textTheme,
+    lightTextColor, darkTextColor, lightButtonColor, darkButtonColor, bgClassName, textTheme,
     isActive, displayOrder,
   } = req.body;
 
@@ -87,6 +100,8 @@ export const createHeroBanner = asyncHandler(async (req: Request, res: Response)
     overlayOpacity: overlayOpacity ?? null,
     lightTextColor: lightTextColor ?? null,
     darkTextColor: darkTextColor ?? null,
+    lightButtonColor: lightButtonColor ?? null,
+    darkButtonColor: darkButtonColor ?? null,
     bgClassName: bgClassName ?? null,
     textTheme: textTheme ?? "light",
     isActive: isActive ?? true,

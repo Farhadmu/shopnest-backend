@@ -6,10 +6,45 @@ import { Category } from "../categories/category.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
-import { ACTIVE_PRODUCT_FILTER, getExcludedStoreIds, EXCLUDED_STORE_STATUSES } from "../../utils/activeProductFilter";
+import { ACTIVE_PRODUCT_FILTER, buildPublicProductFilter, EXCLUDED_STORE_STATUSES } from "../../utils/activeProductFilter";
 import { getSellerStore } from "../sellers/seller-store.util";
 import { resolveCategoryNames } from "../../utils/category.utils";
 import { normalizeLeanArray, normalizeLean } from "../../utils/model-plugins";
+
+const LIST_CACHE_TTL_MS = 2 * 60 * 1000;
+const listCache = new Map<string, { value: { products: Record<string, unknown>[]; total: number; hasMore: boolean }; expiresAt: number }>();
+
+function isCacheableQuery(query: Record<string, string | undefined>): boolean {
+  if (query.search) return false;
+  if (query.seller) return false;
+  if (query.store) return false;
+  if (query.minPrice !== undefined || query.maxPrice !== undefined) return false;
+  if (query.rating || query.productRating) return false;
+  if (query.verified === "true" || query.inStock === "true" || query.aiPick === "true" || query.freeDelivery === "true") return false;
+  if (query.status && query.status !== "approved") return false;
+  return true;
+}
+
+function buildListCacheKey(filter: Record<string, unknown>, sortOption: Record<string, 1 | -1>, page: number, limit: number): string {
+  return JSON.stringify({ f: filter, s: sortOption, p: page, l: limit });
+}
+
+function getFromListCache(key: string): { products: Record<string, unknown>[]; total: number; hasMore: boolean } | null {
+  const cached = listCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+  listCache.delete(key);
+  return null;
+}
+
+function setListCache(key: string, value: { products: Record<string, unknown>[]; total: number; hasMore: boolean }): void {
+  listCache.set(key, { value, expiresAt: Date.now() + LIST_CACHE_TTL_MS });
+}
+
+export function clearListCache(): void {
+  listCache.clear();
+}
 
 function resolveStore(identifier: string) {
   const normalizedIdentifier = identifier.toLowerCase();
@@ -32,81 +67,68 @@ function resolveStore(identifier: string) {
 async function buildProductFilter(
   query: Record<string, string | undefined>
 ): Promise<Record<string, unknown>> {
-  const filter: Record<string, unknown> = { ...ACTIVE_PRODUCT_FILTER };
+  const baseFilter: Record<string, unknown> = {};
 
   if (query.search) {
-    filter.$text = { $search: query.search };
+    baseFilter.$text = { $search: query.search };
   }
   if (query.storeId) {
-    filter.storeId = query.storeId;
+    baseFilter.storeId = query.storeId;
   }
   if (query.store) {
     const store = await resolveStore(query.store);
     if (store) {
-      filter.storeId = store._id.toString();
+      baseFilter.storeId = store._id.toString();
     } else {
-      filter.storeId = null;
+      baseFilter.storeId = null;
     }
   }
   if (query.sellerId) {
-    filter.sellerId = query.sellerId;
+    baseFilter.sellerId = query.sellerId;
   }
   if (query.seller) {
     const store = await resolveStore(query.seller);
     if (store) {
-      filter.$or = [
+      baseFilter.$or = [
         { sellerId: store.ownerId },
         { storeId: store._id.toString() },
       ];
     } else {
-      filter.sellerId = null;
+      baseFilter.sellerId = null;
     }
   }
   if (query.rating) {
-    filter.ratingAvg = { $gte: Number(query.rating) };
+    baseFilter.ratingAvg = { $gte: Number(query.rating) };
   }
   if (query.productRating) {
-    filter.ratingAvg = { $gte: Number(query.productRating) };
+    baseFilter.ratingAvg = { $gte: Number(query.productRating) };
   }
   if (query.verified === "true") {
-    filter.freeDelivery = true;
+    baseFilter.freeDelivery = true;
   }
   if (query.inStock === "true") {
-    filter.stock = { $gt: 0 };
+    baseFilter.stock = { $gt: 0 };
   }
   if (query.freeDelivery === "true") {
-    filter.freeDelivery = true;
+    baseFilter.freeDelivery = true;
   }
   if (query.aiPick === "true") {
-    filter.aiPick = true;
+    baseFilter.aiPick = true;
   }
   if (query.minPrice !== undefined) {
-    filter.price = { ...(filter.price as Record<string, unknown> || {}), $gte: Number(query.minPrice) };
+    baseFilter.price = { ...(baseFilter.price as Record<string, unknown> || {}), $gte: Number(query.minPrice) };
   }
   if (query.maxPrice !== undefined) {
-    filter.price = { ...(filter.price as Record<string, unknown> || {}), $lte: Number(query.maxPrice) };
+    baseFilter.price = { ...(baseFilter.price as Record<string, unknown> || {}), $lte: Number(query.maxPrice) };
   }
   if (query.status && query.status !== "approved") {
-    filter.$and = [
-      ...(Array.isArray(filter.$and) ? (filter.$and as unknown[]) : []),
+    baseFilter.$and = [
+      ...(Array.isArray(baseFilter.$and) ? (baseFilter.$and as unknown[]) : []),
       { status: query.status },
     ];
   }
 
-  const excludedStoreIds = await getExcludedStoreIds();
-  if (excludedStoreIds.length) {
-    if (filter.storeId === undefined) {
-      filter.storeId = { $nin: excludedStoreIds };
-    } else {
-      filter.$and = [
-        { storeId: filter.storeId },
-        { storeId: { $nin: excludedStoreIds } },
-        ...(Array.isArray(filter.$and) ? (filter.$and as unknown[]) : []),
-      ];
-      delete filter.storeId;
-    }
-  }
-
+  const filter = await buildPublicProductFilter(baseFilter);
   return filter;
 }
 
@@ -144,8 +166,46 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
       break;
   }
 
+  const skipExactCount = query.exactCount === "false";
+  const bypassCache = (req.headers && req.headers["x-no-cache"] !== undefined) || query.nocache !== undefined;
+  const canCache = isCacheableQuery(query) && !skipExactCount && !bypassCache;
+
+  if (canCache) {
+    const cacheKey = buildListCacheKey(filter, sortOption, page, limit);
+    const cached = getFromListCache(cacheKey);
+    if (cached) {
+      res.set("X-Total-Count", String(cached.total));
+      res.set("X-Page", String(page));
+      res.set("X-Limit", String(limit));
+      res.set("X-Cache", "HIT");
+      sendSuccess(res, cached.products);
+      return;
+    }
+  }
+
+  if (skipExactCount) {
+    const products = await Product.find(filter)
+      .select("title price discountPrice images imageUrl category stock ratingAvg ratingCount")
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = products.length > limit;
+    res.set("X-Has-More", String(hasMore));
+    res.set("X-Page", String(page));
+    res.set("X-Limit", String(limit));
+    sendSuccess(res, normalizeLeanArray(products.slice(0, limit) as Record<string, unknown>[]));
+    return;
+  }
+
   const [products, total] = await Promise.all([
-    Product.find(filter).sort(sortOption).skip(skip).limit(limit).lean(),
+    Product.find(filter)
+      .select("title price discountPrice images imageUrl category stock ratingAvg ratingCount")
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limit)
+      .lean(),
     Product.countDocuments(filter),
   ]);
 
@@ -153,7 +213,18 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   res.set("X-Page", String(page));
   res.set("X-Limit", String(limit));
 
-  sendSuccess(res, normalizeLeanArray(products as Record<string, unknown>[]));
+  const normalizedProducts = normalizeLeanArray(products as Record<string, unknown>[]);
+
+  if (canCache) {
+    setListCache(buildListCacheKey(filter, sortOption, page, limit), {
+      products: normalizedProducts,
+      total,
+      hasMore: false,
+    });
+    res.set("X-Cache", "MISS");
+  }
+
+  sendSuccess(res, normalizedProducts);
 });
 
 export const getStoreOptions = asyncHandler(async (_req: Request, res: Response) => {
@@ -161,20 +232,19 @@ export const getStoreOptions = asyncHandler(async (_req: Request, res: Response)
     .select("_id storeName slug rating trustScore")
     .lean();
 
-  const grouped = await countActiveProductsBy({ storeId: "$storeId" });
-  const byStoreId = new Map(
-    grouped.map((row) => [row._id.storeId == null ? "" : String(row._id.storeId), row.count])
-  );
+  const grouped = await Product.aggregate([
+    { $match: ACTIVE_PRODUCT_FILTER },
+    { $group: { _id: "$storeId", count: { $sum: 1 } } },
+  ]);
 
-  const options = stores.map((store) => {
-    const id = store._id.toString();
-    return {
-      id,
-      name: store.storeName,
-      rating: store.rating,
-      productCount: byStoreId.get(id) ?? 0,
-    };
-  });
+  const byStoreId = new Map(grouped.map((row) => [String(row._id), row.count]));
+
+  const options = stores.map((store) => ({
+    id: store._id.toString(),
+    name: store.storeName,
+    rating: store.rating,
+    productCount: byStoreId.get(store._id.toString()) ?? 0,
+  }));
 
   sendSuccess(res, options);
 });
@@ -184,40 +254,22 @@ export const getSellerOptions = asyncHandler(async (_req: Request, res: Response
     .select("_id storeName slug ownerId rating trustScore")
     .lean();
 
-  // Grouping by the (storeId, sellerId) pair keeps each product counted at most
-  // once, even when it matches both sides of the per-store `$or` below.
-  const grouped = await countActiveProductsBy({ storeId: "$storeId", sellerId: "$sellerId" });
+  const grouped = await Product.aggregate([
+    { $match: ACTIVE_PRODUCT_FILTER },
+    { $group: { _id: "$storeId", count: { $sum: 1 } } },
+  ]);
 
-  const options = stores.map((store) => {
-    const id = store._id.toString();
-    const productCount = grouped.reduce((sum, row) => {
-      const rowStoreId = row._id.storeId == null ? "" : String(row._id.storeId);
-      const rowSellerId = row._id.sellerId == null ? "" : String(row._id.sellerId);
-      const matches =
-        (rowStoreId !== "" && rowStoreId === id) ||
-        (rowSellerId !== "" && rowSellerId === store.ownerId);
-      return matches ? sum + row.count : sum;
-    }, 0);
-    return {
-      id,
-      name: store.storeName,
-      rating: store.rating,
-      productCount,
-    };
-  });
+  const byStoreId = new Map(grouped.map((row) => [String(row._id), row.count]));
+
+  const options = stores.map((store) => ({
+    id: store._id.toString(),
+    name: store.storeName,
+    rating: store.rating,
+    productCount: byStoreId.get(store._id.toString()) ?? 0,
+  }));
 
   sendSuccess(res, options);
 });
-
-/** Counts active products grouped by the given grouping keys, in one aggregation. */
-async function countActiveProductsBy<T extends Record<string, string>>(
-  grouping: T
-): Promise<Array<{ _id: Partial<Record<keyof T, string | null>>; count: number }>> {
-  return Product.aggregate([
-    { $match: ACTIVE_PRODUCT_FILTER },
-    { $group: { _id: grouping, count: { $sum: 1 } } },
-  ]);
-}
 
 /**
  * Per-category product counts for the current filters, in a single round trip.
@@ -290,13 +342,9 @@ export const listMyProducts = asyncHandler(async (req: Request, res: Response) =
 export const getTrendingProducts = asyncHandler(async (req: Request, res: Response) => {
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 8));
 
-  const excludedStoreIds = await getExcludedStoreIds();
+  const filter = await buildPublicProductFilter({ stock: { $gt: 0 } });
 
-  const products = await Product.find({
-    ...ACTIVE_PRODUCT_FILTER,
-    ...(excludedStoreIds.length ? { storeId: { $nin: excludedStoreIds } } : {}),
-    stock: { $gt: 0 },
-  })
+  const products = await Product.find(filter)
     .sort({ sold: -1, ratingAvg: -1 })
     .limit(limit)
     .lean();

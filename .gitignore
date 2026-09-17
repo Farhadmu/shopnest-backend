@@ -7,3 +7,4 @@ uploads/*
 *.log
 coverage/
 .DS_Store
+*.zip

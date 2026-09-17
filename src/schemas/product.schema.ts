@@ -37,7 +37,7 @@ export const listProductsQuerySchema = z.object({
   isFeatured: z.string().optional(),
   minPrice: z.coerce.number().nonnegative().optional(),
   maxPrice: z.coerce.number().nonnegative().optional(),
-  sort: z.enum(["newest", "price_asc", "price_desc", "rating", "popular"]).optional(),
+  sort: z.enum(["newest", "price_asc", "price_desc", "rating", "popular", "featured"]).optional(),
   status: z.enum(["pending", "approved", "rejected"]).optional(),
 });
 

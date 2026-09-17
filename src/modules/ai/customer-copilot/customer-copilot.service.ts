@@ -29,6 +29,9 @@ function formatContextForAI(context: BuiltContext): string {
         }
       }
     }
+    if (section.data && typeof section.data === "object") {
+      parts.push(`RAW_DATA: ${JSON.stringify(section.data)}`);
+    }
     parts.push("");
   }
   return parts.join("\n");
@@ -37,38 +40,38 @@ function formatContextForAI(context: BuiltContext): string {
 function generateFallbackResponse(context: BuiltContext): CustomerCopilotResponse {
   const metrics: CustomerCopilotMetric[] = [];
   const insights: CustomerCopilotInsight[] = [];
-  const actions: CustomerCopilotAction[] = [];
+  const actions: CustomerCopilotAction[] = generateActions(context.intent);
 
   for (const section of context.sections) {
     if (section.metrics) metrics.push(...section.metrics);
     if (section.insights) {
       insights.push(...section.insights);
-      for (const insight of section.insights) {
-        if (insight.severity === "critical" || insight.severity === "high") {
-          actions.push({
-            label: `Investigate: ${insight.title}`,
-            action: "investigate",
-            description: insight.description,
-          });
-        }
-      }
     }
   }
 
-  const summary = insights.length > 0
-    ? `Found ${insights.length} important insight${insights.length > 1 ? "s" : ""}.`
-    : "Your shopping data retrieved successfully.";
+  let summary = "I've retrieved your live ShopNest data directly from your verified account! 📊";
+  if (context.intent === CustomerCopilotIntent.ORDER_STATUS || context.intent === CustomerCopilotIntent.TRACKING) {
+    summary = "Here is your active order and delivery tracking status from your account 📦🚚.";
+  } else if (context.intent === CustomerCopilotIntent.BUDGET) {
+    summary = "Here is your verified spending summary and breakdown from your purchase history 💰.";
+  } else if (context.intent === CustomerCopilotIntent.WISHLIST) {
+    summary = "Here are the items saved in your personal wishlist ❤️.";
+  } else if (context.intent === CustomerCopilotIntent.CART) {
+    summary = "Here is your current cart snapshot ready for checkout 🛍️.";
+  } else if (context.intent === CustomerCopilotIntent.RETURN) {
+    summary = "Here is your return eligibility information for recent delivered orders 🔄.";
+  }
 
   return {
     answer: summary,
     summary,
     intent: context.intent,
-    confidence: 0.8,
+    confidence: 0.85,
     timeRange: context.timeRange,
     metrics,
     insights,
     sources: context.sources,
-    suggestedActions: actions.slice(0, 5),
+    suggestedActions: actions.slice(0, 4),
     isFallback: true,
   };
 }
@@ -77,40 +80,57 @@ function generateActions(intent: CustomerCopilotIntent): CustomerCopilotAction[]
   const actions: CustomerCopilotAction[] = [];
   switch (intent) {
     case CustomerCopilotIntent.ORDER_STATUS:
+    case CustomerCopilotIntent.TRACKING:
+      actions.push({ label: "📦 My Orders", action: "navigate", targetUrl: "/dashboard/user/orders" });
+      actions.push({ label: "🛍️ Continue Shopping", action: "navigate", targetUrl: "/products" });
+      break;
     case CustomerCopilotIntent.ORDER_HISTORY:
-      actions.push({ label: "View Orders", action: "navigate", targetUrl: "/orders" });
-      actions.push({ label: "Track Order", action: "navigate", targetUrl: "/orders/tracking" });
+      actions.push({ label: "📦 View All Orders", action: "navigate", targetUrl: "/dashboard/user/orders" });
+      actions.push({ label: "📈 Spending Analytics", action: "navigate", targetUrl: "/dashboard/user/analytics" });
       break;
     case CustomerCopilotIntent.WISHLIST:
-      actions.push({ label: "View Wishlist", action: "navigate", targetUrl: "/wishlist" });
+      actions.push({ label: "❤️ Open Wishlist", action: "navigate", targetUrl: "/wishlist" });
+      actions.push({ label: "🛒 Go to Cart", action: "navigate", targetUrl: "/cart" });
       break;
     case CustomerCopilotIntent.CART:
-      actions.push({ label: "View Cart", action: "navigate", targetUrl: "/cart" });
+      actions.push({ label: "🛒 Open Cart", action: "navigate", targetUrl: "/cart" });
+      actions.push({ label: "🎯 Shopping Goals", action: "navigate", targetUrl: "/dashboard/user/goals" });
       break;
-    case CustomerCopilotIntent.PRODUCT_DISCOVERY:
-    case CustomerCopilotIntent.RECOMMENDATION:
-      actions.push({ label: "Browse Products", action: "navigate", targetUrl: "/products" });
+    case CustomerCopilotIntent.BUDGET:
+      actions.push({ label: "📈 Spending Analytics", action: "navigate", targetUrl: "/dashboard/user/analytics" });
+      actions.push({ label: "🎯 Shopping Goals", action: "navigate", targetUrl: "/dashboard/user/goals" });
       break;
-    case CustomerCopilotIntent.REVIEW:
-      actions.push({ label: "My Reviews", action: "navigate", targetUrl: "/account/reviews" });
+    case CustomerCopilotIntent.SHOPPING_GOAL:
+      actions.push({ label: "🎯 Shopping Goals", action: "navigate", targetUrl: "/dashboard/user/goals" });
+      actions.push({ label: "🛡️ Product Lifecycle", action: "navigate", targetUrl: "/dashboard/user/lifecycle" });
       break;
     case CustomerCopilotIntent.RETURN:
     case CustomerCopilotIntent.REFUND:
-      actions.push({ label: "Returns Center", action: "navigate", targetUrl: "/account/returns" });
+      actions.push({ label: "📦 Orders & Returns", action: "navigate", targetUrl: "/dashboard/user/orders" });
+      actions.push({ label: "🛡️ Warranty & Lifecycle", action: "navigate", targetUrl: "/dashboard/user/lifecycle" });
       break;
     case CustomerCopilotIntent.DEAL:
-      actions.push({ label: "View Deals", action: "navigate", targetUrl: "/deals" });
+      actions.push({ label: "🏷️ Browse Flash Deals", action: "navigate", targetUrl: "/products" });
+      actions.push({ label: "🛒 Check Cart Discounts", action: "navigate", targetUrl: "/cart" });
+      break;
+    case CustomerCopilotIntent.NOTIFICATION:
+      actions.push({ label: "🔔 View Notifications", action: "navigate", targetUrl: "/dashboard/user/notifications" });
+      actions.push({ label: "🔐 Security Center", action: "navigate", targetUrl: "/dashboard/user/security" });
       break;
     default:
-      actions.push({ label: "Browse Products", action: "navigate", targetUrl: "/products" });
+      actions.push({ label: "📊 Dashboard Overview", action: "navigate", targetUrl: "/dashboard/user" });
+      actions.push({ label: "📦 View Orders", action: "navigate", targetUrl: "/dashboard/user/orders" });
+      actions.push({ label: "❤️ My Wishlist", action: "navigate", targetUrl: "/wishlist" });
       break;
   }
   return actions.slice(0, 3);
 }
 
-export async function handleCustomerCopilotQuery(query: string, userId: string, conversationMessages?: Array<{ role: string; content: string }>): Promise<CustomerCopilotResponse> {
-  const startTime = Date.now();
-
+export async function handleCustomerCopilotQuery(
+  query: string,
+  userId: string,
+  conversationMessages?: Array<{ role: string; content: string }>
+): Promise<CustomerCopilotResponse> {
   try {
     const intentDetection = detectIntent(query);
     const timeRange = detectTimeRange(query);
@@ -119,7 +139,15 @@ export async function handleCustomerCopilotQuery(query: string, userId: string, 
     const contextString = formatContextForAI(context);
 
     let productCandidates: Array<{ id: string; title: string; price: number; category: string; ratingAvg: number; stock: number }> = [];
-    if ([CustomerCopilotIntent.PRODUCT_DISCOVERY, CustomerCopilotIntent.RECOMMENDATION, CustomerCopilotIntent.BUDGET, CustomerCopilotIntent.SHOPPING_GOAL].includes(intentDetection.intent)) {
+    if (
+      [
+        CustomerCopilotIntent.PRODUCT_DISCOVERY,
+        CustomerCopilotIntent.RECOMMENDATION,
+        CustomerCopilotIntent.BUDGET,
+        CustomerCopilotIntent.SHOPPING_GOAL,
+        CustomerCopilotIntent.WISHLIST,
+      ].includes(intentDetection.intent)
+    ) {
       try {
         productCandidates = await searchProducts(query);
       } catch {
@@ -127,13 +155,16 @@ export async function handleCustomerCopilotQuery(query: string, userId: string, 
       }
     }
 
-    const productContext = productCandidates.length > 0
-      ? `\n\nCANDIDATE PRODUCTS:\n${productCandidates.map((p) => `- [${p.id}] ${p.title} | ৳${p.price} | ${p.category} | rating ${p.ratingAvg}/5 | stock ${p.stock}`).join("\n")}`
-      : "";
+    const productContext =
+      productCandidates.length > 0
+        ? `\n\nCANDIDATE PRODUCTS FROM CATALOG:\n${productCandidates
+            .map((p) => `- [${p.id}] ${p.title} | ৳${p.price} | ${p.category} | rating ${p.ratingAvg}/5 | stock ${p.stock}`)
+            .join("\n")}`
+        : "";
 
     const aiContext: AiContext = {
       products: productCandidates,
-      userContext: context.sections.reduce((acc, s) => ({ ...acc, ...(s.data as Record<string, unknown> || {}) }), {}),
+      userContext: context.sections.reduce((acc, s) => ({ ...acc, ...((s.data as Record<string, unknown>) || {}) }), {}),
     };
 
     const historyMessages = conversationMessages
@@ -164,7 +195,7 @@ export async function handleCustomerCopilotQuery(query: string, userId: string, 
         error: aiError instanceof Error ? aiError.message : String(aiError),
       });
       const fallback = generateFallbackResponse(context);
-      answer = fallback.summary;
+      answer = fallback.answer;
       isFallback = true;
     }
 
@@ -178,9 +209,10 @@ export async function handleCustomerCopilotQuery(query: string, userId: string, 
 
     const response: CustomerCopilotResponse = {
       answer,
-      summary: insights.length > 0
-        ? `${insights.length} key insight${insights.length > 1 ? "s" : ""} identified.`
-        : "Response complete.",
+      summary:
+        insights.length > 0
+          ? `${insights.length} key insight${insights.length > 1 ? "s" : ""} identified.`
+          : "Verified shopping response complete.",
       intent: intentDetection.intent,
       confidence: intentDetection.confidence,
       timeRange,

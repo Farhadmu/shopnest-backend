@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const productMocks = vi.hoisted(() => ({
   find: vi.fn(),
   findById: vi.fn(),
+  findByIdAndUpdate: vi.fn(),
   countDocuments: vi.fn(),
 }));
 
@@ -22,7 +23,14 @@ vi.mock("../../../src/modules/sellers/store.model", () => ({
 
 import { Product } from "../../../src/modules/products/product.model";
 import { Store } from "../../../src/modules/sellers/store.model";
-import { listProducts, getProductById, clearListCache } from "../../../src/modules/products/product.controller";
+import {
+  listProducts,
+  getProductById,
+  getFeaturedProducts,
+  updateFeaturedProduct,
+  updateProduct,
+  clearListCache,
+} from "../../../src/modules/products/product.controller";
 
 const VALID_ID = "507f1f77bcf86cd799439011";
 const VALID_STORE_ID = "607f1f77bcf86cd799439020";
@@ -31,6 +39,7 @@ type AnyFn = ReturnType<typeof vi.fn>;
 const mockedProduct = Product as unknown as {
   find: AnyFn;
   findById: AnyFn;
+  findByIdAndUpdate: AnyFn;
   countDocuments: AnyFn;
 };
 const mockedStore = Store as unknown as {
@@ -61,6 +70,7 @@ function mockProductList(products: unknown[]) {
   };
   mockedProduct.find.mockReturnValue(query);
   mockedProduct.countDocuments.mockResolvedValue(products.length);
+  return query;
 }
 
 function mockProductFetch(product: unknown | null) {
@@ -79,16 +89,11 @@ function mockStoreFetch(status: string | null) {
   });
 }
 
-function mockStoreList(stores: unknown[]) {
-  mockedStore.find.mockReturnValue({
-    select: vi.fn().mockReturnThis(),
-    lean: vi.fn().mockResolvedValue(stores),
-  });
-}
-
 function mockStoreResolve(store: unknown) {
   mockedStore.findOne.mockReturnValue({
     lean: vi.fn().mockResolvedValue(store),
+    then: (resolve: (v: unknown) => unknown, reject?: (err: unknown) => unknown) =>
+      Promise.resolve(store).then(resolve, reject),
   });
 }
 
@@ -286,4 +291,146 @@ describe("product.controller store-status exclusion", () => {
       expect(res.status).toHaveBeenCalledWith(200);
     });
   });
+
+  describe("getFeaturedProducts", () => {
+    it("returns featured products respecting limit and published filters", async () => {
+      const mockItems = [
+        { _id: VALID_ID, title: "Featured 1", price: 100, isFeatured: true, status: "approved" },
+      ];
+      mockProductList(mockItems);
+
+      const req = { query: { limit: "4" } } as never;
+      const res = createRes();
+      const next = vi.fn();
+
+      await getFeaturedProducts(req as never, res as never, next as never);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockedProduct.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isDeleted: false,
+          status: "approved",
+          storeSuspended: false,
+          isFeatured: true,
+        })
+      );
+    });
+
+    it("defaults to limit of exactly 8 and sorts by newest first", async () => {
+      const mockItems = Array.from({ length: 8 }, (_, i) => ({
+        _id: `${VALID_ID.slice(0, -1)}${i}`,
+        title: `Featured ${i + 1}`,
+        price: 100,
+        isFeatured: true,
+        status: "approved",
+        createdAt: new Date().toISOString(),
+      }));
+      const query = mockProductList(mockItems);
+
+      const req = { query: {} } as never;
+      const res = createRes();
+      const next = vi.fn();
+
+      await getFeaturedProducts(req as never, res as never, next as never);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(query.sort).toHaveBeenCalledWith({ createdAt: -1 });
+      expect(query.limit).toHaveBeenCalledWith(8);
+    });
+  });
+
+  describe("updateFeaturedProduct", () => {
+    it("updates isFeatured status successfully", async () => {
+      const mockDoc = {
+        _id: VALID_ID,
+        title: "P",
+        isFeatured: false,
+        save: vi.fn().mockResolvedValue(undefined),
+        toJSON: vi.fn().mockReturnValue({ _id: VALID_ID, title: "P", isFeatured: true }),
+      };
+      mockedProduct.findById.mockResolvedValue(mockDoc);
+
+      const req = { params: { id: VALID_ID }, body: { isFeatured: true } } as never;
+      const res = createRes();
+      const next = vi.fn();
+
+      await updateFeaturedProduct(req as never, res as never, next as never);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockDoc.isFeatured).toBe(true);
+      expect(mockDoc.save).toHaveBeenCalled();
+    });
+
+    it("returns 404 if product not found", async () => {
+      mockedProduct.findById.mockResolvedValue(null);
+
+      const req = { params: { id: VALID_ID }, body: { isFeatured: true } } as never;
+      const res = createRes();
+      const next = vi.fn();
+
+      await updateFeaturedProduct(req as never, res as never, next as never);
+
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 404 }));
+    });
+  });
+
+  describe("updateProduct authorization on isFeatured", () => {
+    it("strips isFeatured when a non-admin seller updates a product", async () => {
+      const mockDoc = {
+        _id: VALID_ID,
+        title: "Old Title",
+        sellerId: "seller-123",
+        isFeatured: false,
+        save: vi.fn().mockResolvedValue(undefined),
+        toJSON: vi.fn().mockReturnValue({ _id: VALID_ID, title: "New Title", isFeatured: false }),
+      };
+      mockedProduct.findById.mockResolvedValue(mockDoc);
+      mockStoreResolve({ _id: VALID_STORE_ID, sellerId: "seller-123" });
+
+      const req = {
+        params: { id: VALID_ID },
+        body: { title: "New Title", isFeatured: true },
+        user: { id: "seller-123", role: "seller" },
+      } as never;
+      const res = createRes();
+      const next = vi.fn();
+
+      await updateProduct(req as never, res as never, next as never);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(mockDoc.title).toBe("New Title");
+      expect(mockDoc.isFeatured).toBe(false); // isFeatured was stripped for non-admin
+      expect(mockDoc.save).toHaveBeenCalled();
+    });
+
+    it("allows admin to update isFeatured in updateProduct", async () => {
+      const mockDoc = {
+        _id: VALID_ID,
+        title: "Old Title",
+        sellerId: "seller-123",
+        isFeatured: false,
+        save: vi.fn().mockResolvedValue(undefined),
+        toJSON: vi.fn().mockReturnValue({ _id: VALID_ID, title: "New Title", isFeatured: true }),
+      };
+      mockedProduct.findById.mockResolvedValue(mockDoc);
+
+      const req = {
+        params: { id: VALID_ID },
+        body: { title: "New Title", isFeatured: true },
+        user: { id: "admin-1", role: "admin" },
+      } as never;
+      const res = createRes();
+      const next = vi.fn();
+
+      await updateProduct(req as never, res as never, next as never);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(mockDoc.isFeatured).toBe(true);
+      expect(mockDoc.save).toHaveBeenCalled();
+    });
+  });
 });
+

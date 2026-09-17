@@ -115,6 +115,11 @@ async function buildProductFilter(
   if (query.aiPick === "true") {
     baseFilter.aiPick = true;
   }
+  if (query.isFeatured === "true") {
+    baseFilter.isFeatured = true;
+  } else if (query.isFeatured === "false") {
+    baseFilter.isFeatured = false;
+  }
   if (query.minPrice !== undefined) {
     baseFilter.price = { ...(baseFilter.price as Record<string, unknown> || {}), $gte: Number(query.minPrice) };
   }
@@ -353,6 +358,20 @@ export const getTrendingProducts = asyncHandler(async (req: Request, res: Respon
   sendSuccess(res, { count: normalized.length, products: normalized });
 });
 
+export const getFeaturedProducts = asyncHandler(async (req: Request, res: Response) => {
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 8));
+
+  const filter = await buildPublicProductFilter({ isFeatured: true, stock: { $gt: 0 } });
+
+  const products = await Product.find(filter)
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
+
+  const normalized = normalizeLeanArray(products as Record<string, unknown>[]);
+  sendSuccess(res, normalized);
+});
+
 export const getProductById = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   if (!id || id === "undefined" || id === "null" || !mongoose.isValidObjectId(id)) {
@@ -392,7 +411,11 @@ export const createProduct = asyncHandler(async (req: Request, res: Response) =>
     throw ApiError.badRequest("You must create a store before adding products. Please complete your store setup first.");
   }
 
-  const data = req.body as Partial<IProduct>;
+  const isAdmin = req.user?.role === "admin";
+  const data = { ...req.body } as Partial<IProduct>;
+  if (!isAdmin) {
+    delete data.isFeatured;
+  }
 
   const product = await Product.create({
     ...data,
@@ -416,14 +439,47 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response) =>
     throw ApiError.forbidden("You do not have permission to update this product");
   }
 
-  const store = await getSellerStore(userId);
-  if (!store) {
-    throw ApiError.badRequest("You must create a store before updating products. Please complete your store setup first.");
+  let storeUpdates: Record<string, unknown> = {};
+  if (!isAdmin) {
+    const store = await getSellerStore(userId);
+    if (!store) {
+      throw ApiError.badRequest("You must create a store before updating products. Please complete your store setup first.");
+    }
+    storeUpdates = { storeId: store._id.toString(), sellerId: userId };
   }
-  Object.assign(product, req.body, { storeId: store._id.toString(), sellerId: userId });
+
+  const updateData = { ...req.body } as Record<string, unknown>;
+  if (!isAdmin) {
+    delete updateData.isFeatured;
+  }
+
+  Object.assign(product, updateData, storeUpdates);
   await product.save();
+  clearListCache();
 
   sendSuccess(res, product.toJSON(), "Product updated");
+});
+
+export const updateFeaturedProduct = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!id || id === "undefined" || id === "null" || !mongoose.isValidObjectId(id)) {
+    throw ApiError.badRequest("Invalid product ID");
+  }
+
+  const product = await Product.findById(id);
+  if (!product) throw ApiError.notFound("Product not found");
+
+  const { isFeatured } = req.body as { isFeatured?: boolean };
+  if (typeof isFeatured !== "boolean") {
+    throw ApiError.badRequest("isFeatured boolean field is required");
+  }
+
+  product.isFeatured = isFeatured;
+  await product.save();
+
+  clearListCache();
+
+  sendSuccess(res, product.toJSON(), `Product marked as ${isFeatured ? "featured" : "standard"}`);
 });
 
 export const deleteProduct = asyncHandler(async (req: Request, res: Response) => {
@@ -441,6 +497,7 @@ export const deleteProduct = asyncHandler(async (req: Request, res: Response) =>
   product.isDeleted = true;
   product.status = "rejected";
   await product.save();
+  clearListCache();
 
   sendSuccess(res, { success: true }, "Product deleted");
 });
@@ -456,6 +513,8 @@ export const moderateProduct = asyncHandler(async (req: Request, res: Response) 
   }
 
   await product.save();
+  clearListCache();
 
   sendSuccess(res, product.toJSON(), `Product ${status || "updated"} by admin`);
 });
+

@@ -64,6 +64,9 @@ export const createOrUpdateProfileSchema = z.object({
       vehicleBackPhoto: z.string().optional(),
       vehicleFitnessExpiryDate: optionalDate,
       vehicleCapacity: z.number().min(1).optional(),
+      packageCapacity: z.number().min(1).optional(),
+      weightCapacityKg: z.number().min(1).optional(),
+      volumeCapacityLiters: z.number().min(1).optional(),
     })
     .optional(),
   bank: z
@@ -89,7 +92,7 @@ export const createOrUpdateProfileSchema = z.object({
 });
 
 export const setAvailabilitySchema = z.object({
-  availabilityStatus: z.enum(["offline", "available", "busy"]).optional(),
+  availabilityStatus: z.enum(["offline", "available", "busy", "full_capacity", "on_break", "suspended"]).optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -121,21 +124,39 @@ export const verifyOtpSchema = z.object({
   otp: z.string().length(6, "OTP must be 6 digits"),
 });
 
+const incidentCategoryEnum = z.enum([
+  "customer_unavailable",
+  "wrong_address",
+  "customer_refused",
+  "cannot_contact_customer",
+  "access_problem",
+  "vehicle_problem",
+  "vehicle_breakdown",
+  "accident",
+  "package_issue",
+  "package_damaged",
+  "traffic",
+  "traffic_delay",
+  "severe_traffic",
+  "weather",
+  "severe_weather",
+  "seller_issue",
+  "safety_issue",
+  "technical_issue",
+  "other",
+]);
+
 export const reportIncidentSchema = z.object({
-  category: z.enum([
-    "customer_unavailable",
-    "wrong_address",
-    "customer_refused",
-    "cannot_contact_customer",
-    "access_problem",
-    "vehicle_problem",
-    "accident",
-    "package_issue",
-    "seller_issue",
-    "safety_issue",
-    "technical_issue",
-    "other",
-  ]),
+  category: incidentCategoryEnum,
+  severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
+  description: z.string().min(5, "Description is required"),
+  evidenceImages: z.array(z.string()).optional(),
+});
+
+export const createIncidentSchema = z.object({
+  deliveryRequestId: z.string().optional(),
+  orderId: z.string().optional(),
+  category: incidentCategoryEnum,
   severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
   description: z.string().min(5, "Description is required"),
   evidenceImages: z.array(z.string()).optional(),

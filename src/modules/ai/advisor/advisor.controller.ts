@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { AiConversation } from "./conversation.model";
+import { AiConversation, sanitizeAiConversationMessages } from "./conversation.model";
 import { Product } from "../../products/product.model";
 import { Category } from "../../categories/category.model";
 import { complete } from "../providers/claude.provider";
@@ -471,6 +471,7 @@ export const chat = asyncHandler(async (req: Request, res: Response) => {
       ? await AiConversation.findOne({ _id: conversationId, userId })
       : null;
     if (!conversation) conversation = await AiConversation.create({ userId, messages: [] });
+    else conversation.messages = sanitizeAiConversationMessages(conversation.messages || []);
     conversation.messages.push({ role: "user", content: message, at: new Date() });
   }
 

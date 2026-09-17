@@ -12,6 +12,8 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess, sendPaginated } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { normalizeLean, normalizeLeanArray } from "../../utils/model-plugins";
+import { emitDeliveryEvent, emitAdminOperationsEvent } from "../../realtime/socket.server";
+import { getApproxCoordinatesFromAddress, calculateDistanceMeters, isValidCoordinate } from "../../utils/geo";
 
 function generateOtp(): string {
   return crypto.randomInt(100000, 999999).toString();
@@ -113,22 +115,50 @@ export const uploadDeliveryDocument = asyncHandler(async (req: Request, res: Res
   sendSuccess(res, { url: relativeUrl, filename: file.filename }, "Document uploaded successfully", 201);
 });
 
-/** Set delivery partner availability (offline / available / busy) */
+/** Set delivery partner availability (offline / available / busy / full_capacity / on_break / suspended) */
 export const setAvailability = asyncHandler(async (req: Request, res: Response) => {
   const { availabilityStatus, isActive } = req.body as {
-    availabilityStatus?: "offline" | "available" | "busy";
+    availabilityStatus?: "offline" | "available" | "busy" | "full_capacity" | "on_break" | "suspended";
     isActive?: boolean;
   };
 
+  const userId = req.user!.id;
+  const profile = await DeliveryManProfile.findOne({ userId });
+  if (profile?.status === "suspended") {
+    throw ApiError.forbidden("Your delivery account has been suspended by administration.");
+  }
+
+  const activeCount = await DeliveryRequest.countDocuments({
+    assignedDeliveryManId: userId,
+    status: { $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"] },
+  });
+
+  const existingDetails = await DeliveryManDetails.findOne({ userId }).lean();
+  const maxActive = existingDetails?.preferences?.maxActiveDeliveries ?? existingDetails?.vehicle?.vehicleCapacity ?? 3;
+
+  let effectiveStatus = availabilityStatus;
+  if (availabilityStatus === "available") {
+    if (activeCount >= maxActive) {
+      effectiveStatus = "full_capacity";
+    } else if (activeCount > 0) {
+      effectiveStatus = "busy";
+    }
+  }
+
   const update: Record<string, unknown> = {};
-  if (availabilityStatus) update.availabilityStatus = availabilityStatus;
+  if (effectiveStatus) update.availabilityStatus = effectiveStatus;
   if (isActive !== undefined) update.isActive = isActive;
-  if (availabilityStatus === "available") update.isActive = true;
-  if (availabilityStatus === "offline") update.isActive = false;
+  if (effectiveStatus === "available" || effectiveStatus === "busy" || effectiveStatus === "full_capacity") {
+    update.isActive = true;
+  }
+  if (effectiveStatus === "offline") {
+    update.isActive = false;
+  }
+  update.lastActiveAt = new Date();
 
   const details = await DeliveryManDetails.findOneAndUpdate(
-    { userId: req.user!.id },
-    { $set: update, $setOnInsert: { userId: req.user!.id, availabilityStatus: "offline" } },
+    { userId },
+    { $set: update, $setOnInsert: { userId, availabilityStatus: "offline" } },
     { upsert: true, new: true, runValidators: true, lean: true }
   );
 
@@ -137,6 +167,8 @@ export const setAvailability = asyncHandler(async (req: Request, res: Response) 
     {
       availabilityStatus: details?.availabilityStatus,
       isActive: details?.isActive,
+      activeDeliveries: activeCount,
+      maxCapacity: maxActive,
     },
     "Availability updated"
   );
@@ -173,6 +205,9 @@ export const updateLocation = asyncHandler(async (req: Request, res: Response) =
         lastActiveAt: now,
         "currentLocation.latitude": latitude,
         "currentLocation.longitude": longitude,
+        "currentLocation.speed": speed,
+        "currentLocation.heading": heading,
+        "currentLocation.accuracy": accuracy,
         "currentLocation.updatedAt": now,
       },
     },
@@ -201,10 +236,10 @@ export const updateLocation = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
-  sendSuccess(res, { latitude, longitude, updatedAt: now }, "Location updated");
+  sendSuccess(res, { latitude, longitude, accuracy, speed, updatedAt: now }, "Location updated");
 });
 
-/** GET /delivery/requests/available - Pathao-style Open Marketplace */
+/** GET /delivery/requests/available - Pathao-style Open Marketplace with Smart Ranking */
 export const getAvailableDeliveries = asyncHandler(async (req: Request, res: Response) => {
   const { page = "1", limit = "20", zone } = req.query as {
     page?: string;
@@ -220,19 +255,37 @@ export const getAvailableDeliveries = asyncHandler(async (req: Request, res: Res
   const details = await DeliveryManDetails.findOne({ userId: req.user!.id }).lean();
   const maxActive = details?.preferences?.maxActiveDeliveries ?? details?.vehicle?.vehicleCapacity ?? 3;
 
-  const activeCount = await DeliveryRequest.countDocuments({
+  const activeDeliveries = await DeliveryRequest.find({
     assignedDeliveryManId: req.user!.id,
     status: {
       $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"],
     },
-  });
+  }).lean();
+
+  const activeCount = activeDeliveries.length;
+  const remainingSlots = Math.max(0, maxActive - activeCount);
 
   if (activeCount >= maxActive) {
     sendPaginated(res, [], 0, Number(page), Number(limit));
     return;
   }
 
-  const skip = (Number(page) - 1) * Number(limit);
+  const vType = details?.vehicle?.vehicleType || "motorcycle";
+  const maxCapacityWeight = details?.vehicle?.vehicleCapacity
+    ? details.vehicle.vehicleCapacity * 5
+    : vType === "van"
+    ? 50
+    : vType === "car"
+    ? 30
+    : vType === "motorcycle"
+    ? 20
+    : vType === "bicycle"
+    ? 10
+    : 15;
+
+  const currentLoadedWeight = activeDeliveries.reduce((sum, d) => sum + (d.packageInfo?.weight || 0), 0);
+  const remainingWeightKg = Math.max(0, maxCapacityWeight - currentLoadedWeight);
+
   const filter: Record<string, unknown> = {
     status: "available",
   };
@@ -241,7 +294,6 @@ export const getAvailableDeliveries = asyncHandler(async (req: Request, res: Res
     filter.pickupAddress = new RegExp(zone, "i");
   }
 
-  // If rider has preferred service zones, we can match or let them see all open
   const preferredZones = details?.personal?.serviceArea || details?.preferences?.preferredServiceZones;
   if (preferredZones && preferredZones.length > 0 && !zone) {
     const zoneRegexes = preferredZones.map((z) => new RegExp(z, "i"));
@@ -253,27 +305,127 @@ export const getAvailableDeliveries = asyncHandler(async (req: Request, res: Res
 
   let [deliveries, total] = await Promise.all([
     DeliveryRequest.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit))
+      .sort({ priority: -1, createdAt: -1 })
       .lean(),
     DeliveryRequest.countDocuments(filter),
   ]);
 
-  // Fallback: If preferred zone filter yielded 0 results, show general open requests
   if (deliveries.length === 0 && filter.$or) {
     delete filter.$or;
     [deliveries, total] = await Promise.all([
       DeliveryRequest.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(Number(limit))
+        .sort({ priority: -1, createdAt: -1 })
         .lean(),
       DeliveryRequest.countDocuments(filter),
     ]);
   }
 
-  sendPaginated(res, normalizeLeanArray(deliveries), total, Number(page), Number(limit));
+  const riderLat = details?.currentLocation?.latitude;
+  const riderLng = details?.currentLocation?.longitude;
+  const hasRiderGps = riderLat !== undefined && riderLng !== undefined && riderLat !== null && riderLng !== null && isValidCoordinate(riderLat, riderLng);
+
+  // Enrich each delivery with real calculations, ranking, facts & inferences
+  const enrichedDeliveries = deliveries.map((d) => {
+    const pCoords = getApproxCoordinatesFromAddress(d.pickupAddress);
+    const dCoords = getApproxCoordinatesFromAddress(d.deliveryAddress);
+    const pkgWeight = d.packageInfo?.weight || 0;
+
+    let pickupDistanceKm: number | null = null;
+    let estimatedTravelMinutes: number | null = null;
+
+    if (hasRiderGps && pCoords?.latitude && pCoords?.longitude) {
+      const distMeters = calculateDistanceMeters(riderLat!, riderLng!, pCoords.latitude, pCoords.longitude);
+      pickupDistanceKm = Math.round((distMeters / 1000) * 10) / 10;
+      // Realistic city traffic speed: ~25 km/h + 5 min pickup buffer
+      estimatedTravelMinutes = Math.max(5, Math.round((pickupDistanceKm / 25) * 60) + 5);
+    }
+
+    const fitsWeight = pkgWeight === 0 || pkgWeight <= remainingWeightKg;
+    const fitsCapacity = remainingSlots > 0 && fitsWeight;
+
+    // Route overlap check with active deliveries
+    let routeCompatibility: "High" | "Medium" | "Standard" = "Standard";
+    if (activeDeliveries.length > 0 && pCoords) {
+      for (const ad of activeDeliveries) {
+        const adDrop = getApproxCoordinatesFromAddress(ad.deliveryAddress);
+        if (adDrop) {
+          const proximity = calculateDistanceMeters(pCoords.latitude, pCoords.longitude, adDrop.latitude, adDrop.longitude);
+          if (proximity <= 2000) {
+            routeCompatibility = "High";
+            break;
+          } else if (proximity <= 5000) {
+            routeCompatibility = "Medium";
+          }
+        }
+      }
+    }
+
+    const norm = normalizeLean(d as unknown as Record<string, unknown>);
+
+    return {
+      ...norm,
+      pickupCoordinates: pCoords,
+      deliveryCoordinates: dCoords,
+      ranking: {
+        pickupDistanceKm,
+        estimatedTravelMinutes,
+        fitsCapacity,
+        fitsWeight,
+        routeCompatibility,
+        remainingSlots,
+        remainingWeightKg,
+      },
+      facts: {
+        orderId: d.orderId,
+        pickupAddress: d.pickupAddress,
+        deliveryAddress: d.deliveryAddress,
+        deliveryFee: d.deliveryFee || 60,
+        packageWeightKg: pkgWeight,
+        fragile: d.packageInfo?.fragile || false,
+        priority: d.priority,
+      },
+      calculations: {
+        pickupDistanceKm,
+        estimatedTravelMinutes,
+        remainingSlots,
+        remainingWeightKg,
+        maxVehicleCapacity: maxActive,
+      },
+      inferences: {
+        fitsCapacity,
+        routeCompatibility,
+        recommendationReason:
+          pickupDistanceKm !== null && pickupDistanceKm <= 3
+            ? "Very close to your current location"
+            : routeCompatibility === "High"
+            ? "Overlaps with your active route"
+            : fitsCapacity
+            ? "Fits within vehicle capacity"
+            : "Available standard delivery",
+      },
+    };
+  });
+
+  // Sort by ranking: fitsCapacity first, then priority, then pickupDistanceKm (if available), then createdAt
+  enrichedDeliveries.sort((a, b) => {
+    if (a.ranking.fitsCapacity && !b.ranking.fitsCapacity) return -1;
+    if (!a.ranking.fitsCapacity && b.ranking.fitsCapacity) return 1;
+
+    const priorityWeight = { urgent: 3, high: 2, normal: 1 };
+    const pA = priorityWeight[(a.facts.priority as "urgent" | "high" | "normal") || "normal"];
+    const pB = priorityWeight[(b.facts.priority as "urgent" | "high" | "normal") || "normal"];
+    if (pA !== pB) return pB - pA;
+
+    if (a.ranking.pickupDistanceKm !== null && b.ranking.pickupDistanceKm !== null) {
+      return a.ranking.pickupDistanceKm - b.ranking.pickupDistanceKm;
+    }
+    return 0;
+  });
+
+  const skip = (Number(page) - 1) * Number(limit);
+  const paginated = enrichedDeliveries.slice(skip, skip + Number(limit));
+
+  sendPaginated(res, paginated, total, Number(page), Number(limit));
 });
 
 /** GET /delivery/requests/my - My active & historical deliveries */
@@ -322,7 +474,16 @@ export const getMyDeliveries = asyncHandler(async (req: Request, res: Response) 
     DeliveryRequest.countDocuments(filter),
   ]);
 
-  sendPaginated(res, normalizeLeanArray(deliveries), total, Number(page), Number(limit));
+  const enrichDeliveryItem = (d: any) => {
+    const norm = normalizeLean(d as unknown as Record<string, unknown>);
+    return {
+      ...norm,
+      pickupCoordinates: norm.pickupCoordinates || getApproxCoordinatesFromAddress(d.pickupAddress),
+      deliveryCoordinates: norm.deliveryCoordinates || getApproxCoordinatesFromAddress(d.deliveryAddress),
+    };
+  };
+
+  sendPaginated(res, deliveries.map(enrichDeliveryItem), total, Number(page), Number(limit));
 });
 
 /**
@@ -333,22 +494,64 @@ export const acceptDelivery = asyncHandler(async (req: Request, res: Response) =
   const { id } = req.params;
   const userId = req.user!.id;
 
-  // 1. Verify delivery man is approved
+  // 1. Verify delivery man is approved & active
   const profile = await DeliveryManProfile.findOne({ userId });
   if (!profile || profile.status !== "approved") {
     throw ApiError.forbidden("Your delivery partner account is not approved.");
   }
 
-  // 2. Verify rider capacity
+  // 2. Verify rider capacity & status (parcel count & vehicle weight)
   const details = await DeliveryManDetails.findOne({ userId }).lean();
-  const maxActive = details?.preferences?.maxActiveDeliveries ?? details?.vehicle?.vehicleCapacity ?? 3;
-  const activeCount = await DeliveryRequest.countDocuments({
+  if (details?.availabilityStatus === "on_break") {
+    throw ApiError.badRequest("You are currently on break. Please resume availability before accepting new deliveries.");
+  }
+  if (details?.availabilityStatus === "suspended") {
+    throw ApiError.forbidden("Your delivery partner account is suspended.");
+  }
+  if (details?.availabilityStatus === "offline") {
+    throw ApiError.badRequest("You are currently offline. Please go online before accepting deliveries.");
+  }
+
+  const maxActiveParcels = details?.preferences?.maxActiveDeliveries ?? details?.vehicle?.vehicleCapacity ?? 3;
+
+  const activeDeliveries = await DeliveryRequest.find({
     assignedDeliveryManId: userId,
     status: { $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"] },
-  });
+  }).lean();
 
-  if (activeCount >= maxActive) {
-    throw ApiError.badRequest(`Capacity full: You cannot have more than ${maxActive} active deliveries simultaneously.`);
+  if (activeDeliveries.length >= maxActiveParcels) {
+    throw ApiError.badRequest(
+      `Capacity full: You currently have ${activeDeliveries.length} active deliveries. Your maximum active capacity is ${maxActiveParcels}.`
+    );
+  }
+
+  // Check vehicle weight limit if target package specifies weight
+  const targetRequest = await DeliveryRequest.findById(id).lean();
+  if (!targetRequest) {
+    throw ApiError.notFound("Delivery request not found");
+  }
+
+  const vType = details?.vehicle?.vehicleType;
+  const maxCapacityWeight = details?.vehicle?.vehicleCapacity
+    ? details.vehicle.vehicleCapacity * 5
+    : vType === "van"
+    ? 50
+    : vType === "car"
+    ? 30
+    : vType === "motorcycle"
+    ? 20
+    : vType === "bicycle"
+    ? 10
+    : 15;
+
+  const currentLoadedWeight = activeDeliveries.reduce((sum, d) => sum + (d.packageInfo?.weight || 0), 0);
+  const incomingWeight = targetRequest.packageInfo?.weight || 0;
+
+  if (incomingWeight > 0 && currentLoadedWeight + incomingWeight > maxCapacityWeight) {
+    const remaining = Math.max(0, maxCapacityWeight - currentLoadedWeight);
+    throw ApiError.badRequest(
+      `Weight capacity exceeded: Vehicle limit is ${maxCapacityWeight}kg (currently loaded: ${currentLoadedWeight}kg, remaining: ${remaining}kg). This package weighs ${incomingWeight}kg.`
+    );
   }
 
   // 3. Atomically claim the request (1st transaction wins; subsequent parallel requests return null)
@@ -377,7 +580,7 @@ export const acceptDelivery = asyncHandler(async (req: Request, res: Response) =
       throw ApiError.notFound("Delivery request not found");
     }
     // Already claimed by another delivery man -> 409 Conflict
-    throw ApiError.conflict("This delivery has already been accepted by another delivery partner.");
+    throw ApiError.conflict("Another delivery man accepted this request first.");
   }
 
   // 4. Update corresponding Order model
@@ -388,18 +591,34 @@ export const acceptDelivery = asyncHandler(async (req: Request, res: Response) =
   });
 
   // 5. Update rider totalDeliveries and availability
-  const newActiveCount = activeCount + 1;
+  const newActiveCount = activeDeliveries.length + 1;
+  const isNowFull = newActiveCount >= maxActiveParcels;
   await DeliveryManDetails.updateOne(
     { userId },
     {
       $inc: { totalDeliveries: 1 },
-      availabilityStatus: newActiveCount >= maxActive ? "busy" : "available",
+      availabilityStatus: isNowFull ? "full_capacity" : "busy",
       isActive: true,
       lastActiveAt: new Date(),
     }
   );
 
-  // 6. Notify seller & customer
+  // 6. Broadcast Realtime Socket Events
+  emitDeliveryEvent(claimedRequest.id, "delivery:accepted", {
+    deliveryId: claimedRequest.id,
+    orderId: claimedRequest.orderId,
+    riderId: userId,
+    riderName: details?.personal?.fullName || "Courier",
+    acceptedAt: new Date().toISOString(),
+  });
+
+  emitAdminOperationsEvent("admin:delivery_assigned", {
+    deliveryId: claimedRequest.id,
+    orderId: claimedRequest.orderId,
+    riderId: userId,
+  });
+
+  // 7. Notify seller & customer
   createNotification({
     userId: claimedRequest.sellerId,
     type: "delivery_alert",
@@ -525,10 +744,11 @@ export const updateDeliveryStatus = asyncHandler(async (req: Request, res: Respo
     status: { $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"] },
   });
   const details = await DeliveryManDetails.findOne({ userId }).lean();
-  const maxActive = details?.preferences?.maxActiveDeliveries ?? 3;
+  const maxActive = details?.preferences?.maxActiveDeliveries ?? details?.vehicle?.vehicleCapacity ?? 3;
+  const newStatus = activeCount === 0 ? "available" : activeCount >= maxActive ? "full_capacity" : "busy";
   await DeliveryManDetails.updateOne(
     { userId },
-    { availabilityStatus: activeCount >= maxActive ? "busy" : "available" }
+    { availabilityStatus: newStatus }
   );
 
   // Send real notifications
@@ -575,6 +795,22 @@ export const updateDeliveryStatus = asyncHandler(async (req: Request, res: Respo
     }).catch(() => undefined);
   }
 
+  // Real-time socket event broadcast to tracking subscribers & admin
+  emitDeliveryEvent(deliveryRequest.id, "delivery:status_change", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    status,
+    failureReason,
+    updatedAt: now.toISOString(),
+  });
+
+  emitAdminOperationsEvent("admin:delivery_status", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    status,
+    riderId: userId,
+  });
+
   sendSuccess(res, deliveryRequest.toJSON(), status === "delivered" ? "Delivery completed successfully" : "Status updated");
 });
 
@@ -612,8 +848,19 @@ export const getDeliveryById = asyncHandler(async (req: Request, res: Response) 
       .then((inc) => normalizeLeanArray(inc)),
   ]);
 
+  const pickupCoordinates = getApproxCoordinatesFromAddress(deliveryRequest.pickupAddress);
+  const deliveryCoordinates = getApproxCoordinatesFromAddress(deliveryRequest.deliveryAddress);
+
+  const enrichedDeliveryRequest = {
+    ...normalizeLean(deliveryRequest as unknown as Record<string, unknown>),
+    pickupCoordinates,
+    deliveryCoordinates,
+  };
+
   sendSuccess(res, {
-    deliveryRequest: normalizeLean(deliveryRequest as unknown as Record<string, unknown>),
+    deliveryRequest: enrichedDeliveryRequest,
+    pickupCoordinates,
+    deliveryCoordinates,
     order,
     locations,
     ratings,
@@ -638,7 +885,14 @@ export const verifyDeliveryOtp = asyncHandler(async (req: Request, res: Response
     throw ApiError.badRequest("Cannot verify OTP when order is not out for delivery");
   }
 
+  // Attempt rate guard
+  if ((deliveryRequest.attemptCount || 0) >= 5) {
+    throw ApiError.badRequest("Too many failed OTP verification attempts. Please contact customer support.");
+  }
+
   if (deliveryRequest.deliveryOtp !== otp.trim()) {
+    deliveryRequest.attemptCount = (deliveryRequest.attemptCount || 0) + 1;
+    await deliveryRequest.save();
     throw ApiError.badRequest("Invalid delivery OTP. Please verify with the customer.");
   }
 
@@ -646,6 +900,7 @@ export const verifyDeliveryOtp = asyncHandler(async (req: Request, res: Response
   deliveryRequest.deliveryOtpVerifiedAt = now;
   deliveryRequest.status = "delivered";
   deliveryRequest.deliveredAt = now;
+  deliveryRequest.attemptCount = 0;
   await deliveryRequest.save();
 
   // Sync to order
@@ -670,11 +925,25 @@ export const verifyDeliveryOtp = asyncHandler(async (req: Request, res: Response
     status: { $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"] },
   });
   const details = await DeliveryManDetails.findOne({ userId }).lean();
-  const maxActive = details?.preferences?.maxActiveDeliveries ?? 3;
+  const maxActive = details?.preferences?.maxActiveDeliveries ?? details?.vehicle?.vehicleCapacity ?? 3;
+  const newStatus = activeCount === 0 ? "available" : activeCount >= maxActive ? "full_capacity" : "busy";
   await DeliveryManDetails.updateOne(
     { userId },
-    { availabilityStatus: activeCount >= maxActive ? "busy" : "available" }
+    { availabilityStatus: newStatus }
   );
+
+  // Broadcast socket events
+  emitDeliveryEvent(deliveryRequest.id, "delivery:delivered", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    deliveredAt: now.toISOString(),
+  });
+
+  emitAdminOperationsEvent("admin:delivery_completed", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    riderId: userId,
+  });
 
   // Send completion notifications
   createNotification({
@@ -715,52 +984,246 @@ export const uploadDeliveryProof = asyncHandler(async (req: Request, res: Respon
     deliveryProofImage: proofUrl,
   });
 
+  emitDeliveryEvent(deliveryRequest.id, "delivery:proof_uploaded", {
+    deliveryId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    deliveryProofImage: proofUrl,
+  });
+
   sendSuccess(res, { deliveryProofImage: proofUrl }, "Proof of delivery uploaded successfully");
 });
 
-/** POST /delivery/requests/:id/incident - Report delivery incident */
-export const reportDeliveryIncident = asyncHandler(async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { category, severity, description, evidenceImages } = req.body as {
-    category: string;
-    severity: "low" | "medium" | "high" | "critical";
+/** POST /delivery/incidents - Report delivery incident (general or order-specific) */
+export const createDeliveryIncident = asyncHandler(async (req: Request, res: Response) => {
+  const { deliveryRequestId, orderId, category, severity, description, evidenceImages } = req.body as {
+    deliveryRequestId?: string;
+    orderId?: string;
+    category: any;
+    severity?: "low" | "medium" | "high" | "critical";
     description: string;
     evidenceImages?: string[];
   };
 
-  const deliveryRequest = await DeliveryRequest.findById(id);
-  if (!deliveryRequest) throw ApiError.notFound("Delivery request not found");
+  const userId = req.user!.id;
+  const isAdmin = req.user!.role === "admin";
 
-  if (deliveryRequest.assignedDeliveryManId !== req.user!.id && req.user!.role !== "admin") {
-    throw ApiError.forbidden("You can only report incidents for your assigned deliveries");
+  let linkedDelivery: any = null;
+  const targetDelId = deliveryRequestId || orderId;
+
+  if (targetDelId && targetDelId !== "general") {
+    const isObjId = mongoose.isValidObjectId(targetDelId);
+    linkedDelivery = await DeliveryRequest.findOne({
+      $or: [
+        ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(targetDelId) }] : []),
+        { orderId: targetDelId },
+      ],
+    });
+
+    if (linkedDelivery) {
+      if (linkedDelivery.assignedDeliveryManId !== userId && !isAdmin) {
+        throw ApiError.forbidden("You can only report incidents for your assigned deliveries");
+      }
+    }
   }
 
   const incident = await DeliveryIncident.create({
-    deliveryRequestId: deliveryRequest.id,
-    orderId: deliveryRequest.orderId,
-    deliveryManId: req.user!.id,
+    deliveryRequestId: linkedDelivery?.id || (deliveryRequestId && deliveryRequestId !== "general" ? deliveryRequestId : undefined),
+    orderId: linkedDelivery?.orderId || orderId || undefined,
+    deliveryManId: userId,
     category,
-    severity,
+    severity: severity || "medium",
     description,
     evidenceImages: evidenceImages || [],
     status: "open",
   });
 
-  // Notify seller
-  createNotification({
-    userId: deliveryRequest.sellerId,
-    type: "incident_alert",
-    category: "delivery",
-    priority: severity === "critical" ? "high" : "warning",
-    source: "delivery",
-    title: "Delivery Incident Reported",
-    message: `An incident (${category.replace(/_/g, " ")}) was reported for order #${deliveryRequest.orderId}.`,
-    link: `/dashboard/seller/orders`,
-    relatedId: incident.id,
-    relatedType: "delivery",
-  }).catch(() => undefined);
+  if (linkedDelivery) {
+    emitDeliveryEvent(linkedDelivery.id, "delivery:incident_reported", {
+      deliveryId: linkedDelivery.id,
+      orderId: linkedDelivery.orderId,
+      incident: incident.toJSON(),
+    });
+
+    createNotification({
+      userId: linkedDelivery.sellerId,
+      type: "incident_alert",
+      category: "delivery",
+      priority: severity === "critical" ? "high" : "warning",
+      source: "delivery",
+      title: "Delivery Incident Reported",
+      message: `An incident (${category.replace(/_/g, " ")}) was reported for order #${linkedDelivery.orderId}.`,
+      link: `/dashboard/seller/orders`,
+      relatedId: incident.id,
+      relatedType: "delivery",
+    }).catch(() => undefined);
+  }
+
+  emitAdminOperationsEvent("admin:incident_reported", {
+    incidentId: incident.id,
+    deliveryId: linkedDelivery?.id,
+    category,
+    severity: severity || "medium",
+    riderId: userId,
+  });
 
   sendSuccess(res, { incident: incident.toJSON() }, "Incident reported successfully", 201);
+});
+
+/** POST /delivery/requests/:id/incident - Backward compatible delivery incident route */
+export const reportDeliveryIncident = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { category, severity, description, evidenceImages } = req.body as {
+    category: any;
+    severity?: "low" | "medium" | "high" | "critical";
+    description: string;
+    evidenceImages?: string[];
+  };
+
+  const userId = req.user!.id;
+  const isAdmin = req.user!.role === "admin";
+
+  let linkedDelivery: any = null;
+
+  if (id && id !== "general") {
+    const isObjId = mongoose.isValidObjectId(id);
+    linkedDelivery = await DeliveryRequest.findOne({
+      $or: [
+        ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(id) }] : []),
+        { orderId: id },
+      ],
+    });
+
+    if (!linkedDelivery) {
+      throw ApiError.notFound("Delivery request not found");
+    }
+
+    if (linkedDelivery.assignedDeliveryManId !== userId && !isAdmin) {
+      throw ApiError.forbidden("You can only report incidents for your assigned deliveries");
+    }
+  }
+
+  const incident = await DeliveryIncident.create({
+    deliveryRequestId: linkedDelivery?.id || (id !== "general" ? id : undefined),
+    orderId: linkedDelivery?.orderId,
+    deliveryManId: userId,
+    category,
+    severity: severity || "medium",
+    description,
+    evidenceImages: evidenceImages || [],
+    status: "open",
+  });
+
+  if (linkedDelivery) {
+    emitDeliveryEvent(linkedDelivery.id, "delivery:incident_reported", {
+      deliveryId: linkedDelivery.id,
+      orderId: linkedDelivery.orderId,
+      incident: incident.toJSON(),
+    });
+
+    createNotification({
+      userId: linkedDelivery.sellerId,
+      type: "incident_alert",
+      category: "delivery",
+      priority: severity === "critical" ? "high" : "warning",
+      source: "delivery",
+      title: "Delivery Incident Reported",
+      message: `An incident (${category.replace(/_/g, " ")}) was reported for order #${linkedDelivery.orderId}.`,
+      link: `/dashboard/seller/orders`,
+      relatedId: incident.id,
+      relatedType: "delivery",
+    }).catch(() => undefined);
+  }
+
+  emitAdminOperationsEvent("admin:incident_reported", {
+    incidentId: incident.id,
+    deliveryId: linkedDelivery?.id,
+    category,
+    severity: severity || "medium",
+    riderId: userId,
+  });
+
+  sendSuccess(res, { incident: incident.toJSON() }, "Incident reported successfully", 201);
+});
+
+/** GET /delivery/seller/active-deliveries - Real-time active deliveries scoped strictly to seller */
+export const getSellerActiveDeliveries = asyncHandler(async (req: Request, res: Response) => {
+  const sellerId = req.user!.id;
+  const { status } = req.query as { status?: string };
+
+  const filter: Record<string, unknown> = {
+    sellerId,
+  };
+
+  if (status && status !== "all") {
+    filter.status = status;
+  } else {
+    filter.status = {
+      $in: ["available", "assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery", "delivered"],
+    };
+  }
+
+  const deliveries = await DeliveryRequest.find(filter)
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
+
+  const riderIds = deliveries
+    .map((d) => d.assignedDeliveryManId)
+    .filter((id): id is string => Boolean(id));
+
+  const [riderDetails, riderProfiles] = await Promise.all([
+    DeliveryManDetails.find({ userId: { $in: riderIds } }).lean(),
+    DeliveryManProfile.find({ userId: { $in: riderIds } }).lean(),
+  ]);
+
+  const detailsMap = new Map(riderDetails.map((d) => [d.userId, d]));
+  const profileMap = new Map(riderProfiles.map((p) => [p.userId, p]));
+
+  const enrichedDeliveries = deliveries.map((d) => {
+    let assignedRider: any = null;
+    let currentLocation: any = null;
+
+    if (d.assignedDeliveryManId) {
+      const details = detailsMap.get(d.assignedDeliveryManId);
+      const profile = profileMap.get(d.assignedDeliveryManId);
+
+      assignedRider = {
+        name: details?.personal?.fullName || "Assigned Courier",
+        phone: details?.personal?.phone,
+        rating: details?.rating || 5.0,
+        vehicleType: details?.vehicle?.vehicleType || "Motorcycle",
+        status: profile?.status || "approved",
+      };
+
+      const isLive = ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"].includes(d.status);
+      if (
+        isLive &&
+        details?.currentLocation?.latitude !== undefined &&
+        details?.currentLocation?.latitude !== null &&
+        details?.currentLocation?.longitude !== undefined &&
+        details?.currentLocation?.longitude !== null
+      ) {
+        currentLocation = {
+          latitude: details.currentLocation.latitude,
+          longitude: details.currentLocation.longitude,
+          speed: details.currentLocation.speed,
+          heading: details.currentLocation.heading,
+          accuracy: details.currentLocation.accuracy,
+          updatedAt: details.currentLocation.updatedAt ? new Date(details.currentLocation.updatedAt).toISOString() : new Date().toISOString(),
+        };
+      }
+    }
+
+    return {
+      ...normalizeLean(d as unknown as Record<string, unknown>),
+      pickupCoordinates: getApproxCoordinatesFromAddress(d.pickupAddress),
+      deliveryCoordinates: getApproxCoordinatesFromAddress(d.deliveryAddress),
+      assignedRider,
+      currentLocation,
+    };
+  });
+
+  sendSuccess(res, enrichedDeliveries);
 });
 
 /** GET /delivery/incidents - List incidents for authenticated delivery man */
@@ -858,7 +1321,6 @@ export const getDeliveryTracking = asyncHandler(async (req: Request, res: Respon
     }
 
     recentBreadcrumbs = await DeliveryLocation.find({ deliveryRequestId: deliveryRequest._id })
-
       .sort({ recordedAt: -1 })
       .limit(10)
       .lean();
@@ -881,12 +1343,14 @@ export const getDeliveryTracking = asyncHandler(async (req: Request, res: Respon
     },
     pickupAddress: deliveryRequest.pickupAddress,
     deliveryAddress: deliveryRequest.deliveryAddress,
+    pickupCoordinates: getApproxCoordinatesFromAddress(deliveryRequest.pickupAddress),
+    deliveryCoordinates: getApproxCoordinatesFromAddress(deliveryRequest.deliveryAddress),
   });
 });
 
-/** POST /delivery/requests/:id/rate - Customer rates delivery partner */
+/** POST /delivery/requests/:id/rate or POST /delivery/orders/:orderId/rate - Customer rates delivery partner */
 export const rateDelivery = asyncHandler(async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const targetId = req.params.id || req.params.orderId;
   const { rating, professionalism, timeliness, communication, comment } = req.body as {
     rating: number;
     professionalism?: number;
@@ -895,30 +1359,68 @@ export const rateDelivery = asyncHandler(async (req: Request, res: Response) => 
     comment?: string;
   };
 
-  if (rating < 1 || rating > 5) {
+  if (!rating || rating < 1 || rating > 5) {
     throw ApiError.badRequest("Rating must be between 1 and 5");
   }
 
-  const deliveryRequest = await DeliveryRequest.findById(id);
-  if (!deliveryRequest) throw ApiError.notFound("Delivery request not found");
+  // 1. Try to find delivery request by _id OR orderId
+  const isObjId = mongoose.isValidObjectId(targetId);
+  let deliveryRequest = await DeliveryRequest.findOne({
+    $or: [
+      ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(targetId) }] : []),
+      { orderId: targetId },
+    ],
+  });
 
-  if (deliveryRequest.status !== "delivered") {
+  let orderDoc: any = null;
+  if (!deliveryRequest) {
+    orderDoc = await Order.findOne({
+      $or: [
+        ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(targetId) }] : []),
+        { id: targetId },
+      ],
+    });
+    if (!orderDoc) {
+      throw ApiError.notFound("Delivery record or order not found");
+    }
+  } else {
+    orderDoc = await Order.findById(deliveryRequest.orderId);
+  }
+
+  const effectiveDeliveryManId = deliveryRequest?.assignedDeliveryManId || orderDoc?.deliveryManId;
+  const isDelivered = deliveryRequest?.status === "delivered" || orderDoc?.status === "delivered";
+  const customerId = deliveryRequest?.customerId || orderDoc?.userId;
+
+  if (!effectiveDeliveryManId) {
+    throw ApiError.badRequest("Delivery Man rating is unavailable for this order.");
+  }
+
+  if (!isDelivered) {
     throw ApiError.badRequest("You can only rate a completed delivery");
   }
 
-  if (deliveryRequest.customerId !== req.user!.id && req.user!.role !== "admin") {
+  if (customerId !== req.user!.id && req.user!.role !== "admin") {
     throw ApiError.forbidden("Only the customer of this order can submit a rating");
   }
 
-  const existing = await DeliveryRating.findOne({ deliveryRequestId: deliveryRequest.id });
+  const orderIdStr = String(deliveryRequest?.orderId || orderDoc?._id || targetId);
+  const deliveryReqIdStr = deliveryRequest ? String(deliveryRequest._id) : orderIdStr;
+
+  // Check for duplicate rating by deliveryRequestId OR orderId
+  const existing = await DeliveryRating.findOne({
+    $or: [
+      { deliveryRequestId: deliveryReqIdStr },
+      { orderId: orderIdStr },
+    ],
+  });
   if (existing) {
-    throw ApiError.badRequest("You have already rated this delivery partner");
+    throw ApiError.badRequest("You have already rated this delivery partner for this order");
   }
 
-  await DeliveryRating.create({
-    deliveryRequestId: deliveryRequest.id,
-    orderId: deliveryRequest.orderId,
-    deliveryManId: deliveryRequest.assignedDeliveryManId,
+  const savedRating = await DeliveryRating.create({
+    deliveryRequestId: deliveryReqIdStr,
+    orderId: orderIdStr,
+    deliveryManId: effectiveDeliveryManId,
     customerId: req.user!.id,
     rating,
     professionalism: professionalism ?? rating,
@@ -929,7 +1431,7 @@ export const rateDelivery = asyncHandler(async (req: Request, res: Response) => 
 
   // Recompute rider aggregate rating
   const stats = await DeliveryRating.aggregate([
-    { $match: { deliveryManId: deliveryRequest.assignedDeliveryManId } },
+    { $match: { deliveryManId: effectiveDeliveryManId } },
     {
       $group: {
         _id: null,
@@ -943,11 +1445,22 @@ export const rateDelivery = asyncHandler(async (req: Request, res: Response) => 
   const count = stats[0]?.count ?? 1;
 
   await DeliveryManDetails.updateOne(
-    { userId: deliveryRequest.assignedDeliveryManId },
+    { userId: effectiveDeliveryManId },
     { rating: Math.round(avg * 10) / 10, ratingCount: count }
   );
 
-  sendSuccess(res, { rating, professionalism, timeliness, communication, comment }, "Thank you! Rating submitted successfully.");
+  sendSuccess(
+    res,
+    {
+      rating: savedRating.rating,
+      professionalism: savedRating.professionalism,
+      timeliness: savedRating.timeliness,
+      communication: savedRating.communication,
+      comment: savedRating.comment,
+      createdAt: savedRating.createdAt,
+    },
+    "Thank you! Rating submitted successfully."
+  );
 });
 
 /** GET /delivery/stats - Real computed metrics for rider */
@@ -1071,6 +1584,7 @@ export const listDeliveryMen = asyncHandler(async (req: Request, res: Response) 
       totalDeliveries: d?.totalDeliveries ?? 0,
       completedDeliveries: d?.completedDeliveries ?? 0,
       failedDeliveries: d?.failedDeliveries ?? 0,
+      currentLocation: d?.currentLocation ? normalizeLean(d.currentLocation as unknown as Record<string, unknown>) : undefined,
       name: d?.personal?.fullName || u?.name || "Delivery Partner",
       email: d?.personal?.email || u?.email || "",
       image: d?.personal?.profilePhoto || u?.image || "",
@@ -1086,7 +1600,6 @@ export const listDeliveryMen = asyncHandler(async (req: Request, res: Response) 
         (item.personal && typeof (item.personal as any).phone === "string" && (item.personal as any).phone.includes(q))
     );
   }
-
 
   const total = items.length;
   const skip = (Number(page) - 1) * Number(limit);
@@ -1250,4 +1763,60 @@ export const resolveAdminIncident = asyncHandler(async (req: Request, res: Respo
   await incident.save();
 
   sendSuccess(res, incident.toJSON(), "Incident updated successfully");
+});
+
+/** GET /delivery/admin/heatmap - Real Geospatial Delivery Demand Heatmap */
+export const getAdminDeliveryHeatmap = asyncHandler(async (req: Request, res: Response) => {
+  const { timeRange = "30d" } = req.query as { timeRange?: "today" | "7d" | "30d" | "all" };
+
+  const now = new Date();
+  const filter: Record<string, unknown> = {};
+
+  if (timeRange === "today") {
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    filter.createdAt = { $gte: startOfDay };
+  } else if (timeRange === "7d") {
+    filter.createdAt = { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) };
+  } else if (timeRange === "30d") {
+    filter.createdAt = { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) };
+  }
+
+  // Fetch real delivery requests in period
+  const deliveries = await DeliveryRequest.find(filter)
+    .select("pickupAddress deliveryAddress status createdAt")
+    .limit(500)
+    .lean();
+
+  // Aggregate into coordinate density clusters
+  const coordinateMap = new Map<string, { latitude: number; longitude: number; weight: number; count: number; address: string }>();
+
+  for (const d of deliveries) {
+    const pCoords = getApproxCoordinatesFromAddress(d.pickupAddress);
+    const dCoords = getApproxCoordinatesFromAddress(d.deliveryAddress);
+
+    if (pCoords) {
+      const key = `${pCoords.latitude.toFixed(3)},${pCoords.longitude.toFixed(3)}`;
+      const existing = coordinateMap.get(key) || { latitude: pCoords.latitude, longitude: pCoords.longitude, weight: 0, count: 0, address: d.pickupAddress || "" };
+      existing.weight += 1;
+      existing.count += 1;
+      coordinateMap.set(key, existing);
+    }
+
+    if (dCoords) {
+      const key = `${dCoords.latitude.toFixed(3)},${dCoords.longitude.toFixed(3)}`;
+      const existing = coordinateMap.get(key) || { latitude: dCoords.latitude, longitude: dCoords.longitude, weight: 0, count: 0, address: d.deliveryAddress || "" };
+      existing.weight += 1.5; // Customer dropoffs carry higher density weight
+      existing.count += 1;
+      coordinateMap.set(key, existing);
+    }
+  }
+
+  const heatmapPoints = Array.from(coordinateMap.values());
+
+  sendSuccess(res, {
+    timeRange,
+    totalDeliveriesAnalyzed: deliveries.length,
+    pointCount: heatmapPoints.length,
+    points: heatmapPoints,
+  });
 });

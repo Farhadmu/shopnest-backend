@@ -7,9 +7,13 @@ import { Cart } from "../../cart/cart.model";
 import { Coupon } from "../../coupons/coupon.model";
 import { Notification } from "../../notifications/notification.model";
 import { Store } from "../../sellers/store.model";
+import { ShoppingGoal } from "../../customer/customer-intelligence.model";
+import { ShoppingJourney } from "../../customer/customer-intelligence.model";
+import { ProductLifecycle } from "../../customer/customer-intelligence.model";
+import { LoyaltyPoints } from "../../customer/customer-features.model";
+import { SpendingBudget } from "../../customer/spending-budget.model";
+import { DeliveryRequest } from "../../delivery/delivery-request.model";
 import { buildPublicProductFilter, getPublicProduct } from "../../../utils/activeProductFilter";
-
-const db = () => mongoose.connection.db;
 
 export interface CustomerOverview {
   totalOrders: number;
@@ -20,6 +24,10 @@ export interface CustomerOverview {
   wishlistCount: number;
   cartCount: number;
   totalSpent: number;
+  loyaltyPoints?: number;
+  activeGoalsCount?: number;
+  activeLifecycleCount?: number;
+  unreadNotifications?: number;
 }
 
 export interface CustomerOrder {
@@ -30,6 +38,8 @@ export interface CustomerOrder {
   createdAt: Date;
   items: Array<{ productId: string; title: string; price: number; quantity: number; image?: string }>;
   shippingAddress: string;
+  deliveryStatus?: string;
+  isReturnEligible?: boolean;
 }
 
 export interface CustomerWishlistItem {
@@ -53,6 +63,35 @@ export interface CustomerCartItem {
   stock: number;
 }
 
+export interface CustomerSpendingSummary {
+  totalSpent: number;
+  orderCount: number;
+  averageOrderValue: number;
+  monthlyBudget?: number;
+  categorySpending: Array<{ category: string; amount: number; percentage: number }>;
+  recentMonthsSpending: Array<{ month: string; amount: number; orderCount: number }>;
+}
+
+export interface CustomerGoalSummary {
+  id: string;
+  title: string;
+  category: string;
+  targetBudget: number;
+  currentAmount: number;
+  progressPercentage: number;
+  status: string;
+}
+
+export interface CustomerLifecycleSummary {
+  id: string;
+  productTitle: string;
+  category: string;
+  purchaseDate: Date;
+  warrantyExpiryDate?: Date;
+  usagePercentage: number;
+  status: string;
+}
+
 export interface ProductDetails {
   id: string;
   title: string;
@@ -70,12 +109,21 @@ export interface ProductDetails {
 }
 
 export async function getCustomerOverview(userId: string): Promise<CustomerOverview> {
-  const orders = await Order.find({ userId }).lean();
-  const wishlist = await Wishlist.findOne({ userId }).lean();
-  const cart = await Cart.findOne({ userId }).lean();
+  const [orders, wishlist, cart, loyalty, goals, lifecycles, notifications] = await Promise.all([
+    Order.find({ userId }).lean(),
+    Wishlist.findOne({ userId }).lean(),
+    Cart.findOne({ userId }).lean(),
+    LoyaltyPoints.findOne({ userId }).lean().catch(() => null),
+    ShoppingGoal.countDocuments({ userId, status: "active" }).catch(() => 0),
+    ProductLifecycle.countDocuments({ userId, status: "active" }).catch(() => 0),
+    Notification.countDocuments({ userId, isRead: false }).catch(() => 0),
+  ]);
+
   const activeOrders = orders.filter((o: any) => !["delivered", "cancelled", "returned", "refunded"].includes(o.status));
   const deliveredOrders = orders.filter((o: any) => o.status === "delivered");
-  const totalSpent = orders.filter((o: any) => ["delivered", "shipped", "out_for_delivery"].includes(o.status)).reduce((sum: number, o: any) => sum + (o.totalAmount || 0), 0);
+  const totalSpent = orders
+    .filter((o: any) => ["delivered", "shipped", "out_for_delivery"].includes(o.status))
+    .reduce((sum: number, o: any) => sum + (o.totalAmount || 0), 0);
 
   return {
     totalOrders: orders.length,
@@ -86,6 +134,10 @@ export async function getCustomerOverview(userId: string): Promise<CustomerOverv
     wishlistCount: wishlist?.items?.length || 0,
     cartCount: cart?.items?.length || 0,
     totalSpent,
+    loyaltyPoints: loyalty?.availablePoints || 0,
+    activeGoalsCount: goals,
+    activeLifecycleCount: lifecycles,
+    unreadNotifications: notifications,
   };
 }
 
@@ -95,21 +147,31 @@ export async function getCustomerOrders(userId: string, startDate?: Date, endDat
     filter.createdAt = { $gte: startDate, $lte: endDate };
   }
   const orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
-  return orders.map((o: any) => ({
-    id: o._id?.toString() || "",
-    status: o.status,
-    totalAmount: o.totalAmount,
-    paymentStatus: o.paymentStatus,
-    createdAt: o.createdAt,
-    items: (o.items || []).map((it: any) => ({
-      productId: it.productId,
-      title: it.title,
-      price: it.price,
-      quantity: it.quantity,
-      image: it.image,
-    })),
-    shippingAddress: o.shippingAddress,
-  }));
+  const now = Date.now();
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+  return orders.map((o: any) => {
+    const isDelivered = o.status === "delivered";
+    const deliveredAt = o.updatedAt ? new Date(o.updatedAt).getTime() : new Date(o.createdAt).getTime();
+    const isReturnEligible = isDelivered && now - deliveredAt <= SEVEN_DAYS_MS;
+
+    return {
+      id: o._id?.toString() || "",
+      status: o.status,
+      totalAmount: o.totalAmount,
+      paymentStatus: o.paymentStatus,
+      createdAt: o.createdAt,
+      items: (o.items || []).map((it: any) => ({
+        productId: it.productId,
+        title: it.title,
+        price: it.price,
+        quantity: it.quantity,
+        image: it.image,
+      })),
+      shippingAddress: o.shippingAddress,
+      isReturnEligible,
+    };
+  });
 }
 
 export async function getActiveOrders(userId: string): Promise<CustomerOrder[]> {
@@ -122,27 +184,133 @@ export async function getPastOrders(userId: string): Promise<CustomerOrder[]> {
   return orders.filter((o) => ["delivered", "cancelled", "returned", "refunded"].includes(o.status));
 }
 
+export async function getCustomerSpendingSummary(userId: string): Promise<CustomerSpendingSummary> {
+  const [orders, budgetDoc] = await Promise.all([
+    Order.find({ userId, status: { $in: ["delivered", "shipped", "out_for_delivery", "processing", "pending"] } }).lean(),
+    SpendingBudget.findOne({ userId }).lean().catch(() => null),
+  ]);
+
+  const totalSpent = orders.reduce((sum: number, o: any) => sum + (o.totalAmount || 0), 0);
+  const orderCount = orders.length;
+  const averageOrderValue = orderCount > 0 ? Math.round(totalSpent / orderCount) : 0;
+
+  // Category breakdown
+  const categoryMap: Record<string, number> = {};
+  for (const o of orders) {
+    for (const item of o.items || []) {
+      const cat = (item as any).category || "General";
+      categoryMap[cat] = (categoryMap[cat] || 0) + item.price * (item.quantity || 1);
+    }
+  }
+
+  const categorySpending = Object.entries(categoryMap)
+    .map(([category, amount]) => ({
+      category,
+      amount,
+      percentage: totalSpent > 0 ? Math.round((amount / totalSpent) * 100) : 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+
+  // Month-by-month breakdown (last 6 months)
+  const monthMap: Record<string, { amount: number; count: number }> = {};
+  for (const o of orders) {
+    const d = new Date(o.createdAt);
+    const monthKey = d.toLocaleString("default", { month: "short", year: "numeric" });
+    if (!monthMap[monthKey]) {
+      monthMap[monthKey] = { amount: 0, count: 0 };
+    }
+    monthMap[monthKey].amount += o.totalAmount || 0;
+    monthMap[monthKey].count += 1;
+  }
+
+  const recentMonthsSpending = Object.entries(monthMap).map(([month, data]) => ({
+    month,
+    amount: data.amount,
+    orderCount: data.count,
+  }));
+
+  return {
+    totalSpent,
+    orderCount,
+    averageOrderValue,
+    monthlyBudget: budgetDoc?.monthlyBudget || undefined,
+    categorySpending,
+    recentMonthsSpending,
+  };
+}
+
+export async function getShoppingGoals(userId: string): Promise<CustomerGoalSummary[]> {
+  try {
+    const goals = await ShoppingGoal.find({ userId }).sort({ createdAt: -1 }).limit(10).lean();
+    return goals.map((g: any) => ({
+      id: g._id?.toString() || "",
+      title: g.title,
+      category: g.category,
+      targetBudget: g.targetBudget,
+      currentAmount: g.currentAmount,
+      progressPercentage: g.progressPercentage || 0,
+      status: g.status,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function getProductLifecycles(userId: string): Promise<CustomerLifecycleSummary[]> {
+  try {
+    const lifecycles = await ProductLifecycle.find({ userId }).sort({ purchaseDate: -1 }).limit(10).lean();
+    return lifecycles.map((l: any) => ({
+      id: l._id?.toString() || "",
+      productTitle: l.productTitle,
+      category: l.category,
+      purchaseDate: l.purchaseDate,
+      warrantyExpiryDate: l.warrantyExpiryDate,
+      usagePercentage: l.usagePercentage || 0,
+      status: l.status,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function getShoppingJourneys(userId: string) {
+  try {
+    const journeys = await ShoppingJourney.find({ userId }).sort({ updatedAt: -1 }).limit(5).lean();
+    return journeys.map((j: any) => ({
+      category: j.category,
+      currentStage: j.currentStage,
+      journeyProgress: j.journeyProgress,
+      eventsCount: j.events?.length || 0,
+      recommendedNextCategory: j.recommendedNextCategory,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function getWishlist(userId: string): Promise<CustomerWishlistItem[]> {
   const wishlist = await Wishlist.findOne({ userId }).lean();
   if (!wishlist || !wishlist.items.length) return [];
   const productIds = wishlist.items.map((i: any) => i.productId);
   const products = await Product.find({ _id: { $in: productIds }, isDeleted: false }).lean();
   const productMap = new Map(products.map((p: any) => [p._id?.toString() || p.id, p]));
-  return wishlist.items.map((i: any) => {
-    const p = productMap.get(i.productId);
-    if (!p) return null;
-    return {
-      productId: i.productId,
-      title: p.title,
-      price: p.price,
-      discountPrice: p.discountPrice,
-      category: p.category,
-      ratingAvg: p.ratingAvg || 0,
-      stock: p.stock || 0,
-      images: p.images || [],
-      addedAt: i.addedAt,
-    };
-  }).filter(Boolean) as CustomerWishlistItem[];
+  return wishlist.items
+    .map((i: any) => {
+      const p = productMap.get(i.productId);
+      if (!p) return null;
+      return {
+        productId: i.productId,
+        title: p.title,
+        price: p.price,
+        discountPrice: p.discountPrice,
+        category: p.category,
+        ratingAvg: p.ratingAvg || 0,
+        stock: p.stock || 0,
+        images: p.images || [],
+        addedAt: i.addedAt,
+      };
+    })
+    .filter(Boolean) as CustomerWishlistItem[];
 }
 
 export async function getCart(userId: string): Promise<CustomerCartItem[]> {
@@ -151,22 +319,20 @@ export async function getCart(userId: string): Promise<CustomerCartItem[]> {
   const productIds = cart.items.map((i: any) => i.productId);
   const products = await Product.find({ _id: { $in: productIds }, isDeleted: false }).lean();
   const productMap = new Map(products.map((p: any) => [p._id?.toString() || p.id, p]));
-  return cart.items.map((i: any) => {
-    const p = productMap.get(i.productId);
-    if (!p) return null;
-    return {
-      productId: i.productId,
-      title: p.title,
-      price: i.price,
-      quantity: i.quantity,
-      image: p.images?.[0],
-      stock: p.stock || 0,
-    };
-  }).filter(Boolean) as CustomerCartItem[];
-}
-
-export async function getPurchaseHistory(userId: string): Promise<CustomerOrder[]> {
-  return getCustomerOrders(userId);
+  return cart.items
+    .map((i: any) => {
+      const p = productMap.get(i.productId);
+      if (!p) return null;
+      return {
+        productId: i.productId,
+        title: p.title,
+        price: p.price,
+        quantity: i.quantity,
+        image: p.images?.[0],
+        stock: p.stock || 0,
+      };
+    })
+    .filter(Boolean) as CustomerCartItem[];
 }
 
 export async function getCustomerReviews(userId: string): Promise<Array<{ productId: string; productTitle: string; rating: number; comment: string; at: Date }>> {
@@ -183,16 +349,6 @@ export async function getCustomerReviews(userId: string): Promise<Array<{ produc
   }));
 }
 
-export async function getCustomerActivity(userId: string, limit = 10) {
-  const orders = await Order.find({ userId }).sort({ createdAt: -1 }).limit(limit).lean();
-  return orders.map((o: any) => ({
-    id: o._id?.toString() || "",
-    status: o.status,
-    totalAmount: o.totalAmount,
-    createdAt: o.createdAt,
-  }));
-}
-
 export async function getNotifications(userId: string, limit = 10) {
   const notifications = await Notification.find({ userId }).sort({ createdAt: -1 }).limit(limit).lean();
   return notifications.map((n: any) => ({
@@ -206,7 +362,7 @@ export async function getNotifications(userId: string, limit = 10) {
   }));
 }
 
-export async function getDeals(userId: string) {
+export async function getDeals() {
   const coupons = await Coupon.find({ isActive: true, approvalStatus: "approved" }).sort({ createdAt: -1 }).limit(10).lean();
   return coupons.map((c: any) => ({
     id: c._id?.toString() || "",
@@ -284,9 +440,10 @@ export async function getProductDetails(productId: string): Promise<ProductDetai
     sold: product.sold || 0,
     images: product.images || [],
     description: product.description,
-    specifications: product.specifications instanceof Map
-      ? Object.fromEntries(product.specifications)
-      : { ...(product.specifications || {}) },
+    specifications:
+      product.specifications instanceof Map
+        ? Object.fromEntries(product.specifications)
+        : { ...(product.specifications || {}) },
     seller: {
       storeName: store?.storeName || "Unknown",
       trustScore: store?.trustScore || 0,
@@ -304,70 +461,6 @@ export async function getProductReviews(productId: string) {
     verifiedPurchase: r.verifiedPurchase,
     createdAt: r.createdAt,
   }));
-}
-
-export async function getSellerInfo(sellerId: string) {
-  const store = await Store.findOne({ ownerId: sellerId }).lean();
-  if (!store) return null;
-  return {
-    id: store._id?.toString() || "",
-    storeName: store.storeName,
-    trustScore: store.trustScore,
-    rating: store.rating,
-    ratingCount: store.ratingCount,
-    status: store.status,
-  };
-}
-
-export async function getAccessoryRecommendations(userId: string, baseProductCategory?: string) {
-  const recentOrders = await Order.find({ userId }).sort({ createdAt: -1 }).limit(5).lean();
-  const purchasedProductIds = recentOrders.flatMap((o: any) => (o.items || []).map((it: any) => it.productId));
-  const purchasedProducts = await Product.find({ _id: { $in: purchasedProductIds }, isDeleted: false }).lean();
-
-  let baseProduct = purchasedProducts[0];
-  if (baseProductCategory) {
-    const categoryMatch = purchasedProducts.find((p: any) => p.category.toLowerCase().includes(baseProductCategory.toLowerCase()));
-    if (categoryMatch) baseProduct = categoryMatch;
-  }
-
-  if (!baseProduct) return { baseProduct: null, accessories: [] };
-
-  const accessoryKeywords: Record<string, string[]> = {
-    laptop: ["mouse", "keyboard", "laptop bag", "charger", "adapter", "usb", "monitor", "headphone", "webcam", "cooling pad"],
-    phone: ["phone case", "charger", "earphone", "screen protector", "power bank", "car charger", "wireless charger"],
-    headphone: ["earphone", "audio cable", "microphone", "headphone stand", "bluetooth adapter"],
-    default: ["accessory", "case", "charger", "cable", "adapter"],
-  };
-
-  const keywords = accessoryKeywords[baseProduct.category.toLowerCase()] || accessoryKeywords.default;
-  const filter = await buildPublicProductFilter({});
-  const orConditions = keywords.map((kw) => ({
-    $or: [
-      { title: { $regex: kw, $options: "i" } },
-      { tags: { $regex: kw, $options: "i" } },
-      { description: { $regex: kw, $options: "i" } },
-    ],
-  }));
-
-  const searchFilter = { ...filter, $or: orConditions } as Record<string, unknown>;
-  const accessories = await Product.find(searchFilter).sort({ ratingAvg: -1, sold: -1 }).limit(8).lean();
-
-  return {
-    baseProduct: {
-      id: baseProduct._id?.toString() || "",
-      title: baseProduct.title,
-      category: baseProduct.category,
-    },
-    accessories: accessories.map((p: any) => ({
-      id: p._id?.toString() || "",
-      title: p.title,
-      price: p.discountPrice ?? p.price,
-      category: p.category,
-      ratingAvg: p.ratingAvg || 0,
-      stock: p.stock || 0,
-      images: p.images || [],
-    })),
-  };
 }
 
 export async function getPurchaseHistoryForReasoning(userId: string) {

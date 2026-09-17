@@ -8,8 +8,15 @@ export type DeliveryIncidentCategory =
   | "cannot_contact_customer"
   | "access_problem"
   | "vehicle_problem"
+  | "vehicle_breakdown"
   | "accident"
   | "package_issue"
+  | "package_damaged"
+  | "traffic"
+  | "traffic_delay"
+  | "severe_traffic"
+  | "weather"
+  | "severe_weather"
   | "seller_issue"
   | "safety_issue"
   | "technical_issue"
@@ -48,8 +55,15 @@ const deliveryIncidentSchema = new Schema<IDeliveryIncident>(
         "cannot_contact_customer",
         "access_problem",
         "vehicle_problem",
+        "vehicle_breakdown",
         "accident",
         "package_issue",
+        "package_damaged",
+        "traffic",
+        "traffic_delay",
+        "severe_traffic",
+        "weather",
+        "severe_weather",
         "seller_issue",
         "safety_issue",
         "technical_issue",

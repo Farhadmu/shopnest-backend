@@ -35,3 +35,4 @@ const categorySchema = new Schema<ICategory>(
 applyToJSON(categorySchema);
 
 export const Category = model<ICategory>("Category", categorySchema);
+export default Category;

@@ -10,7 +10,7 @@ export const advancedSearchSchema = z.object({
   rating: z.coerce.number().min(0).max(5).optional(),
   seller: z.string().optional(),
   availability: z.enum(["in_stock", "out_of_stock"]).optional(),
-  sort: z.enum(["relevance", "price_asc", "price_desc", "rating", "popular", "newest"]).optional(),
+  sort: z.enum(["relevance", "price_asc", "price_desc", "rating", "popular", "newest", "featured"]).optional(),
   page: z.coerce.number().min(1).optional(),
   limit: z.coerce.number().min(1).max(50).optional(),
 });

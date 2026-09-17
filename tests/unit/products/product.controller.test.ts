@@ -170,6 +170,32 @@ describe("product.controller store-status exclusion", () => {
       expect(passedFilter.isDeleted).toBe(false);
       expect(passedFilter.status).toBe("approved");
     });
+
+    it("handles sort=featured and sorts by isFeatured descending then createdAt descending", async () => {
+      const query = mockProductList([]);
+
+      const req = { query: { sort: "featured" } } as never;
+      const res = createRes();
+      const next = vi.fn();
+      await listProducts(req as never, res as never, next as never);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(query.sort).toHaveBeenCalledWith({ isFeatured: -1, createdAt: -1 });
+    });
+
+    it("filters by isFeatured when query is true or 1", async () => {
+      mockProductList([]);
+
+      const req = { query: { isFeatured: "1" } } as never;
+      const res = createRes();
+      const next = vi.fn();
+      await listProducts(req as never, res as never, next as never);
+
+      expect(next).not.toHaveBeenCalled();
+      const passedFilter = mockedProduct.find.mock.calls[0][0] as Record<string, unknown>;
+      expect(passedFilter.isFeatured).toBe(true);
+    });
   });
 
   describe("getProductById", () => {

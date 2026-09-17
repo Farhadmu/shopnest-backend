@@ -20,9 +20,10 @@ function isCacheableQuery(query: Record<string, string | undefined>): boolean {
   if (query.store) return false;
   if (query.minPrice !== undefined || query.maxPrice !== undefined) return false;
   if (query.rating || query.productRating) return false;
-  if (query.verified === "true" || query.inStock === "true" || query.aiPick === "true" || query.freeDelivery === "true") return false;
+  if (query.verified === "true" || query.verified === "1" || query.inStock === "true" || query.inStock === "1" || query.aiPick === "true" || query.aiPick === "1" || query.freeDelivery === "true" || query.freeDelivery === "1") return false;
   if (query.status && query.status !== "approved") return false;
   if (query.isFeatured !== undefined) return false;
+  if (query.sort === "featured") return false;
   return true;
 }
 
@@ -104,21 +105,21 @@ async function buildProductFilter(
   if (query.productRating) {
     baseFilter.ratingAvg = { $gte: Number(query.productRating) };
   }
-  if (query.verified === "true") {
+  if (query.verified === "true" || query.verified === "1") {
     baseFilter.freeDelivery = true;
   }
-  if (query.inStock === "true") {
+  if (query.inStock === "true" || query.inStock === "1") {
     baseFilter.stock = { $gt: 0 };
   }
-  if (query.freeDelivery === "true") {
+  if (query.freeDelivery === "true" || query.freeDelivery === "1") {
     baseFilter.freeDelivery = true;
   }
-  if (query.aiPick === "true") {
+  if (query.aiPick === "true" || query.aiPick === "1") {
     baseFilter.aiPick = true;
   }
-  if (query.isFeatured === "true") {
+  if (query.isFeatured === "true" || query.isFeatured === "1") {
     baseFilter.isFeatured = true;
-  } else if (query.isFeatured === "false") {
+  } else if (query.isFeatured === "false" || query.isFeatured === "0") {
     baseFilter.isFeatured = false;
   }
   if (query.minPrice !== undefined) {
@@ -165,6 +166,9 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
       break;
     case "popular":
       sortOption = { sold: -1 };
+      break;
+    case "featured":
+      sortOption = { isFeatured: -1, createdAt: -1 };
       break;
     case "newest":
     default:

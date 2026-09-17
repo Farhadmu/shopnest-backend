@@ -107,6 +107,9 @@ export const advancedSearch = asyncHandler(async (req: Request, res: Response) =
     case "popular":
       sortOption = { sold: -1 };
       break;
+    case "featured":
+      sortOption = { isFeatured: -1, createdAt: -1 };
+      break;
     case "newest":
       sortOption = { createdAt: -1 };
       break;

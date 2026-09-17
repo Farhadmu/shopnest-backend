@@ -33,8 +33,8 @@ router.use(aiLimiter);
 // ShopNest AI Commerce Companion - unified customer assistant
 router.use("/commerce-companion", commerceCompanionRoutes);
 
-// POST /api/v1/ai/chat
-router.use("/chat", advisorRoutes);
+// POST /api/v1/ai/advisor (conversational endpoint)
+router.use("/advisor", advisorRoutes);
 
 // POST /api/v1/ai/recommend - public, but personalizes more if logged in
 router.post("/recommend", attachUserIfPresent, validate({ body: aiRecommendSchema }), ctrl.recommend);

@@ -55,11 +55,14 @@ function extractBudget(text: string): { max?: number; min?: number } {
 
 function extractCategory(text: string): string | undefined {
   const lower = text.toLowerCase();
-  if (lower.includes("phone") || lower.includes("mobile") || lower.includes("smartphone")) return "Phones & Tablets";
-  if (lower.includes("laptop") || lower.includes("computer") || lower.includes("pc") || lower.includes("macbook")) return "Computers & Accessories";
-  if (lower.includes("mouse") || lower.includes("keyboard") || lower.includes("headphone") || lower.includes("earbud") || lower.includes("earphone") || lower.includes("soundbox") || lower.includes("speaker")) return "Electronics & Gadgets";
-  if (lower.includes("shirt") || lower.includes("t-shirt") || lower.includes("saree") || lower.includes("panjabi") || lower.includes("dress") || lower.includes("pant") || lower.includes("jacket")) return "Fashion & Clothing";
-  if (lower.includes("watch") || lower.includes("smartwatch") || lower.includes("bag") || lower.includes("wallet") || lower.includes("perfume")) return "Fashion & Clothing";
+  if (/\b(?:laptop|notebook|macbook|ল্যাপটপ)\b/i.test(lower)) return "laptop";
+  if (/\b(?:headphone|headphones|earphone|earbud|earbuds|হেডফোন)\b/i.test(lower)) return "headphone";
+  if (lower.includes("phone") || lower.includes("mobile") || lower.includes("smartphone")) return "phone";
+  if (lower.includes("mouse")) return "mouse";
+  if (lower.includes("keyboard")) return "keyboard";
+  if (lower.includes("soundbox") || lower.includes("speaker")) return "speaker";
+  if (lower.includes("shirt") || lower.includes("t-shirt") || lower.includes("saree") || lower.includes("panjabi") || lower.includes("dress") || lower.includes("pant") || lower.includes("jacket")) return "fashion";
+  if (lower.includes("watch") || lower.includes("smartwatch") || lower.includes("bag") || lower.includes("wallet") || lower.includes("perfume")) return "fashion";
   return undefined;
 }
 

@@ -237,6 +237,31 @@ export function updateConversationState(
 }
 
 /**
+ * Laptop → headphone (and similar) stays on product_search, so topic-switch
+ * detection does not fire. Reset constraints when the product type changes.
+ */
+export function resetProductContextForCategorySwitch(
+  state: ConversationState,
+  nextCategory: string | null
+): ConversationState {
+  const current = state.productContext?.category;
+  if (!nextCategory || !current || current.toLowerCase() === nextCategory.toLowerCase()) {
+    return state;
+  }
+
+  return {
+    ...state,
+    productContext: {
+      ...createProductSearchContext(),
+      category: nextCategory,
+      language: state.productContext?.language || null,
+    },
+    referencedProducts: [],
+    conversationPhase: "gathering_requirements",
+  };
+}
+
+/**
  * Add referenced product to state
  */
 export function addReferencedProduct(
@@ -365,7 +390,7 @@ export function reconstructStateFromHistory(
   messages: Array<{ role: string; content: string }>,
   existingState?: ConversationState
 ): ConversationState {
-  let state = existingState || createInitialState();
+  const state = existingState || createInitialState();
   
   // Analyze conversation history to rebuild state
   // This is a simplified version - in production, you'd store state snapshots

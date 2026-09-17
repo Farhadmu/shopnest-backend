@@ -401,41 +401,93 @@ export function buildDeterministicFallbackResponse(
   const lower = userMessage.toLowerCase();
   const lang = conversationState.userPreferences.language || detectLanguage(userMessage);
   
-  // Greeting - Friendly responses
-  if (/^(hello|hi|hey|salam|assalamualaikum|bhai|vai|kemon|kemon acho|hlw|yo)/i.test(userMessage.trim())) {
+// Greeting / casual chat — never search products or claim AI unavailable
+  if (/^(hello|hi|hey|hlw|hii|hlo|yo|salam|assalamualaikum|হাই|হ্যালো|bhai|vai|kemon|kemon acho)\b/i.test(userMessage.trim())) {
     if (lang === "bn" || lang === "mixed") {
-      return "Salaam bhai! 👋 ShopNest AI Advisor here! আপনি কী খুঁজছেন আজকে? 😊";
+      return "Hey! 👋 Welcome to ShopNest. আজকে কী খুঁজছেন? 😊";
     }
-    return "Hey there! 👋 I'm your ShopNest AI Advisor! What can I help you find today? 😊";
+    return "Hey! 👋 Welcome to ShopNest. What are you looking for today?";
+  }
+
+  if (/^(how are you|how r you|how's it going|kemon acho|kemon aso|ki khobor)\b/i.test(userMessage.trim())) {
+    return lang === "bn" || lang === "mixed"
+      ? "I'm doing great 😄 ShopNest-e কী খুঁজতে সাহায্য করব?"
+      : "I'm doing great 😄 What can I help you find on ShopNest?";
+  }
+
+  if (/^(what can you do|what do you do|what can you help|capabilities|who are you)\b/i.test(userMessage.trim())) {
+    return "I can help you discover products, compare options, understand reviews and specs, track orders, check returns, navigate ShopNest, and more.";
+  }
+
+  if (/^(thanks|thank you|thik ache|dhonnobad|ok|okay)\b/i.test(userMessage.trim())) {
+    return lang === "bn" || lang === "mixed"
+      ? "You're welcome! 😊 আর কিছু লাগলে বলবেন।"
+      : "You're welcome! 😊 Anything else I can help with?";
+  }
+
+  // Acknowledge product requirements before a catalog search has enough
+  // constraints to be useful. This keeps provider-quota fallback natural and
+  // preserves the accumulated conversation state rather than showing a
+  // misleading generic availability error.
+  if (conversationState.productContext?.category && !structuredData.products?.length) {
+    const context = conversationState.productContext;
+    const category = context.category;
+    const budget = context.budgetMax ? ` under ৳${context.budgetMax.toLocaleString()}` : "";
+    const useCase = context.useCase ? ` for ${context.useCase}` : "";
+    const hasPriorities = context.priorities.length > 0 || Object.keys(context.requiredFeatures).length > 0;
+
+    if (lang === "bn" || lang === "mixed") {
+      if (!context.budgetMax) {
+        return `Bujhlam! 😊 ${category}${useCase} খুঁজছি। আপনার budget roughly কত? তাহলে real ShopNest catalog থেকে suitable option দেখাতে পারব।`;
+      }
+      if (!context.useCase && !hasPriorities) {
+        return `Perfect! 💻 ${category}${budget} এর মধ্যে খুঁজছি। Programming, gaming, study নাকি general use — mainly কী কাজে লাগবে?`;
+      }
+      return `Got it! 🔍 ${category}${useCase}${budget} এর জন্য আপনার requirements মনে রেখেছি। আরও কোনো priority আছে? যেমন battery, RAM, brand, বা wireless?`;
+    }
+
+    if (!context.budgetMax) {
+      return `Got it! 😊 I’m looking for ${category}${useCase}. What budget should I use so I can search the real ShopNest catalog accurately?`;
+    }
+    if (!context.useCase && !hasPriorities) {
+      return `Perfect! 💻 I’ll focus on ${category}${budget}. Will you mainly use it for programming, gaming, study, or general use?`;
+    }
+    return `Got it! 🔍 I’m keeping your ${category}${useCase}${budget} requirements in mind. Any other priority such as battery, RAM, brand, or wireless support?`;
   }
   
-  // Products available
+// Products available — catalog worked even if LLM provider is down
   if (structuredData.products && structuredData.products.length > 0) {
     const count = structuredData.products.length;
     const top = structuredData.products[0];
     const categoryText = conversationState.productContext?.category || "matching";
+    const useCaseText = conversationState.productContext?.useCase
+      ? ` for ${conversationState.productContext.useCase}`
+      : "";
     const budgetText = conversationState.productContext?.budgetMax 
       ? ` under ৳${conversationState.productContext.budgetMax.toLocaleString()}`
       : "";
     
+    const availability = Number(top.stock || 0) > 0 ? `${top.stock} available` : "currently out of stock";
+    const rating = typeof top.ratingAvg === "number" ? `⭐ Rating: ${top.ratingAvg}/5` : "";
+
     if (lang === "bn" || lang === "mixed") {
-      return `🎉 Awesome! ${count}টা ${categoryText} product পেয়েছি${budgetText}! 
+      return `AI recommendations temporarily limited, but real ShopNest catalog থেকে ${count}টা ${categoryText}${useCaseText} option পেয়েছি${budgetText}:
 
 Top pick: ${top.title}
 💰 Price: ৳${top.price.toLocaleString()}
-⭐ Rating: ${top.ratingAvg}/5
-📦 Stock: ${top.stock} available
+${rating}
+📦 Stock: ${availability}
 
-এগুলো real ShopNest database থেকে! Want more details about any product? 🛍️`;
+Details চাইলে first/second one বলুন — এগুলো real database থেকে। 🛍️`;
     }
-    return `🎉 Great! I found ${count} ${categoryText} product${count > 1 ? "s" : ""}${budgetText}!
+    return `AI recommendations are temporarily limited, but I found ${count} real ${categoryText}${useCaseText} option${count > 1 ? "s" : ""}${budgetText} in ShopNest:
 
 Top pick: ${top.title}
 💰 Price: ৳${top.price.toLocaleString()}
-⭐ Rating: ${top.ratingAvg}/5
-📦 Stock: ${top.stock} available
+${rating}
+📦 Stock: ${availability}
 
-These are all from ShopNest's real catalog! Want more details? 🛍️`;
+Ask about the first/second one for details — these are from the live catalog. 🛍️`;
   }
   
   // Orders available

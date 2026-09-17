@@ -77,7 +77,45 @@ export function extractIntent(
       extractedEntities: entities,
     };
   }
+
+  // General conversation — never force product search
+  if (isGeneralConversation(message)) {
+    return {
+      intent: conversationHistory.length > 2 ? "followup" : "browse",
+      topic: "general_chat",
+      confidence: 0.9,
+      requiresClarification: false,
+      clarificationQuestion: null,
+      extractedEntities: entities,
+    };
+  }
   
+  // Comparison before pronoun resolution so "which one is better?" compares
+  // the shown set instead of collapsing into a single-product followup.
+  if (isComparisonIntent(message) && conversationState.referencedProducts.length >= 2) {
+    return {
+      intent: "compare",
+      topic: "product_comparison",
+      confidence: 0.9,
+      requiresClarification: false,
+      clarificationQuestion: null,
+      extractedEntities: entities,
+    };
+  }
+
+  // "anything cheaper?" is a requirement change, not a pointer to the cheapest card.
+  if (wantsCheaperAlternatives(message) && conversationState.productContext) {
+    entities.budgetChange = entities.budgetChange || "decrease";
+    return {
+      intent: "modify_requirements",
+      topic: conversationState.currentTopic || "product_search",
+      confidence: 0.85,
+      requiresClarification: false,
+      clarificationQuestion: null,
+      extractedEntities: entities,
+    };
+  }
+
   // Check for reference to previous products/orders
   if (hasProductReference(message)) {
     entities.productReference = extractProductReference(message);
@@ -95,6 +133,31 @@ export function extractIntent(
     }
   }
   
+  // Clarifying-turn answers: "programming", "80k", "battery valo chai"
+  // after an earlier product ask must enrich state — not restart as general chat.
+  if (
+    conversationState.conversationPhase === "clarifying" &&
+    conversationState.productContext?.category &&
+    (entities.useCase || entities.budgetMax || entities.features.length > 0 || entities.priorityChanges.length > 0)
+  ) {
+    const mergedUseCase = entities.useCase || conversationState.productContext.useCase;
+    const mergedBudget = entities.budgetMax || conversationState.productContext.budgetMax;
+    const stillNeedsClarification = !mergedUseCase && !mergedBudget;
+    return {
+      intent: "recommend",
+      topic: "product_search",
+      confidence: 0.9,
+      requiresClarification: stillNeedsClarification,
+      clarificationQuestion: stillNeedsClarification
+        ? determineClarificationQuestion(
+            { ...entities, category: conversationState.productContext.category },
+            conversationState
+          )
+        : null,
+      extractedEntities: entities,
+    };
+  }
+
   // Check for modification intent
   if (isModificationIntent(message, conversationState)) {
     return {
@@ -128,15 +191,58 @@ export function extractIntent(
   // Product search intents
   if (isProductSearchIntent(message)) {
     const topic = newTopic || "product_search";
-    
-    // Check if we have enough information
-    if (!entities.category && !conversationState.productContext?.category) {
+    const mergedCategory = entities.category || conversationState.productContext?.category;
+    const mergedUseCase = entities.useCase || conversationState.productContext?.useCase;
+    const mergedBudget = entities.budgetMax || conversationState.productContext?.budgetMax;
+    const hasPriorities =
+      entities.features.length > 0 ||
+      entities.priorityChanges.length > 0 ||
+      (conversationState.productContext?.priorities.length || 0) > 0;
+
+    // Ask before searching when category is known but use-case/budget are still missing.
+    // Example: "laptop lagbe" / "amar laptop lagbe" → clarify use, do NOT dump products.
+    const wantsImmediateResults = wantsCatalogResults(message);
+
+    if (!mergedCategory) {
       return {
         intent: "recommend",
         topic,
         confidence: 0.7,
         requiresClarification: true,
         clarificationQuestion: determineClarificationQuestion(entities, conversationState),
+        extractedEntities: entities,
+      };
+    }
+
+    if (!wantsImmediateResults && (!mergedUseCase || !mergedBudget) && !hasPriorities) {
+      return {
+        intent: "recommend",
+        topic,
+        confidence: 0.8,
+        requiresClarification: true,
+        clarificationQuestion: determineClarificationQuestion(
+          {
+            ...entities,
+            category: mergedCategory ?? null,
+            useCase: mergedUseCase ?? null,
+            budgetMax: mergedBudget ?? null,
+          },
+          conversationState
+        ),
+        extractedEntities: entities,
+      };
+    }
+
+    if (!wantsImmediateResults && !mergedUseCase && !mergedBudget) {
+      return {
+        intent: "recommend",
+        topic,
+        confidence: 0.8,
+        requiresClarification: true,
+        clarificationQuestion: determineClarificationQuestion(
+          { ...entities, category: mergedCategory },
+          conversationState
+        ),
         extractedEntities: entities,
       };
     }
@@ -294,58 +400,59 @@ function extractEntities(message: string, state: ConversationState): ExtractedEn
 
 function extractCategory(message: string): string | null {
   const lower = message.toLowerCase();
-  
-  const categoryMap: Record<string, string> = {
-    laptop: "Computers & Accessories",
-    computer: "Computers & Accessories",
-    pc: "Computers & Accessories",
-    macbook: "Computers & Accessories",
-    phone: "Phones & Tablets",
-    mobile: "Phones & Tablets",
-    smartphone: "Phones & Tablets",
-    tablet: "Phones & Tablets",
-    headphone: "Electronics & Gadgets",
-    earphone: "Electronics & Gadgets",
-    earbud: "Electronics & Gadgets",
-    speaker: "Electronics & Gadgets",
-    soundbox: "Electronics & Gadgets",
-    mouse: "Electronics & Gadgets",
-    keyboard: "Electronics & Gadgets",
-    monitor: "Electronics & Gadgets",
-    watch: "Fashion & Clothing",
-    smartwatch: "Fashion & Clothing",
-    shirt: "Fashion & Clothing",
-    pant: "Fashion & Clothing",
-    dress: "Fashion & Clothing",
-    saree: "Fashion & Clothing",
-    panjabi: "Fashion & Clothing",
-    bag: "Fashion & Clothing",
-    wallet: "Fashion & Clothing",
-  };
-  
-  for (const [keyword, category] of Object.entries(categoryMap)) {
-    if (lower.includes(keyword)) {
-      return category;
+
+  // Product-type keywords first — these are search terms, not broad DB categories.
+  // Mapping laptop → "Computers & Accessories" previously pulled graphics cards,
+  // desktops, and PC games into laptop results.
+  const productTypeMap: Array<{ pattern: RegExp; category: string }> = [
+    { pattern: /\b(?:laptop|notebook|macbook|ল্যাপটপ)\b/i, category: "laptop" },
+    { pattern: /\b(?:headphone|headphones|earphone|earphones|earbud|earbuds|হেডফোন)\b/i, category: "headphone" },
+    { pattern: /\b(?:smartphone|mobile\s*phone|phone|মোবাইল|ফোন)\b/i, category: "phone" },
+    { pattern: /\b(?:tablet|ipad)\b/i, category: "tablet" },
+    { pattern: /\b(?:desktop|pc\s*build)\b/i, category: "desktop" },
+    { pattern: /\b(?:monitor|display)\b/i, category: "monitor" },
+    { pattern: /\b(?:keyboard)\b/i, category: "keyboard" },
+    { pattern: /\b(?:mouse)\b/i, category: "mouse" },
+    { pattern: /\b(?:speaker|soundbox)\b/i, category: "speaker" },
+    { pattern: /\b(?:smartwatch|watch)\b/i, category: "watch" },
+    { pattern: /\b(?:shirt|pant|dress|saree|panjabi|bag|wallet)\b/i, category: "fashion" },
+  ];
+
+  for (const entry of productTypeMap) {
+    if (entry.pattern.test(lower)) {
+      return entry.category;
     }
   }
-  
+
   return null;
 }
 
+function normalizeBanglaDigits(text: string): string {
+  const map: Record<string, string> = {
+    "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4",
+    "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9",
+  };
+  return text.replace(/[০-৯]/g, (digit) => map[digit] || digit);
+}
+
 function extractBudgetMax(message: string): number | null {
-  const lower = message.toLowerCase();
-  
-  // "80k" format
-  const kMatch = lower.match(/(\d+(?:\.\d+)?)\s*k\b/i);
-  if (kMatch) {
-    return Math.round(parseFloat(kMatch[1]) * 1000);
+  const lower = normalizeBanglaDigits(message).toLowerCase();
+
+  const thousandMatch = lower.match(/(\d+(?:\.\d+)?)\s*(?:k|হাজার|hazar|thousand)\b/i);
+  if (thousandMatch) {
+    return Math.round(parseFloat(thousandMatch[1]) * 1000);
+  }
+
+  const lakhMatch = lower.match(/(\d+(?:\.\d+)?)\s*(?:lakh|lac|লাখ)\b/i);
+  if (lakhMatch) {
+    return Math.round(parseFloat(lakhMatch[1]) * 100000);
   }
   
-  // "under 80000", "below 50k", "৮০ হাজার"
   const patterns = [
     /(?:under|below|budget|within|max|niche|moddhe|vitor|kom)\s*(?:tk|taka|৳)?\s*(\d+[\d,]*)/i,
     /(?:tk|taka|৳)\s*(\d+[\d,]*)\s*(?:under|below|niche|moddhe)/i,
     /(\d+[\d,]*)\s*(?:tk|taka|৳)\s*(?:er\s+)?(?:niche|moddhe|vitor|kom)/i,
+    /(\d+[\d,]*)\s*(?:er\s+)?(?:moddhe|niche|vitor)/i,
   ];
   
   for (const pattern of patterns) {
@@ -371,23 +478,24 @@ function extractBudgetMin(message: string): number | null {
 
 function extractUseCase(message: string): string | null {
   const lower = message.toLowerCase();
-  
-  const useCases = [
-    "programming", "coding", "developer", "software",
-    "gaming", "game",
-    "office", "business", "work",
-    "student", "study",
-    "photography", "photo", "camera",
-    "video", "editing",
-    "music", "audio",
+
+  const useCaseMap: Array<{ pattern: RegExp; useCase: string }> = [
+    { pattern: /\b(?:programming|coding|developer|software|কোডিং|প্রোগ্রামিং)\b/i, useCase: "programming" },
+    { pattern: /\b(?:gaming|game|গেমিং)\b/i, useCase: "gaming" },
+    { pattern: /\b(?:office|business|work)\b/i, useCase: "office" },
+    { pattern: /\b(?:student|study|পড়াশোনা|পড়ার)\b/i, useCase: "study" },
+    { pattern: /\b(?:photography|photo|camera)\b/i, useCase: "photography" },
+    { pattern: /\b(?:video|editing)\b/i, useCase: "video editing" },
+    { pattern: /\b(?:music|audio)\b/i, useCase: "music" },
+    { pattern: /\b(?:general\s*use|daily\s*use)\b/i, useCase: "general" },
   ];
-  
-  for (const useCase of useCases) {
-    if (lower.includes(useCase)) {
-      return useCase;
+
+  for (const entry of useCaseMap) {
+    if (entry.pattern.test(lower)) {
+      return entry.useCase;
     }
   }
-  
+
   return null;
 }
 
@@ -467,7 +575,9 @@ function extractPriorityChanges(message: string): string[] {
   const lower = message.toLowerCase();
   const priorities: string[] = [];
   
-  if (lower.includes("important") || lower.includes("priority") || lower.includes("focus")) {
+  if (
+    /important|priority|focus|valo chai|ভালো চাই|better|must have|beshi important/i.test(lower)
+  ) {
     const features = extractFeatures(message);
     priorities.push(...features);
   }
@@ -514,12 +624,22 @@ function extractProductReference(message: string): ProductReference | null {
 
 function hasProductReference(message: string): boolean {
   const lower = message.toLowerCase();
-  return /\b(first|second|third|1st|2nd|3rd|that one|this one|it|which one|cheaper|expensive)\b/i.test(lower);
+  return /\b(first|second|third|1st|2nd|3rd|that one|this one|the previous one|eta|oitake|2nd tar|which one|the cheaper one|the expensive one)\b/i.test(lower)
+    || /\b(?:how much is it|does it have|warranty ache|eta ki)\b/i.test(lower);
+}
+
+function wantsCatalogResults(message: string): boolean {
+  return /\b(show me|show options|some options|dekhao|dekhao na|khujchi|recommend now|find options)\b/i.test(message);
+}
+
+function wantsCheaperAlternatives(message: string): boolean {
+  return /\b(anything cheaper|cheaper options|aro kom|cheaper|kom budget|lower budget)\b/i.test(message)
+    && !/\b(the cheaper one|cheaper one)\b/i.test(message);
 }
 
 function isGreeting(message: string): boolean {
-  const lower = message.toLowerCase();
-  return /^(hello|hi|hey|good morning|good evening|salam|assalamualaikum|bhai|vai|kemon|kemon acho|ki khobor)\s*[?!.]*$/i.test(lower.trim());
+  const trimmed = message.trim().toLowerCase();
+  return /^(hello|hi|hey|hlw|hii|hlo|yo|good\s*morning|good\s*evening|good\s*afternoon|salam|assalamualaikum|assalamu\s*alaikum|হাই|হ্যালো|কেমন|কেমন আছো|কি খবর|bhai|vai|kemon|kemon acho|ki khobor)\s*[?!.💕👋]*$/i.test(trimmed);
 }
 
 function isModificationIntent(message: string, state: ConversationState): boolean {
@@ -542,16 +662,20 @@ function isProductSearchTopic(topic: TopicType): boolean {
 
 function detectTopic(message: string, state: ConversationState): TopicType | null {
   const lower = message.toLowerCase();
+
+  if (/\b(forget|actually forget|na headphone|instead|switch to)\b/i.test(lower) && !extractCategory(message)) {
+    return "general_chat";
+  }
   
   if (extractCategory(message)) return "product_search";
   if (/\b(find|search|show|looking for|need|want|recommend|lagbe|chai|dekhao)\b/i.test(lower)) return "product_search";
   if (/\b(compare|comparison|versus|vs|which is better)\b/i.test(lower)) return "product_comparison";
   if (/\b(order|orders|track order|where is my order)\b/i.test(lower)) return "order_inquiry";
-  if (/\b(delivery|shipping|courier|rider)\b/i.test(lower)) return "delivery_tracking";
-  if (/\b(wishlist|saved)\b/i.test(lower)) return "wishlist";
-  if (/\b(cart|checkout)\b/i.test(lower)) return "cart";
-  if (/\b(return|exchange|refund)\b/i.test(lower)) return "return_inquiry";
-  if (/\b(seller|store)\b/i.test(lower)) return "seller_inquiry";
+  if (/\b(delivery|shipping|courier|rider)\b/i.test(lower) && !/\bhow does delivery\b/i.test(lower)) return "delivery_tracking";
+  if (/\b(wishlist|saved)\b/i.test(lower) && !/\bhow (do i|to)\b/i.test(lower)) return "wishlist";
+  if (/\b(cart|checkout)\b/i.test(lower) && !/\bhow (do i|to)\b/i.test(lower)) return "cart";
+  if (/\b(return|exchange|refund)\b/i.test(lower) && !/\bhow (do|does)\b/i.test(lower)) return "return_inquiry";
+  if (/\b(seller|store)\b/i.test(lower) && !/\bbecome a seller|how (do i|to)\b/i.test(lower)) return "seller_inquiry";
   if (/\b(how do|how to|what is|explain|kivabe)\b/i.test(lower)) return "platform_help";
   if (/\b(go to|navigate|take me|show me where)\b/i.test(lower)) return "navigation";
   
@@ -579,8 +703,8 @@ function areRelatedTopics(topic1: TopicType, topic2: TopicType): boolean {
 function isProductSearchIntent(message: string): boolean {
   const lower = message.toLowerCase();
   return (
-    /\b(find|search|show|looking for|need|want|recommend|suggest|lagbe|chai|dekhao|khojo)\b/i.test(lower) ||
-    /\b(laptop|phone|headphone|mouse|keyboard|monitor|watch|bag|shirt)\b/i.test(lower) ||
+    /\b(find|search|show|looking for|need|want|recommend|suggest|lagbe|chai|dekhao|khojo|dekhaw)\b/i.test(lower) ||
+    /\b(laptop|notebook|phone|headphone|headphones|earphone|earbuds|mouse|keyboard|monitor|watch|bag|shirt)\b/i.test(lower) ||
     /\b(under|below|budget|moddhe|niche)\b/i.test(lower)
   );
 }
@@ -598,7 +722,24 @@ function isDeliveryInquiry(message: string): boolean {
 }
 
 function isPlatformQuestion(message: string): boolean {
-  return /\b(how do|how to|what is|how does|how can|explain|tell me about|kivabe|kemon|shopnest)\b/i.test(message.toLowerCase());
+  const lower = message.toLowerCase().trim();
+  // Avoid treating casual chat ("how are you?", "kemon acho") as platform help
+  if (/^(how are you|how r you|how's it going|kemon acho|kemon aso)\b/i.test(lower)) {
+    return false;
+  }
+  return (
+    /\b(how do i|how to|what is shopnest|how does|how can i|explain|tell me about|kivabe|shopnest)\b/i.test(lower) ||
+    /\b(return policy|delivery|order|wishlist|cart|become a seller|track)\b/i.test(lower)
+  );
+}
+
+function isGeneralConversation(message: string): boolean {
+  const lower = message.toLowerCase().trim();
+  return (
+    /^(how are you|how r you|how's it going|kemon acho|kemon aso|ki khobor)\b/i.test(lower) ||
+    /^(what can you do|what do you do|help me|thanks|thank you|ok|okay|thik ache|dhonnobad)\b/i.test(lower) ||
+    /\b(what can you help|capabilities|who are you)\b/i.test(lower)
+  );
 }
 
 function isNavigationIntent(message: string): boolean {
@@ -627,27 +768,32 @@ function determineClarificationQuestion(
   entities: ExtractedEntities,
   state: ConversationState
 ): string | null {
-  // Check what's missing
-  if (!entities.category && !state.productContext?.category) {
-    if (entities.detectedLanguage === "bn" || entities.detectedLanguage === "mixed") {
-      return "কী ধরনের পণ্য খুঁজছেন? (laptop, phone, headphone, etc.)";
-    }
-    return "What type of product are you looking for?";
+  const category = entities.category || state.productContext?.category;
+  const useCase = entities.useCase || state.productContext?.useCase;
+  const budgetMax = entities.budgetMax || state.productContext?.budgetMax;
+  const isBn = entities.detectedLanguage === "bn" || entities.detectedLanguage === "mixed";
+
+  if (!category) {
+    return isBn
+      ? "কী ধরনের পণ্য খুঁজছেন? (laptop, phone, headphone, etc.)"
+      : "What type of product are you looking for?";
   }
-  
-  if (!entities.budgetMax && !state.productContext?.budgetMax && entities.category) {
-    if (entities.detectedLanguage === "bn" || entities.detectedLanguage === "mixed") {
-      return "আপনার budget কত?";
+
+  // Prefer use-case clarification first for laptop-like product discovery
+  if (!useCase) {
+    if (category === "laptop" || category === "desktop" || category === "pc") {
+      return isBn
+        ? "Sure! 😊 Ki jonno use korben — programming, gaming, study, naki general use?"
+        : "Sure 😄 Mainly programming, gaming, study, or general use?";
     }
-    return "What's your budget?";
+    return isBn
+      ? "মূলত কী কাজে ব্যবহার করবেন?"
+      : "What will you mainly use it for?";
   }
-  
-  if (!entities.useCase && !state.productContext?.useCase && entities.category) {
-    if (entities.detectedLanguage === "bn" || entities.detectedLanguage === "mixed") {
-      return "মূলত কী কাজে ব্যবহার করবেন?";
-    }
-    return "What will you mainly use it for?";
+
+  if (!budgetMax) {
+    return isBn ? "Got it. Budget roughly koto?" : "Got it. What's your rough budget?";
   }
-  
+
   return null;
 }

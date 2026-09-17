@@ -15,6 +15,7 @@ import {
   addReferencedProduct,
   resolveProductReference,
   detectTopicSwitch,
+  resetProductContextForCategorySwitch,
 } from "./conversation-state";
 import { extractIntent, ExtractedIntent } from "./intent-extraction";
 import { CONVERSATIONAL_ADVISOR_SYSTEM, buildConversationalPrompt, buildDeterministicFallbackResponse } from "./conversational-prompts";
@@ -53,7 +54,7 @@ interface ConversationalResponse {
   thinking?: string;
   isFallback: boolean;
   provider?: string;
-  providerStatus: string;
+  providerStatus: "available" | "unavailable" | "degraded";
   topicSwitchDetected?: boolean;
   clarificationNeeded?: boolean;
 }
@@ -87,10 +88,12 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
 
   const userId = req.user?.id;
   const isAuthenticated = !!userId;
+  // Guest sessions persist under guest:<conversationId> so multi-turn context
+  // survives. Never load another user's conversation via client-supplied IDs.
+  const guestOwnerId = conversationId ? `guest:${conversationId}` : `guest:new`;
 
-  // Load or create conversation
   let conversation: any;
-  if (userId) {
+  if (isAuthenticated && userId) {
     if (conversationId) {
       conversation = await AiConversation.findOne({ _id: conversationId, userId });
     }
@@ -102,18 +105,31 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
         turnCount: 0,
       });
     } else {
-      // Older persisted messages can contain metadata written before the
-      // context-reference sub-schema existed. Normalize before mutating so a
-      // legacy record never blocks the current conversation with a CastError.
+      conversation.messages = sanitizeAiConversationMessages(conversation.messages || []);
+    }
+  } else if (conversationId) {
+    conversation = await AiConversation.findOne({
+      _id: conversationId,
+      userId: guestOwnerId,
+    });
+    if (!conversation) {
+      conversation = await AiConversation.create({
+        userId: guestOwnerId,
+        messages: [],
+        conversationState: createInitialState(),
+        turnCount: 0,
+      });
+    } else {
       conversation.messages = sanitizeAiConversationMessages(conversation.messages || []);
     }
   } else {
-    // Guest conversation (not persisted)
-    conversation = {
+    conversation = await AiConversation.create({
+      userId: `guest:pending`,
       messages: [],
       conversationState: createInitialState(),
       turnCount: 0,
-    };
+    });
+    conversation.userId = `guest:${conversation._id.toString()}`;
   }
 
   // Increment turn counter
@@ -177,12 +193,13 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
   
   // Handle product context updates
   if (intent.intent === "recommend" || intent.intent === "modify_requirements") {
+    const entities = intent.extractedEntities;
+    if (entities.category) {
+      state = resetProductContextForCategorySwitch(state, entities.category);
+    }
     if (!state.productContext) {
       state.productContext = createProductSearchContext();
     }
-    
-    // Update product context with extracted entities
-    const entities = intent.extractedEntities;
     
     if (entities.category) {
       state.productContext.category = entities.category;
@@ -256,12 +273,27 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
   try {
     if (intent.intent === "recommend" && state.productContext && !intent.requiresClarification) {
       thinking = "Searching ShopNest catalog...";
-      
+
+      const searchQueryParts = [
+        state.productContext.category,
+        state.productContext.useCase,
+        ...Object.keys(state.productContext.requiredFeatures || {}),
+        ...(state.productContext.priorities || []),
+        ...(state.productContext.preferredBrands || []),
+      ].filter(Boolean);
+
       const searchOptions = {
-        query: message,
+        query: searchQueryParts.join(" ") || message,
         budgetMax: state.productContext.budgetMax || undefined,
         budgetMin: state.productContext.budgetMin || undefined,
         category: state.productContext.category || undefined,
+        useCase: state.productContext.useCase || undefined,
+        features: [
+          ...Object.keys(state.productContext.requiredFeatures || {}),
+          ...(state.productContext.priorities || []),
+        ],
+        brands: state.productContext.preferredBrands || [],
+        excludedBrands: state.productContext.excludedBrands || [],
         limit: 8,
       };
       
@@ -446,7 +478,7 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
     // Continue with fallback
   }
   
-  // Build AI context
+// Build AI context
   const aiContext: AiContext = {
     products: (structuredData.products || []).map((p: any) => ({
       id: p.id,
@@ -467,41 +499,80 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
     })),
     userContext: structuredData.overview,
   };
-  
-  // Generate AI response
-  const toolResultsString = toolResults.length > 0 ? toolResults.join("\n") : "No tool results.";
-  const userPrompt = buildConversationalPrompt(
-    message,
-    state,
-    toolResultsString,
-    conversationHistory,
-    isAuthenticated
-  );
-  
+
   let reply: string;
   let isFallback = false;
   let provider: string | undefined;
-  
-  try {
-    const result = await completeWithContext(
-      [{ role: "user" as const, content: userPrompt }],
-      aiContext,
-      { system: CONVERSATIONAL_ADVISOR_SYSTEM, maxTokens: 2000, temperature: 0.3 }
-    );
-    reply = result.content;
-    isFallback = result.isFallback;
-    provider = result.provider;
-  } catch (err) {
-    await logAiIncident({
-      type: "PROVIDER_ERROR",
-      userId: userId,
-      endpoint: "/ai/advisor/conversational-chat",
-      input: message,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    reply = buildDeterministicFallbackResponse(message, state, structuredData, isAuthenticated);
-    isFallback = true;
+  let providerStatus: "available" | "unavailable" | "degraded" = "available";
+
+  // Deterministic paths that must never depend on LLM availability
+  if (intent.requiresClarification && intent.clarificationQuestion) {
+    reply = intent.clarificationQuestion;
+    isFallback = false;
     provider = "deterministic";
+    providerStatus = "available";
+    thinking = thinking || "Gathering a bit more detail before searching...";
+  } else if (intent.intent === "greeting") {
+    reply = buildDeterministicFallbackResponse(message, state, structuredData, isAuthenticated);
+    isFallback = false;
+    provider = "deterministic";
+    providerStatus = "available";
+  } else if (
+    intent.topic === "platform_help" &&
+    toolResults.length > 0 &&
+    !structuredData.products?.length
+  ) {
+    // Platform knowledge is already grounded — no need to risk provider failure text
+    reply = toolResults.join("\n");
+    isFallback = false;
+    provider = "deterministic";
+    providerStatus = "available";
+  } else {
+    const toolResultsString = toolResults.length > 0 ? toolResults.join("\n") : "No tool results.";
+    const userPrompt = buildConversationalPrompt(
+      message,
+      state,
+      toolResultsString,
+      conversationHistory,
+      isAuthenticated
+    );
+
+    try {
+      const result = await completeWithContext(
+        [{ role: "user" as const, content: userPrompt }],
+        aiContext,
+        { system: CONVERSATIONAL_ADVISOR_SYSTEM, maxTokens: 2000, temperature: 0.3 }
+      );
+      // Shared provider gateway may return generic "AI unavailable" text.
+      // Prefer Advisor contextual fallback that still surfaces real catalog data.
+      if (result.isFallback) {
+        reply = buildDeterministicFallbackResponse(message, state, structuredData, isAuthenticated);
+        isFallback = true;
+        provider = "deterministic";
+        providerStatus = structuredData.products?.length || structuredData.orders?.length
+          ? "degraded"
+          : "unavailable";
+      } else {
+        reply = result.content;
+        isFallback = false;
+        provider = result.provider;
+        providerStatus = "available";
+      }
+    } catch (err) {
+      await logAiIncident({
+        type: "PROVIDER_ERROR",
+        userId: userId,
+        endpoint: "/ai/advisor/conversational-chat",
+        input: message,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      reply = buildDeterministicFallbackResponse(message, state, structuredData, isAuthenticated);
+      isFallback = true;
+      provider = "deterministic";
+      providerStatus = structuredData.products?.length || structuredData.orders?.length
+        ? "degraded"
+        : "unavailable";
+    }
   }
   
   // Add assistant message
@@ -530,8 +601,8 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
   conversation.conversationState = state;
   conversation.turnCount = turnNumber;
   
-  // Save conversation for authenticated users
-  if (userId && conversation.save) {
+  // Persist for authenticated users and guest multi-turn sessions
+  if (conversation.save) {
     await conversation.save();
   }
   
@@ -552,7 +623,7 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
     thinking,
     isFallback,
     provider,
-    providerStatus: isFallback ? "unavailable" : "available",
+    providerStatus,
     topicSwitchDetected: topicSwitchDetected || undefined,
     clarificationNeeded: intent.requiresClarification || undefined,
   };

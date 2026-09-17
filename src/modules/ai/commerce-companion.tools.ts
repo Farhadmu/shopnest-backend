@@ -12,6 +12,10 @@ export interface ProductSearchOptions {
   budgetMax?: number;
   budgetMin?: number;
   category?: string;
+  useCase?: string;
+  features?: string[];
+  brands?: string[];
+  excludedBrands?: string[];
   limit?: number;
 }
 
@@ -22,40 +26,158 @@ export interface ToolResult<T> {
   message?: string;
 }
 
+const PRODUCT_TYPE_SYNONYMS: Record<string, string[]> = {
+  laptop: ["laptop", "notebook", "macbook", "ultrabook", "ল্যাপটপ"],
+  headphone: ["headphone", "headphones", "earphone", "earphones", "earbud", "earbuds", "headset", "হেডফোন"],
+  phone: ["phone", "smartphone", "mobile", "iphone", "android phone", "মোবাইল", "ফোন"],
+  tablet: ["tablet", "ipad"],
+  desktop: ["desktop", "desktop pc", "desktop computer"],
+  monitor: ["monitor", "display"],
+  keyboard: ["keyboard"],
+  mouse: ["mouse"],
+  speaker: ["speaker", "soundbox", "bluetooth speaker"],
+  watch: ["watch", "smartwatch"],
+  fashion: ["shirt", "pant", "dress", "saree", "panjabi", "bag", "wallet"],
+};
+
+const NEGATIVE_TITLE_PATTERNS: Record<string, RegExp[]> = {
+  laptop: [/graphics?\s*card/i, /video\s*adapter/i, /gpu\b/i, /\brtx\b/i, /\bgtx\b/i, /desktop\s*only/i, /\bpc\s*game\b/i, /gaming\s*pc\s*case/i],
+  headphone: [/laptop/i, /phone\s*case/i],
+  phone: [/phone\s*case/i, /charger\s*only/i, /headphone/i],
+};
+
+function buildProductTypeClause(category?: string): Record<string, unknown> | null {
+  if (!category) return null;
+  const key = category.toLowerCase().trim();
+  const synonyms = PRODUCT_TYPE_SYNONYMS[key] || [category];
+  const fields = ["title", "description", "category", "subcategory", "tags", "brand"];
+  return {
+    $or: synonyms.flatMap((term) =>
+      fields.map((field) => ({ [field]: { $regex: term, $options: "i" } }))
+    ),
+  };
+}
+
+function scoreProductRelevance(product: any, options: ProductSearchOptions): number {
+  const title = String(product.title || "").toLowerCase();
+  const category = String(product.category || "").toLowerCase();
+  const description = String(product.description || "").toLowerCase();
+  const tags = Array.isArray(product.tags) ? product.tags.join(" ").toLowerCase() : "";
+  const haystack = `${title} ${category} ${description} ${tags}`;
+  let score = 0;
+
+  const typeKey = (options.category || "").toLowerCase();
+  const synonyms = PRODUCT_TYPE_SYNONYMS[typeKey] || (options.category ? [options.category] : []);
+  for (const term of synonyms) {
+    if (title.includes(term.toLowerCase())) score += 12;
+    else if (category.includes(term.toLowerCase())) score += 8;
+    else if (haystack.includes(term.toLowerCase())) score += 4;
+  }
+
+  if (options.useCase) {
+    const use = options.useCase.toLowerCase();
+    if (haystack.includes(use)) score += 6;
+    if (use === "programming" || use === "coding") {
+      if (/\b(16gb|32gb|i[57]|ryzen|ssd|developer|coding|programming)\b/i.test(haystack)) score += 5;
+    }
+    if (use === "gaming" && /\b(gaming|rtx|gtx|refresh)\b/i.test(haystack)) score += 5;
+  }
+
+  for (const feature of options.features || []) {
+    if (haystack.includes(feature.toLowerCase())) score += 3;
+  }
+
+  for (const brand of options.brands || []) {
+    if (title.includes(brand.toLowerCase()) || haystack.includes(brand.toLowerCase())) score += 4;
+  }
+
+  for (const brand of options.excludedBrands || []) {
+    if (title.includes(brand.toLowerCase())) score -= 20;
+  }
+
+  for (const pattern of NEGATIVE_TITLE_PATTERNS[typeKey] || []) {
+    if (pattern.test(title) || pattern.test(category)) score -= 25;
+  }
+
+  score += Math.min(Number(product.ratingAvg || 0), 5);
+  if (Number(product.stock || 0) > 0) score += 2;
+  return score;
+}
+
+function isRelevantProduct(product: any, options: ProductSearchOptions): boolean {
+  const typeKey = (options.category || "").toLowerCase();
+  if (!typeKey) return true;
+  const title = String(product.title || "");
+  const category = String(product.category || "");
+  for (const pattern of NEGATIVE_TITLE_PATTERNS[typeKey] || []) {
+    if (pattern.test(title) || pattern.test(category)) return false;
+  }
+  const synonyms = PRODUCT_TYPE_SYNONYMS[typeKey] || [options.category!];
+  const haystack = `${title} ${category} ${product.description || ""} ${Array.isArray(product.tags) ? product.tags.join(" ") : ""}`.toLowerCase();
+  return synonyms.some((term) => haystack.includes(term.toLowerCase()));
+}
+
 export async function searchProducts(options: ProductSearchOptions): Promise<ToolResult<any[]>> {
   try {
     const filter = await buildPublicProductFilter({});
     if (options.budgetMax) filter.price = { $lte: options.budgetMax };
     if (options.budgetMin) filter.price = { ...(filter.price as any), $gte: options.budgetMin };
-    if (options.category) filter.category = { $regex: options.category, $options: "i" };
 
+    const typeClause = buildProductTypeClause(options.category);
     const textSearch = (options.query || "").replace(/[^\p{L}\p{N}\s]/gu, " ").trim();
-    if (textSearch.length > 0) {
-      filter.$text = { $search: textSearch };
+    const stopWords = new Set([
+      "amar", "lagbe", "chai", "jonno", "er", "moddhe", "under", "for", "the", "and", "with",
+      "please", "bhai", "vai", "need", "want", "show", "find", "looking", "kichu", "ekta",
+    ]);
+    const queryWords = textSearch
+      .split(/\s+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length >= 3 && !stopWords.has(w.toLowerCase()));
+
+    const andClauses: Record<string, unknown>[] = [];
+    if (typeClause) andClauses.push(typeClause);
+
+    // Use-case is ranking signal only — do NOT hard-filter Mongo by "programming"
+    // or similar, or real laptops without that word in title/description disappear.
+
+    // Prefer product-type matching over raw $text on the full user utterance,
+    // which previously matched "computer/pc/game" noise from Banglish sentences.
+    if (!typeClause && queryWords.length > 0) {
+      andClauses.push({
+        $or: queryWords.flatMap((w) => [
+          { title: { $regex: w, $options: "i" } },
+          { category: { $regex: w, $options: "i" } },
+          { tags: { $regex: w, $options: "i" } },
+          { description: { $regex: w, $options: "i" } },
+        ]),
+      });
+    }
+
+    if (andClauses.length > 0) {
+      filter.$and = andClauses;
     }
 
     const limit = options.limit || 8;
-    let products = await Product.find(filter).sort({ ratingAvg: -1, sold: -1 }).limit(limit).lean();
+    let products = await Product.find(filter).sort({ ratingAvg: -1, sold: -1 }).limit(Math.max(limit * 4, 20)).lean();
 
-    if (products.length === 0 && textSearch.length > 0) {
+    if (products.length === 0 && typeClause) {
       const relaxedFilter = await buildPublicProductFilter({});
       if (options.budgetMax) relaxedFilter.price = { $lte: options.budgetMax };
-      const words = textSearch.split(/\s+/).filter((w) => w.length >= 3);
-      if (words.length > 0) {
-        relaxedFilter.$or = words.map((w) => ({
-          $or: [
-            { title: { $regex: w, $options: "i" } },
-            { category: { $regex: w, $options: "i" } },
-            { tags: { $regex: w, $options: "i" } },
-          ],
-        }));
-      }
-      products = await Product.find(relaxedFilter).sort({ ratingAvg: -1 }).limit(limit).lean();
+      if (options.budgetMin) relaxedFilter.price = { ...(relaxedFilter.price as any), $gte: options.budgetMin };
+      relaxedFilter.$and = [typeClause];
+      products = await Product.find(relaxedFilter).sort({ ratingAvg: -1, sold: -1 }).limit(Math.max(limit * 4, 20)).lean();
     }
+
+    const ranked = products
+      .filter((p) => isRelevantProduct(p, options))
+      .map((p) => ({ product: p, score: scoreProductRelevance(p, options) }))
+      .sort((a, b) => b.score - a.score || (b.product.ratingAvg || 0) - (a.product.ratingAvg || 0))
+      .slice(0, limit)
+      .map((entry) => entry.product);
 
     return {
       success: true,
-      data: products.map((p: any) => ({
+      data: ranked.map((p: any) => ({
         id: p._id?.toString() || p.id,
         title: p.title,
         price: p.price,

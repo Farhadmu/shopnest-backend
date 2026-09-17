@@ -432,7 +432,7 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
     // Customer role (default)
     if (products && products.length > 0) {
       const productList = products.slice(0, 3).map((p) => `${p.title} (৳${p.price})`).join(", ");
-      return `I found ${products.length} matching products: ${productList}. ${products.length > 3 ? `Showing top 3 of ${products.length}.` : ""} AI-powered recommendations are currently unavailable, but you can browse these verified products from our catalog.`;
+      return `I found ${products.length} verified catalog product${products.length > 1 ? "s" : ""}: ${productList}. ${products.length > 3 ? `Showing the first 3 of ${products.length}.` : ""}`;
     }
     if (orders && orders.length > 0) {
       const orderSummary = orders.slice(0, 3).map((o) => `Order #${o.id.slice(-6)} (৳${o.totalAmount}, ${o.status})`).join(", ");
@@ -446,14 +446,15 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
     }
   }
 
-  // Default: honest response indicating AI is unavailable
+  // Default: a safe, useful local response. Callers that have richer
+  // conversation state can replace this with their own contextual fallback.
   if (role === "seller") {
     return "AI assistant is currently unavailable. You can still browse your products, check orders, and manage your store. Please try again later for AI-powered business insights.";
   }
   if (role === "admin") {
     return "AI assistant is currently unavailable. You can still access the admin dashboard for platform analytics. Please try again later for AI-powered insights.";
   }
-  return "AI assistant is currently unavailable. I can still help you browse products, check prices, and manage your orders. Please try again later for AI-powered recommendations.";
+  return "Hey! 👋 I can help you find verified ShopNest products, check orders, manage your cart or wishlist, and explain how the platform works. What would you like to do?";
 }
 
 /**

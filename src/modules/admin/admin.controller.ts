@@ -286,6 +286,8 @@ export const updateSellerStatus = asyncHandler(async (req: Request, res: Respons
     details: { storeId: store.id, status, rejectionReason },
   });
   recomputeStoreTrustScore(store.id).catch(() => undefined);
+  const isSuspended = status !== "approved";
+  await Product.updateMany({ storeId: store._id.toString() }, { storeSuspended: isSuspended });
 
   sendSuccess(res, store.toJSON(), `Store status updated to ${status}`);
 });

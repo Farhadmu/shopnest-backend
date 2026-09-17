@@ -20,25 +20,6 @@ export const ACTIVE_PRODUCT_FILTER = {
  */
 export const EXCLUDED_STORE_STATUSES: readonly StoreStatus[] = ["suspended", "rejected"];
 
-/**
- * Returns the `_id`s (as strings) of every store whose status is in
- * EXCLUDED_STORE_STATUSES. Used to exclude those stores' products from
- * public product queries by adding a `storeId: { $nin: ids }` condition.
- */
-export async function getExcludedStoreIds(): Promise<string[]> {
-  const stores = await Store.find({ status: { $in: [...EXCLUDED_STORE_STATUSES] } })
-    .select("_id ownerId slug")
-    .lean();
-
-  const identifiers = stores.flatMap((store) => [
-    store._id.toString(),
-    store.ownerId,
-    store.slug,
-  ]);
-
-  return Array.from(new Set(identifiers.filter(Boolean)));
-}
-
 export async function getPublicProduct(productId: string) {
   const product = await Product.findOne({ _id: productId, ...ACTIVE_PRODUCT_FILTER }).lean();
   if (!product) {
@@ -66,32 +47,9 @@ export async function getPublicProduct(productId: string) {
 export async function buildPublicProductFilter(
   additionalFilter: Record<string, unknown> = {}
 ): Promise<Record<string, unknown>> {
-  const excludedStoreIds = await getExcludedStoreIds();
-  const filter: Record<string, unknown> = {
+  return {
     ...additionalFilter,
     ...ACTIVE_PRODUCT_FILTER,
+    storeSuspended: false,
   };
-
-  if (excludedStoreIds.length === 0) {
-    return filter;
-  }
-
-  const storeFilter = filter.storeId;
-  if (storeFilter === undefined) {
-    filter.storeId = { $nin: excludedStoreIds };
-    return filter;
-  }
-
-  const storeCondition =
-    storeFilter !== null && typeof storeFilter === "object" && !Array.isArray(storeFilter)
-      ? (storeFilter as Record<string, unknown>)
-      : { storeId: storeFilter };
-
-  filter.$and = [
-    ...(Array.isArray(filter.$and) ? (filter.$and as unknown[]) : []),
-    storeCondition,
-    { storeId: { $nin: excludedStoreIds } },
-  ];
-  delete filter.storeId;
-  return filter;
 }

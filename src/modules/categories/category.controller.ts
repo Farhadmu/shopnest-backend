@@ -3,6 +3,7 @@ import { Category } from "./category.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+import { invalidateCategoryCache } from "../../utils/category.utils";
 
 /**
  * Helper: Converts any string into a URL-friendly slug.
@@ -91,6 +92,7 @@ export const createCategory = asyncHandler(async (req: Request, res: Response) =
   }
 
   const category = await Category.create({ name, slug, parent: parent || null, image: image || null });
+  invalidateCategoryCache();
   sendSuccess(res, category.toJSON(), "Category created", 201);
 });
 
@@ -130,6 +132,7 @@ export const updateCategory = asyncHandler(async (req: Request, res: Response) =
 
   const category = await Category.findByIdAndUpdate(id, update, { new: true });
   if (!category) throw ApiError.notFound("Category not found");
+  invalidateCategoryCache();
   sendSuccess(res, category.toJSON(), "Category updated");
 });
 
@@ -154,5 +157,6 @@ export const deleteCategory = asyncHandler(async (req: Request, res: Response) =
 
   const category = await Category.findByIdAndDelete(req.params.id);
   if (!category) throw ApiError.notFound("Category not found");
+  invalidateCategoryCache();
   sendSuccess(res, { success: true }, "Category deleted");
 });

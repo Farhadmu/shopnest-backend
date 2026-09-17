@@ -22,6 +22,7 @@ export interface IProduct {
   sold: number;
   views: number;
   isDeleted: boolean;
+  storeSuspended: boolean;
   freeDelivery: boolean;
   aiPick: boolean;
   warrantyMonths?: number;
@@ -35,19 +36,20 @@ const productSchema = new Schema<IProduct>(
   {
     title: { type: String, required: true, trim: true, index: "text" },
     description: { type: String, required: true },
-    price: { type: Number, required: true, min: 0 },
+    price: { type: Number, required: true, min: 0, index: true },
     discountPrice: { type: Number, min: 0 },
     category: { type: String, required: true, index: true },
     storeId: { type: String, required: true, index: true },
     sellerId: { type: String, required: true, index: true },
     stock: { type: Number, required: true, min: 0, default: 0 },
+    storeSuspended: { type: Boolean, default: false, index: true },
     images: { type: [String], default: [] },
     tags: { type: [String], default: [], index: true },
     specifications: { type: Map, of: String, default: {} },
     status: { type: String, enum: ["pending", "approved", "rejected"], default: "approved", index: true },
-    ratingAvg: { type: Number, default: 0, min: 0, max: 5 },
+    ratingAvg: { type: Number, default: 0, min: 0, max: 5, index: true },
     ratingCount: { type: Number, default: 0 },
-    sold: { type: Number, default: 0 },
+    sold: { type: Number, default: 0, index: true },
     views: { type: Number, default: 0 },
     isDeleted: { type: Boolean, default: false, index: true },
     freeDelivery: { type: Boolean, default: false, index: true },
@@ -64,6 +66,12 @@ const productSchema = new Schema<IProduct>(
 );
 
 productSchema.index({ title: "text", description: "text", tags: "text" });
+productSchema.index({ createdAt: 1 });
+productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, createdAt: -1 });
+productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, category: 1, createdAt: -1 });
+productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, price: 1 });
+productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, ratingAvg: -1 });
+productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, sold: -1 });
 
 applyToJSON(productSchema);
 

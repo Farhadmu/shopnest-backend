@@ -22,7 +22,7 @@ vi.mock("../../../src/modules/sellers/store.model", () => ({
 
 import { Product } from "../../../src/modules/products/product.model";
 import { Store } from "../../../src/modules/sellers/store.model";
-import { listProducts, getProductById } from "../../../src/modules/products/product.controller";
+import { listProducts, getProductById, clearListCache } from "../../../src/modules/products/product.controller";
 
 const VALID_ID = "507f1f77bcf86cd799439011";
 const VALID_STORE_ID = "607f1f77bcf86cd799439020";
@@ -53,6 +53,7 @@ function createRes() {
 
 function mockProductList(products: unknown[]) {
   const query: Record<string, AnyFn> = {
+    select: vi.fn().mockReturnThis(),
     sort: vi.fn().mockReturnThis(),
     skip: vi.fn().mockReturnThis(),
     limit: vi.fn().mockReturnThis(),
@@ -94,13 +95,12 @@ function mockStoreResolve(store: unknown) {
 describe("product.controller store-status exclusion", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearListCache();
   });
 
   describe("listProducts", () => {
-    it("adds a storeId $nin exclusion when suspended/rejected stores exist", async () => {
-      const suspendedStoreId = "607f1f77bcf86cd799439030";
-      mockStoreList([{ _id: suspendedStoreId }]);
-      mockProductList([{ _id: VALID_ID, storeId: "other", isDeleted: false, status: "approved" }]);
+    it("adds storeSuspended: false along with active status filter", async () => {
+      mockProductList([{ _id: VALID_ID, storeId: "store-1", isDeleted: false, status: "approved", storeSuspended: false }]);
 
       const req = { query: {} } as never;
       const res = createRes();
@@ -109,28 +109,13 @@ describe("product.controller store-status exclusion", () => {
 
       expect(next).not.toHaveBeenCalled();
       const passedFilter = mockedProduct.find.mock.calls[0][0] as Record<string, unknown>;
-      expect(passedFilter.storeId).toEqual({ $nin: [suspendedStoreId] });
+      expect(passedFilter.storeSuspended).toBe(false);
       expect(passedFilter.isDeleted).toBe(false);
       expect(passedFilter.status).toBe("approved");
       expect(mockedProduct.countDocuments).toHaveBeenCalledWith(passedFilter);
     });
 
-    it("does not add a storeId exclusion when no stores are suspended/rejected", async () => {
-      mockStoreList([]);
-      mockProductList([]);
-
-      const req = { query: {} } as never;
-      const res = createRes();
-      const next = vi.fn();
-      await listProducts(req as never, res as never, next as never);
-
-      expect(next).not.toHaveBeenCalled();
-      const passedFilter = mockedProduct.find.mock.calls[0][0] as Record<string, unknown>;
-      expect(passedFilter.storeId).toBeUndefined();
-    });
-
-    it("resolves a seller identifier into the seller/store $or filter", async () => {
-      mockStoreList([]);
+    it("resolves a seller identifier into the seller/store $or filter with storeSuspended: false", async () => {
       mockStoreResolve({ _id: VALID_STORE_ID, ownerId: "seller-1" });
       mockProductList([]);
 
@@ -145,10 +130,12 @@ describe("product.controller store-status exclusion", () => {
         { sellerId: "seller-1" },
         { storeId: VALID_STORE_ID },
       ]);
+      expect(passedFilter.storeSuspended).toBe(false);
+      expect(passedFilter.isDeleted).toBe(false);
+      expect(passedFilter.status).toBe("approved");
     });
 
     it("keeps the approved status filter when a status query is supplied", async () => {
-      mockStoreList([]);
       mockProductList([]);
 
       const req = { query: { status: "rejected" } } as never;
@@ -159,26 +146,24 @@ describe("product.controller store-status exclusion", () => {
       expect(next).not.toHaveBeenCalled();
       const passedFilter = mockedProduct.find.mock.calls[0][0] as Record<string, unknown>;
       expect(passedFilter.status).toBe("approved");
+      expect(passedFilter.storeSuspended).toBe(false);
       expect(passedFilter.$and).toEqual([{ status: "rejected" }]);
     });
 
-    it("excludes the suspended store even when a specific storeId is requested", async () => {
-      const suspendedStoreId = "607f1f77bcf86cd799439030";
-      mockStoreList([{ _id: suspendedStoreId }]);
+    it("preserves specific storeId when requested with storeSuspended: false", async () => {
       mockProductList([]);
 
-      const req = { query: { storeId: suspendedStoreId } } as never;
+      const req = { query: { storeId: VALID_STORE_ID } } as never;
       const res = createRes();
       const next = vi.fn();
       await listProducts(req as never, res as never, next as never);
 
       expect(next).not.toHaveBeenCalled();
       const passedFilter = mockedProduct.find.mock.calls[0][0] as Record<string, unknown>;
-      expect(passedFilter.storeId).toBeUndefined();
-      expect(passedFilter.$and).toEqual([
-        { storeId: suspendedStoreId },
-        { storeId: { $nin: [suspendedStoreId] } },
-      ]);
+      expect(passedFilter.storeId).toBe(VALID_STORE_ID);
+      expect(passedFilter.storeSuspended).toBe(false);
+      expect(passedFilter.isDeleted).toBe(false);
+      expect(passedFilter.status).toBe("approved");
     });
   });
 

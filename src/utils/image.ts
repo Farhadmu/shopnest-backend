@@ -13,7 +13,7 @@ const SUPPORTED_CONTENT_TYPES = new Set([
   "image/svg+xml",
 ]);
 
-function isSupportedImage(contentType: string | undefined): boolean {
+function isSupportedImage(contentType: string | null | undefined): boolean {
   if (!contentType) return true;
   const clean = contentType.split(";")[0].trim().toLowerCase();
   return clean.startsWith("image/") || SUPPORTED_CONTENT_TYPES.has(clean);

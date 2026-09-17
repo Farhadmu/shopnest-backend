@@ -22,6 +22,7 @@ function isCacheableQuery(query: Record<string, string | undefined>): boolean {
   if (query.rating || query.productRating) return false;
   if (query.verified === "true" || query.inStock === "true" || query.aiPick === "true" || query.freeDelivery === "true") return false;
   if (query.status && query.status !== "approved") return false;
+  if (query.isFeatured !== undefined) return false;
   return true;
 }
 
@@ -190,7 +191,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
 
   if (skipExactCount) {
     const products = await Product.find(filter)
-      .select("title price discountPrice images imageUrl category stock ratingAvg ratingCount")
+      .select("title description price discountPrice images imageUrl category storeId sellerId stock status ratingAvg ratingCount sold views isFeatured freeDelivery aiPick createdAt updatedAt tags specifications")
       .sort(sortOption)
       .skip(skip)
       .limit(limit + 1)
@@ -206,7 +207,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
 
   const [products, total] = await Promise.all([
     Product.find(filter)
-      .select("title price discountPrice images imageUrl category stock ratingAvg ratingCount")
+      .select("title description price discountPrice images imageUrl category storeId sellerId stock status ratingAvg ratingCount sold views isFeatured freeDelivery aiPick createdAt updatedAt tags specifications")
       .sort(sortOption)
       .skip(skip)
       .limit(limit)

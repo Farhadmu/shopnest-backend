@@ -1,8 +1,9 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import * as ctrl from "./seller.controller";
 import * as followCtrl from "./store-follow.controller";
 import sellerIntelligenceRoutes from "./seller-intelligence.routes";
 import profitCalculatorRoutes from "./profit-calculator.routes";
+import sellerReturnsRoutes from "./seller-returns.routes";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
@@ -13,6 +14,7 @@ const router = Router();
 // Sub-routes for Seller Intelligence & Growth Hub
 router.use("/", sellerIntelligenceRoutes);
 router.use("/profit-calculator", profitCalculatorRoutes);
+router.use("/returns", sellerReturnsRoutes);
 
 router.get("/stores/:storeId", ctrl.getStoreById);
 router.get("/stores/:storeId/follow", ...requireAuth, followCtrl.getFollowStatus);

@@ -1,4 +1,4 @@
-﻿import { Request, Response } from "express";
+import { Request, Response } from "express";
 import crypto from "crypto";
 import mongoose from "mongoose";
 import { DeliveryManProfile, DeliveryManDetails } from "./delivery-man.model";
@@ -7,6 +7,7 @@ import { DeliveryLocation } from "./delivery-location.model";
 import { DeliveryRating } from "./delivery-rating.model";
 import { DeliveryIncident } from "./delivery-incident.model";
 import { Order } from "../orders/order.model";
+import { ReverseDeliveryRequest } from "../customer/customer-features.model";
 import { createNotification } from "../notifications/notification.service";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess, sendPaginated } from "../../utils/api-response";
@@ -1001,9 +1002,12 @@ export const uploadDeliveryProof = asyncHandler(async (req: Request, res: Respon
 
 /** POST /delivery/incidents - Report delivery incident (general or order-specific) */
 export const createDeliveryIncident = asyncHandler(async (req: Request, res: Response) => {
-  const { deliveryRequestId, orderId, category, severity, description, evidenceImages } = req.body as {
+  const { deliveryRequestId, reverseDeliveryRequestId, returnRequestId, orderId, productId, category, severity, description, evidenceImages } = req.body as {
     deliveryRequestId?: string;
+    reverseDeliveryRequestId?: string;
+    returnRequestId?: string;
     orderId?: string;
+    productId?: string;
     category: any;
     severity?: "low" | "medium" | "high" | "critical";
     description: string;
@@ -1014,7 +1018,8 @@ export const createDeliveryIncident = asyncHandler(async (req: Request, res: Res
   const isAdmin = req.user!.role === "admin";
 
   let linkedDelivery: any = null;
-  const targetDelId = deliveryRequestId || orderId;
+  let linkedReverse: any = null;
+  const targetDelId = reverseDeliveryRequestId || deliveryRequestId || orderId;
 
   if (targetDelId && targetDelId !== "general") {
     const isObjId = mongoose.isValidObjectId(targetDelId);
@@ -1029,12 +1034,28 @@ export const createDeliveryIncident = asyncHandler(async (req: Request, res: Res
       if (linkedDelivery.assignedDeliveryManId !== userId && !isAdmin) {
         throw ApiError.forbidden("You can only report incidents for your assigned deliveries");
       }
+    } else {
+      linkedReverse = await ReverseDeliveryRequest.findOne({
+        $or: [
+          ...(isObjId ? [{ _id: new mongoose.Types.ObjectId(targetDelId) }] : []),
+          { orderId: targetDelId },
+        ],
+      });
+
+      if (linkedReverse) {
+        if (linkedReverse.assignedDeliveryManId !== userId && !isAdmin) {
+          throw ApiError.forbidden("You can only report incidents for your assigned deliveries");
+        }
+      }
     }
   }
 
   const incident = await DeliveryIncident.create({
     deliveryRequestId: linkedDelivery?.id || (deliveryRequestId && deliveryRequestId !== "general" ? deliveryRequestId : undefined),
-    orderId: linkedDelivery?.orderId || orderId || undefined,
+    reverseDeliveryRequestId: linkedReverse?.id || reverseDeliveryRequestId || undefined,
+    returnRequestId: linkedReverse?.returnRequestId || returnRequestId || undefined,
+    orderId: linkedDelivery?.orderId || linkedReverse?.orderId || orderId || undefined,
+    productId: productId || undefined,
     deliveryManId: userId,
     category,
     severity: severity || "medium",

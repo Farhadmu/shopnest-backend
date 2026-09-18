@@ -82,18 +82,27 @@ export const addProductReview = asyncHandler(async (req: Request, res: Response)
   const product = await getPublicProduct(productId);
   if (!product) throw ApiError.notFound("Product not found");
 
-  const alreadyReviewed = await Review.findOne({ productId, userId: req.user!.id });
-  if (alreadyReviewed) throw ApiError.conflict("You have already reviewed this product");
-
   const verifiedPurchase = Boolean(
     await Order.findOne({
       userId: req.user!.id,
       "items.productId": productId,
-      status: { $in: ["delivered", "shipped", "out_for_delivery", "confirmed", "processing"] },
+      status: { $in: ["delivered", "shipped", "out_for_delivery", "confirmed", "processing", "pending"] },
     })
   );
 
-  const review = await Review.create({
+  let review = await Review.findOne({ productId, userId: req.user!.id });
+  if (review) {
+    review.rating = req.body.rating;
+    review.comment = req.body.comment;
+    if (req.body.images) review.images = req.body.images;
+    review.verifiedPurchase = verifiedPurchase || review.verifiedPurchase;
+    await review.save();
+    await recalcProductRating(productId);
+    sendSuccess(res, review.toJSON(), "Review updated successfully", 200);
+    return;
+  }
+
+  review = await Review.create({
     productId,
     userId: req.user!.id,
     userName: req.user!.name,

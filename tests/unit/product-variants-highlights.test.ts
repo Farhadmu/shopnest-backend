@@ -54,6 +54,22 @@ describe("Product Variants, Highlights, PackageContents Persistence", () => {
       }
     });
 
+    it("rejects duplicate variant names in schema", () => {
+      const invalidPayload = {
+        title: "Test Keyboard",
+        description: "Test Description",
+        price: 1000,
+        category: "Electronics",
+        variants: [
+          { name: "Matte Black", stock: 10 },
+          { name: "matte black", stock: 5 },
+        ],
+      };
+
+      const result = createProductSchema.safeParse(invalidPayload);
+      expect(result.success).toBe(false);
+    });
+
     it("rejects variant without a name", () => {
       const invalidPayload = {
         title: "Test Keyboard",
@@ -82,7 +98,7 @@ describe("Product Variants, Highlights, PackageContents Persistence", () => {
   });
 
   describe("Controller persistence", () => {
-    it("createProduct saves variants, highlights, and packageContents", async () => {
+    it("createProduct saves variants, highlights, and packageContents with auto-generated SKUs and synced stock", async () => {
       storeMocks.findOne.mockResolvedValue({ _id: "store-123" });
       productMocks.create.mockImplementation(async (data) => ({
         ...data,
@@ -113,7 +129,11 @@ describe("Product Variants, Highlights, PackageContents Persistence", () => {
 
       expect(productMocks.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          variants: [{ name: "Midnight Black", stock: 15 }, { name: "Pearl White", stock: 10 }],
+          stock: 25,
+          variants: [
+            expect.objectContaining({ name: "Midnight Black", stock: 15, sku: "PREMIUMW-MIDNIGHT" }),
+            expect.objectContaining({ name: "Pearl White", stock: 10, sku: "PREMIUMW-PEARLWHI" }),
+          ],
           highlights: [{ title: "ANC 45dB", description: "Deep noise suppression" }],
           packageContents: ["1x Earbuds Pair", "1x Charging Case", "1x USB-C Cable"],
         })
@@ -155,9 +175,36 @@ describe("Product Variants, Highlights, PackageContents Persistence", () => {
       await updateProduct(req, res, next);
 
       expect(mockProduct.save).toHaveBeenCalled();
-      expect(mockProduct.variants).toEqual([{ name: "Silver Edition", stock: 5 }]);
+      expect(mockProduct.variants).toEqual([
+        expect.objectContaining({ name: "Silver Edition", stock: 5, sku: "UPDATEDE-SILVERED" }),
+      ]);
       expect(mockProduct.highlights).toEqual([{ title: "Bluetooth 5.4", description: "Ultra-low latency" }]);
       expect(mockProduct.packageContents).toEqual(["1x Earbuds", "1x Case"]);
+    });
+
+    it("rejects duplicate variant names in createProduct", async () => {
+      storeMocks.findOne.mockResolvedValue({ _id: "store-123" });
+
+      const req = {
+        user: { id: "user-seller-1", role: "seller" },
+        body: {
+          title: "Premium Wireless Earbuds",
+          description: "Active noise cancellation earbuds",
+          price: 5000,
+          category: "Audio",
+          variants: [
+            { name: "Matte Black", stock: 10 },
+            { name: "matte black", stock: 5 },
+          ],
+        },
+      } as any;
+
+      const res = { status: vi.fn().mockReturnValue({ json: vi.fn() }) } as any;
+      const next = vi.fn();
+
+      await createProduct(req, res, next);
+      expect(next).toHaveBeenCalledWith(expect.any(Error));
+      expect(next.mock.calls[0][0].message).toContain("Duplicate variant name");
     });
   });
 });

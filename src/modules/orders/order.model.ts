@@ -20,6 +20,9 @@ export interface IOrderItem {
   quantity: number;
   price: number;
   image?: string;
+  variantName?: string;
+  variantSku?: string;
+  variantColor?: string;
 }
 
 export interface IOrder {
@@ -60,6 +63,9 @@ const orderItemSchema = new Schema<IOrderItem>(
     quantity: { type: Number, required: true, min: 1 },
     price: { type: Number, required: true, min: 0 },
     image: { type: String },
+    variantName: { type: String },
+    variantSku: { type: String },
+    variantColor: { type: String },
   },
   { _id: false }
 );

@@ -1,24 +1,54 @@
 import { Request, Response } from "express";
-import { Cart, ICart } from "./cart.model";
-import { Product } from "../products/product.model";
+import { Cart, ICart, cartItemKey } from "./cart.model";
+import { Product, IProductVariant } from "../products/product.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { ApiError } from "../../utils/api-error";
 
+// ── Helpers ──────────────────────────────────────────────────────────────
+
 /**
- * Helper: Deduplicates items in a cart so each productId only appears once,
- * merging quantities together if duplicates exist.
+ * Resolve the effective price for a product, optionally using a variant.
+ * Fallback chain: variant.price → product.discountPrice → product.price
+ */
+function resolvePrice(product: { price: number; discountPrice?: number }, variant?: IProductVariant): number {
+  if (variant?.price != null && variant.price > 0) return variant.price;
+  return product.discountPrice ?? product.price;
+}
+
+/**
+ * Resolve the effective stock for a product or variant.
+ * If a variant is provided, use the variant's stock; otherwise use the product's stock.
+ */
+function resolveStock(product: { stock: number }, variant?: IProductVariant): number {
+  if (variant && variant.stock != null) return variant.stock;
+  return product.stock;
+}
+
+/**
+ * Find a matching variant by name in a product's variant array (case-insensitive).
+ * Returns undefined if variantName is falsy or no match is found.
+ */
+function findVariant(product: { variants?: IProductVariant[] }, variantName?: string): IProductVariant | undefined {
+  if (!variantName || !product.variants?.length) return undefined;
+  const target = variantName.trim().toLowerCase();
+  return product.variants.find((v) => (v.name || "").trim().toLowerCase() === target);
+}
+
+/**
+ * Deduplicates items in a cart so each productId+variantName combo only
+ * appears once, merging quantities together if duplicates exist.
  */
 async function normalizeCartItems(cart: ICart & { save: () => Promise<unknown> }) {
-  const mergedItems = new Map<string, { productId: string; quantity: number; price: number }>();
+  const mergedItems = new Map<string, (typeof cart.items)[number]>();
 
   for (const item of cart.items) {
-    const productId = String(item.productId);
-    const existing = mergedItems.get(productId);
+    const key = cartItemKey(item);
+    const existing = mergedItems.get(key);
     mergedItems.set(
-      productId,
+      key,
       existing
         ? { ...existing, quantity: existing.quantity + item.quantity, price: item.price }
-        : { productId, quantity: item.quantity, price: item.price }
+        : { ...item }
     );
   }
 
@@ -29,7 +59,7 @@ async function normalizeCartItems(cart: ICart & { save: () => Promise<unknown> }
 }
 
 /**
- * Helper: Retrieves the user's active cart from MongoDB or creates an empty one.
+ * Retrieves the user's active cart from MongoDB or creates an empty one.
  */
 async function getOrCreateCart(userId: string) {
   const cart = await Cart.findOneAndUpdate(
@@ -42,7 +72,7 @@ async function getOrCreateCart(userId: string) {
 }
 
 /**
- * Helper: Enriches cart items with live product details (title, images, stock, category)
+ * Enriches cart items with live product details (title, images, stock, category)
  * and computes the subtotal. Matches the frontend's expected Cart response shape.
  */
 async function buildPopulatedCartResponse(cart: any) {
@@ -52,16 +82,24 @@ async function buildPopulatedCartResponse(cart: any) {
 
   const enrichedItems = cart.items.map((i: any) => {
     const p = productMap.get(String(i.productId));
+
+    // If a variant was selected, resolve stock from the variant
+    const variant = i.variantName && p ? findVariant(p, i.variantName) : undefined;
+    const stock = variant ? resolveStock(p, variant) : (p?.stock ?? 10);
+
     return {
       productId: i.productId,
       quantity: i.quantity,
       price: i.price,
+      variantName: i.variantName,
+      variantSku: i.variantSku,
+      variantColor: i.variantColor,
       title: p?.title ?? `Product #${i.productId}`,
       images: p?.images ?? [],
       category: p?.category ?? "General",
       sellerId: p?.sellerId ?? "",
       storeId: p?.storeId ?? "",
-      stock: p?.stock ?? 10,
+      stock,
     };
   });
 
@@ -72,6 +110,8 @@ async function buildPopulatedCartResponse(cart: any) {
     subtotal,
   };
 }
+
+// ── Controllers ──────────────────────────────────────────────────────────
 
 /**
  * Controller: Get User's Cart
@@ -97,28 +137,65 @@ export const getCart = asyncHandler(async (req: Request, res: Response) => {
  *    - req.user.id: Logged-in user ID
  *    - req.body.productId: ID of the product to add
  *    - req.body.quantity: Number of units to add (default >= 1)
+ *    - req.body.variantName: (optional/required if product has variants) Name of the selected variant
  * 2. Database Operation:
  *    - Product.findOne({ _id: productId, isDeleted: false, status: "approved" }) to verify availability & stock
+ *    - Resolve variant → price → stock
  *    - Cart.findOne / Cart.create, update item quantity, cart.save()
  * 3. Response Sent:
  *    - HTTP 200: { items: [...enrichedItems], subtotal: number }
  */
 export const addCartItem = asyncHandler(async (req: Request, res: Response) => {
-  const { productId, quantity } = req.body as { productId: string; quantity: number };
+  const { productId, quantity, variantName } = req.body as {
+    productId: string;
+    quantity: number;
+    variantName?: string;
+  };
 
   const product = await Product.findOne({ _id: productId, isDeleted: false, status: "approved" });
   if (!product) throw ApiError.notFound("Product not found");
-  if (product.stock < quantity) throw ApiError.badRequest("Not enough stock available");
+
+  // If product has variants, require variant selection
+  if (product.variants && product.variants.length > 0) {
+    if (!variantName || !variantName.trim()) {
+      throw ApiError.badRequest("Please select a variant for this product");
+    }
+  }
+
+  // Resolve variant (if selected)
+  let variant: IProductVariant | undefined;
+  if (variantName) {
+    variant = findVariant(product, variantName);
+    if (!variant) throw ApiError.badRequest(`Variant "${variantName}" not found for this product`);
+  }
+
+  // Validate stock at variant or product level
+  const availableStock = resolveStock(product, variant);
+  if (availableStock < quantity) throw ApiError.badRequest("Not enough stock available");
+
+  // Resolve price: variant.price → product.discountPrice → product.price
+  const price = resolvePrice(product, variant);
 
   const cart = await getOrCreateCart(req.user!.id);
-  const price = product.discountPrice ?? product.price;
-  const existing = cart.items.find((i) => i.productId === productId);
+
+  // Find existing cart item by productId + variantName (case-insensitive)
+  const targetVarName = (variant?.name || variantName || "").trim().toLowerCase();
+  const existing = cart.items.find(
+    (i) => i.productId === productId && (i.variantName || "").trim().toLowerCase() === targetVarName
+  );
 
   if (existing) {
     existing.quantity += quantity;
     existing.price = price;
   } else {
-    cart.items.push({ productId, quantity, price });
+    cart.items.push({
+      productId,
+      quantity,
+      price,
+      variantName: variant?.name || variantName,
+      variantSku: variant?.sku,
+      variantColor: variant?.color,
+    });
   }
 
   await cart.save();
@@ -132,9 +209,10 @@ export const addCartItem = asyncHandler(async (req: Request, res: Response) => {
  * 1. Inputs Extracted:
  *    - req.user.id: Logged-in user ID
  *    - req.params.productId: Target product ID in cart
+ *    - req.query.variantName: (optional) Variant name to identify the specific line item
  *    - req.body.quantity: New quantity value
  * 2. Database Operation:
- *    - Product.findOne to check stock limit
+ *    - Product.findOne to check stock limit (at variant level if applicable)
  *    - Cart.findOne, update quantity in cart.items, cart.save()
  * 3. Response Sent:
  *    - HTTP 200: { items: [...enrichedItems], subtotal: number }
@@ -142,12 +220,20 @@ export const addCartItem = asyncHandler(async (req: Request, res: Response) => {
 export const updateCartItem = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
   const { quantity } = req.body as { quantity: number };
+  const variantName = (req.query.variantName as string) || undefined;
+  const targetVarName = (variantName || "").trim().toLowerCase();
 
   const product = await Product.findOne({ _id: productId, isDeleted: false });
-  if (product && product.stock < quantity) throw ApiError.badRequest("Not enough stock available");
+  if (product) {
+    const variant = findVariant(product, variantName);
+    const availableStock = resolveStock(product, variant);
+    if (availableStock < quantity) throw ApiError.badRequest("Not enough stock available");
+  }
 
   const cart = await getOrCreateCart(req.user!.id);
-  const item = cart.items.find((i) => i.productId === productId);
+  const item = cart.items.find(
+    (i) => i.productId === productId && (i.variantName || "").trim().toLowerCase() === targetVarName
+  );
   if (!item) throw ApiError.notFound("Item not in cart");
 
   item.quantity = quantity;
@@ -163,16 +249,22 @@ export const updateCartItem = asyncHandler(async (req: Request, res: Response) =
  * 1. Inputs Extracted:
  *    - req.user.id: Logged-in user ID
  *    - req.params.productId: Product ID to remove
+ *    - req.query.variantName: (optional) Variant name to identify the specific line item
  * 2. Database Operation:
- *    - Cart.findOne, filter out productId from cart.items, cart.save()
+ *    - Cart.findOne, filter out matching item from cart.items, cart.save()
  * 3. Response Sent:
  *    - HTTP 200: { items: [...enrichedItems], subtotal: number }
  */
 export const removeCartItem = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
+  const variantName = (req.query.variantName as string) || undefined;
+  const targetVarName = (variantName || "").trim().toLowerCase();
+
   const cart = await getOrCreateCart(req.user!.id);
 
-  cart.items = cart.items.filter((i) => i.productId !== productId);
+  cart.items = cart.items.filter(
+    (i) => !(i.productId === productId && (i.variantName || "").trim().toLowerCase() === targetVarName)
+  );
   await cart.save();
 
   const response = await buildPopulatedCartResponse(cart);

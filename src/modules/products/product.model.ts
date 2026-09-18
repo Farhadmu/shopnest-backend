@@ -116,6 +116,13 @@ productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, price: 1 });
 productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, ratingAvg: -1 });
 productSchema.index({ isDeleted: 1, status: 1, storeSuspended: 1, sold: -1 });
 
+productSchema.pre("save", function (next) {
+  if (this.variants && Array.isArray(this.variants) && this.variants.length > 0) {
+    this.stock = this.variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
+  }
+  next();
+});
+
 applyToJSON(productSchema);
 
 export const Product = model<IProduct>("Product", productSchema);

@@ -31,10 +31,35 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   for (const item of cart.items) {
     const product = await Product.findOne({ _id: item.productId, isDeleted: false });
     if (!product) throw ApiError.badRequest(`A product in your cart is no longer available`);
-    if (product.stock < item.quantity) {
-      throw ApiError.badRequest(`Insufficient stock for "${product.title}"`);
+
+    const hasVariants = product.variants && product.variants.length > 0;
+    if (hasVariants && (!item.variantName || !item.variantName.trim())) {
+      throw ApiError.badRequest(`Please select a variant for "${product.title}"`);
     }
-    const price = product.discountPrice ?? product.price;
+
+    // Resolve variant (if the cart item references one, case-insensitive)
+    const variant = item.variantName
+      ? product.variants?.find((v) => (v.name || "").trim().toLowerCase() === item.variantName!.trim().toLowerCase())
+      : undefined;
+
+    if (hasVariants && !variant) {
+      throw ApiError.badRequest(`Variant "${item.variantName}" not found for "${product.title}"`);
+    }
+
+    // Validate stock at variant or product level
+    const availableStock = variant?.stock != null ? variant.stock : product.stock;
+    if (availableStock < item.quantity) {
+      const label = item.variantName
+        ? `"${product.title}" (${item.variantName})`
+        : `"${product.title}"`;
+      throw ApiError.badRequest(`Insufficient stock for ${label}`);
+    }
+
+    // Resolve price: variant.price → product.discountPrice → product.price
+    const price = (variant?.price != null && variant.price > 0)
+      ? variant.price
+      : (product.discountPrice ?? product.price);
+
     subtotal += price * item.quantity;
     orderItems.push({
       productId: product.id,
@@ -45,6 +70,9 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       quantity: item.quantity,
       price,
       image: product.images?.[0] ?? undefined,
+      variantName: variant?.name || item.variantName,
+      variantSku: variant?.sku || item.variantSku,
+      variantColor: variant?.color || item.variantColor,
     });
   }
   subtotal = Math.round(subtotal * 100) / 100;
@@ -117,11 +145,20 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     statusHistory: [{ status: "pending", at: new Date() }],
   });
 
-  // Decrement stock + bump sold count for each purchased product.
+  // Decrement stock + bump sold count.
+  // If the order item has a variant, deduct from the variant's stock AND the top-level product stock.
+  // This keeps the top-level stock in sync with variants.
   await Promise.all(
-    orderItems.map((i) =>
-      Product.findByIdAndUpdate(i.productId, { $inc: { stock: -i.quantity, sold: i.quantity } })
-    )
+    orderItems.map((i) => {
+      if (i.variantName) {
+        const escaped = i.variantName.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return Product.updateOne(
+          { _id: i.productId, "variants.name": { $regex: new RegExp(`^${escaped}$`, "i") } },
+          { $inc: { "variants.$.stock": -i.quantity, stock: -i.quantity, sold: i.quantity } }
+        );
+      }
+      return Product.findByIdAndUpdate(i.productId, { $inc: { stock: -i.quantity, sold: i.quantity } });
+    })
   );
 
   cart.items = [];

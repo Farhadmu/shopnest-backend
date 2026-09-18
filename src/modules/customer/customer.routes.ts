@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import * as ctrl from "./ai-features.controller";
 import * as productIntelligence from "./features/product-intelligence.controller";
 import * as deliveryTracking from "./features/delivery-tracking.controller";
@@ -240,7 +240,7 @@ router.get("/search/bangla", attachUserIfPresent, banglaSearchCtrl.searchBanglaB
 router.get("/cod-risk", ...requireAuth, codRiskCtrl.getCODOrderRisk);
 router.get("/products/:productId/trust-report", productIntelligence.getProductTrustReport);
 router.get("/couriers/compare", attachUserIfPresent, courierCtrl.compareCouriers);
-router.get("/orders/:orderId/return-eligibility", ...requireAuth, returnsCtrl.getReturnEligibility);
+router.get("/orders/:orderId/return-eligibility", ...requireAuth, returnsCtrl.getReturnEligibilityRoute);
 router.get("/price-alerts", ...requireAuth, priceStockAlertsCtrl.getUserPriceAlerts);
 router.post("/price-alerts", ...requireAuth, priceStockAlertsCtrl.subscribePriceAlert);
 router.delete("/price-alerts/:id", ...requireAuth, priceStockAlertsCtrl.deletePriceAlert);

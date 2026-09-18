@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
 import * as commandCenter from "./features/command-center.controller";
@@ -17,6 +17,7 @@ import * as financialRisk from "./features/financial-risk.controller";
 import * as fraudAlerts from "./features/fraud-alerts.controller";
 import * as securityIncidents from "./features/security-incidents.controller";
 import * as auditLogs from "./features/audit-logs.controller";
+import * as adminReturns from "./features/admin-returns.controller";
 
 const router = Router();
 
@@ -85,5 +86,13 @@ router.get("/incidents/:id/risk-signals", securityIncidents.getRelatedRiskSignal
 
 // 39. Admin Audit Log
 router.get("/audit-logs", auditLogs.getAuditLogs);
+
+// 40. Admin Returns & Refunds
+router.get("/returns", adminReturns.getAdminReturns);
+router.get("/returns/:id", adminReturns.getAdminReturnById);
+router.get("/refunds", adminReturns.getAdminRefunds);
+router.patch("/refunds/:id/process", ...requireAuth, requireRole("admin"), adminReturns.processRefund);
+router.patch("/refunds/:id/succeed", ...requireAuth, requireRole("admin"), adminReturns.markRefundSucceeded);
+router.patch("/refunds/:id/fail", ...requireAuth, requireRole("admin"), adminReturns.markRefundFailed);
 
 export default router;

@@ -1,4 +1,4 @@
-import { Schema, model, Types } from "mongoose";
+﻿import { Schema, model, Types } from "mongoose";
 import { applyToJSON } from "../../utils/model-plugins";
 
 // ============================================================
@@ -368,16 +368,55 @@ export interface IReturnRequest {
   _id: Types.ObjectId;
   userId: string;
   orderId: string;
+  orderItemId: string;
   productId: string;
   productTitle: string;
+  productImage?: string;
   sellerId: string;
+  sellerName?: string;
   type: "return" | "refund" | "replacement";
   reason: string;
-  status: "requested" | "approved" | "pickup" | "received" | "refunded" | "rejected";
+  description: string;
+  quantity: number;
+  status:
+    | "requested"
+    | "under_review"
+    | "approved"
+    | "rejected"
+    | "reverse_available"
+    | "reverse_assigned"
+    | "reverse_accepted"
+    | "pickup_started"
+    | "picked_up"
+    | "in_transit"
+    | "seller_received"
+    | "inspection_pending"
+    | "inspection_approved"
+    | "inspection_rejected"
+    | "refund_pending"
+    | "refund_processing"
+    | "refunded"
+    | "refund_failed"
+    | "cancelled"
+    | "failed";
   statusHistory: Array<{ status: string; at: Date; note?: string }>;
-  refundAmount?: number;
-  refundMethod?: string;
   evidenceUrls: string[];
+  pickupAddress?: string;
+  sellerReturnAddress?: string;
+  requestedRefundAmount: number;
+  calculatedRefundAmount?: number;
+  refundMethod?: string;
+  refundId?: string;
+  deliveryRequestId?: string;
+  deliveryManId?: string;
+  deliveryManName?: string;
+  pickedUpAt?: Date;
+  receivedBySellerAt?: Date;
+  inspectionStatus?: "pending" | "approved" | "rejected";
+  inspectionNotes?: string;
+  rejectionReason?: string;
+  approvedAt?: Date;
+  rejectedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -386,14 +425,40 @@ const returnRequestSchema = new Schema<IReturnRequest>(
   {
     userId: { type: String, required: true, index: true },
     orderId: { type: String, required: true, index: true },
+    orderItemId: { type: String, required: true },
     productId: { type: String, required: true },
     productTitle: { type: String, required: true },
-    sellerId: { type: String, required: true },
+    productImage: { type: String },
+    sellerId: { type: String, required: true, index: true },
+    sellerName: { type: String },
     type: { type: String, enum: ["return", "refund", "replacement"], required: true },
     reason: { type: String, required: true },
+    description: { type: String, required: true },
+    quantity: { type: Number, required: true, min: 1, default: 1 },
     status: {
       type: String,
-      enum: ["requested", "approved", "pickup", "received", "refunded", "rejected"],
+      enum: [
+        "requested",
+        "under_review",
+        "approved",
+        "rejected",
+        "reverse_available",
+        "reverse_assigned",
+        "reverse_accepted",
+        "pickup_started",
+        "picked_up",
+        "in_transit",
+        "seller_received",
+        "inspection_pending",
+        "inspection_approved",
+        "inspection_rejected",
+        "refund_pending",
+        "refund_processing",
+        "refunded",
+        "refund_failed",
+        "cancelled",
+        "failed",
+      ],
       default: "requested",
       index: true,
     },
@@ -404,16 +469,221 @@ const returnRequestSchema = new Schema<IReturnRequest>(
         note: { type: String },
       },
     ],
-    refundAmount: { type: Number },
-    refundMethod: { type: String },
     evidenceUrls: { type: [String], default: [] },
+    pickupAddress: { type: String },
+    sellerReturnAddress: { type: String },
+    requestedRefundAmount: { type: Number, required: true, min: 0 },
+    calculatedRefundAmount: { type: Number, min: 0 },
+    refundMethod: { type: String },
+    refundId: { type: String },
+    deliveryRequestId: { type: String },
+    deliveryManId: { type: String },
+    deliveryManName: { type: String },
+    pickedUpAt: { type: Date },
+    receivedBySellerAt: { type: Date },
+    inspectionStatus: { type: String, enum: ["pending", "approved", "rejected"] },
+    inspectionNotes: { type: String },
+    rejectionReason: { type: String },
+    approvedAt: { type: Date },
+    rejectedAt: { type: Date },
   },
   { timestamps: true }
 );
 
 returnRequestSchema.index({ userId: 1, status: 1, createdAt: -1 });
+returnRequestSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
+returnRequestSchema.index({ deliveryManId: 1, status: 1, createdAt: -1 });
+returnRequestSchema.index({ orderId: 1, productId: 1 });
+returnRequestSchema.index({ refundId: 1 });
 applyToJSON(returnRequestSchema);
 export const ReturnRequest = model<IReturnRequest>("ReturnRequest", returnRequestSchema);
+
+// ============================================================
+// 9b. Refund Record
+// ============================================================
+export interface IRefund {
+  _id: Types.ObjectId;
+  refundId: string;
+  returnRequestId: string;
+  orderId: string;
+  orderItemId: string;
+  customerId: string;
+  sellerId: string;
+  paymentId?: string;
+  amount: number;
+  currency: string;
+  provider: string;
+  providerRefundId?: string;
+  status: "pending" | "processing" | "succeeded" | "failed";
+  reason?: string;
+  requestedAt: Date;
+  processedAt?: Date;
+  failedAt?: Date;
+  failureReason?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const refundSchema = new Schema<IRefund>(
+  {
+    refundId: { type: String, required: true, unique: true, index: true },
+    returnRequestId: { type: String, required: true, index: true },
+    orderId: { type: String, required: true, index: true },
+    orderItemId: { type: String, required: true },
+    customerId: { type: String, required: true, index: true },
+    sellerId: { type: String, required: true, index: true },
+    paymentId: { type: String },
+    amount: { type: Number, required: true, min: 0 },
+    currency: { type: String, default: "BDT" },
+    provider: { type: String, required: true },
+    providerRefundId: { type: String },
+    status: {
+      type: String,
+      enum: ["pending", "processing", "succeeded", "failed"],
+      default: "pending",
+      index: true,
+    },
+    reason: { type: String },
+    requestedAt: { type: Date, default: Date.now },
+    processedAt: { type: Date },
+    failedAt: { type: Date },
+    failureReason: { type: String },
+  },
+  { timestamps: true }
+);
+
+applyToJSON(refundSchema);
+export const Refund = model<IRefund>("Refund", refundSchema);
+
+// ============================================================
+// 9c. Reverse Delivery Request
+// ============================================================
+export type ReverseDeliveryStatus =
+  | "available"
+  | "assigned"
+  | "accepted"
+  | "pickup_started"
+  | "picked_up"
+  | "in_transit"
+  | "seller_received"
+  | "failed"
+  | "cancelled";
+
+export interface IReverseDeliveryRequest {
+  _id: Types.ObjectId;
+  returnRequestId: string;
+  orderId: string;
+  orderItemId: string;
+  productTitle: string;
+  productImage?: string;
+  customerId: string;
+  customerName?: string;
+  customerAddress: string;
+  customerContact?: string;
+  sellerId: string;
+  sellerName?: string;
+  sellerAddress: string;
+  sellerContact?: string;
+  assignedDeliveryManId?: string;
+  assignedAt?: Date;
+  acceptedAt?: Date;
+  pickupStartedAt?: Date;
+  pickedUpAt?: Date;
+  inTransitAt?: Date;
+  sellerReceivedAt?: Date;
+  failedAt?: Date;
+  cancelledAt?: Date;
+  deliveryOtp?: string;
+  deliveryOtpVerifiedAt?: Date;
+  deliveryProofImage?: string;
+  deliveryFailedReason?: string;
+  priority: "normal" | "high" | "urgent";
+  packageInfo?: {
+    weight?: number;
+    dimensions?: string;
+    specialInstructions?: string;
+    fragile?: boolean;
+  };
+  status: ReverseDeliveryStatus;
+  statusHistory: Array<{ status: string; at: Date; note?: string }>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const reverseDeliveryRequestSchema = new Schema<IReverseDeliveryRequest>(
+  {
+    returnRequestId: { type: String, required: true, unique: true, index: true },
+    orderId: { type: String, required: true, index: true },
+    orderItemId: { type: String, required: true },
+    productTitle: { type: String, required: true },
+    productImage: { type: String },
+    customerId: { type: String, required: true, index: true },
+    customerName: { type: String },
+    customerAddress: { type: String, required: true },
+    customerContact: { type: String },
+    sellerId: { type: String, required: true, index: true },
+    sellerName: { type: String },
+    sellerAddress: { type: String, required: true },
+    sellerContact: { type: String },
+    assignedDeliveryManId: { type: String, index: true },
+    assignedAt: { type: Date },
+    acceptedAt: { type: Date },
+    pickupStartedAt: { type: Date },
+    pickedUpAt: { type: Date },
+    inTransitAt: { type: Date },
+    sellerReceivedAt: { type: Date },
+    failedAt: { type: Date },
+    cancelledAt: { type: Date },
+    deliveryOtp: { type: String },
+    deliveryOtpVerifiedAt: { type: Date },
+    deliveryProofImage: { type: String },
+    deliveryFailedReason: { type: String },
+    priority: {
+      type: String,
+      enum: ["normal", "high", "urgent"],
+      default: "normal",
+      index: true,
+    },
+    packageInfo: {
+      weight: { type: Number },
+      dimensions: { type: String },
+      specialInstructions: { type: String },
+      fragile: { type: Boolean, default: false },
+    },
+    status: {
+      type: String,
+      enum: [
+        "available",
+        "assigned",
+        "accepted",
+        "pickup_started",
+        "picked_up",
+        "in_transit",
+        "seller_received",
+        "failed",
+        "cancelled",
+      ],
+      default: "available",
+      index: true,
+    },
+    statusHistory: [
+      {
+        status: { type: String, required: true },
+        at: { type: Date, default: Date.now },
+        note: { type: String },
+      },
+    ],
+  },
+  { timestamps: true }
+);
+
+reverseDeliveryRequestSchema.index({ status: 1, priority: -1, createdAt: -1 });
+reverseDeliveryRequestSchema.index({ assignedDeliveryManId: 1, status: 1, createdAt: -1 });
+reverseDeliveryRequestSchema.index({ customerId: 1, status: 1, createdAt: -1 });
+reverseDeliveryRequestSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
+applyToJSON(reverseDeliveryRequestSchema);
+export const ReverseDeliveryRequest = model<IReverseDeliveryRequest>("ReverseDeliveryRequest", reverseDeliveryRequestSchema);
+
 
 // ============================================================
 // 10. Product Quality Score Cache (Feature 7)

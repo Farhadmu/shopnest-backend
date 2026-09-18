@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+﻿import { Request, Response } from "express";
 import crypto from "crypto";
 import mongoose from "mongoose";
 import { DeliveryManProfile, DeliveryManDetails } from "./delivery-man.model";
@@ -7,6 +7,7 @@ import { DeliveryLocation } from "./delivery-location.model";
 import { DeliveryRating } from "./delivery-rating.model";
 import { DeliveryIncident } from "./delivery-incident.model";
 import { Order } from "../orders/order.model";
+import { ReverseDeliveryRequest, type IReverseDeliveryRequest } from "../customer/customer-features.model";
 import { createNotification } from "../notifications/notification.service";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess, sendPaginated } from "../../utils/api-response";
@@ -1819,4 +1820,94 @@ export const getAdminDeliveryHeatmap = asyncHandler(async (req: Request, res: Re
     pointCount: heatmapPoints.length,
     points: heatmapPoints,
   });
+});
+
+// ============================================================
+// REVERSE DELIVERY (RETURNS)
+// ============================================================
+
+export const getAvailableReverseDeliveries = asyncHandler(async (req: Request, res: Response) => {
+  const requests = await ReverseDeliveryRequest.find({ status: "available" })
+    .sort({ priority: -1, createdAt: -1 })
+    .lean();
+  sendSuccess(res, requests);
+});
+
+export const getMyReverseDeliveries = asyncHandler(async (req: Request, res: Response) => {
+  const requests = await ReverseDeliveryRequest.find({ assignedDeliveryManId: req.user!.id })
+    .sort({ createdAt: -1 })
+    .lean();
+  sendSuccess(res, requests);
+});
+
+export const acceptReverseDelivery = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.id;
+  const { id } = req.params;
+
+  const deliveryMan = await DeliveryManDetails.findOne({ userId });
+  if (!deliveryMan) throw ApiError.notFound("Delivery man profile not found");
+
+  const claimed = await ReverseDeliveryRequest.findOneAndUpdate(
+    { _id: id, status: "available" },
+    {
+      $set: {
+        status: "assigned",
+        assignedDeliveryManId: userId,
+        assignedAt: new Date(),
+      },
+      $push: {
+        statusHistory: { status: "assigned", at: new Date(), note: `Accepted by ${req.user!.name || "Delivery Partner"}` },
+      },
+    }
+  );
+
+  if (!claimed) throw ApiError.conflict("Another delivery partner accepted this request first.");
+
+  sendSuccess(res, { reverseDelivery: claimed.toJSON() }, "Reverse delivery accepted successfully");
+});
+
+export const updateReverseDeliveryStatus = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { status, failureReason } = req.body as { status: IReverseDeliveryRequest["status"]; failureReason?: string };
+  const userId = req.user!.id;
+
+  const reverse = await ReverseDeliveryRequest.findById(id);
+  if (!reverse) throw ApiError.notFound("Reverse delivery request not found");
+
+  if (reverse.assignedDeliveryManId !== userId && req.user!.role !== "admin") {
+    throw ApiError.forbidden("You are not assigned to this reverse delivery");
+  }
+
+  const validTransitions: Record<string, string[]> = {
+    available: ["assigned", "cancelled"],
+    assigned: ["accepted", "pickup_started", "cancelled", "failed"],
+    accepted: ["pickup_started", "cancelled", "failed"],
+    pickup_started: ["picked_up", "cancelled", "failed"],
+    picked_up: ["in_transit", "failed"],
+    in_transit: ["seller_received", "failed"],
+    seller_received: [],
+    failed: ["available", "cancelled"],
+    cancelled: ["available"],
+  };
+
+  const allowed = validTransitions[reverse.status];
+  if (!allowed || !allowed.includes(status)) {
+    throw ApiError.badRequest(`Cannot transition reverse delivery from ${reverse.status} to ${status}`);
+  }
+
+  reverse.status = status;
+  const now = new Date();
+  if (status === "accepted") reverse.acceptedAt = now;
+  if (status === "pickup_started") reverse.pickupStartedAt = now;
+  if (status === "picked_up") reverse.pickedUpAt = now;
+  if (status === "in_transit") reverse.inTransitAt = now;
+  if (status === "seller_received") reverse.sellerReceivedAt = now;
+  if (status === "failed") reverse.failedAt = now;
+  if (status === "cancelled") reverse.cancelledAt = now;
+  if (failureReason) reverse.deliveryFailedReason = failureReason;
+
+  reverse.statusHistory.push({ status, at: now, note: failureReason });
+  await reverse.save();
+
+  sendSuccess(res, { reverseDelivery: reverse.toJSON() }, "Reverse delivery status updated");
 });

@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import * as ctrl from "./delivery.controller";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
@@ -136,5 +136,21 @@ router.get("/admin/active-operations", requireRole("admin"), ctrl.listAdminActiv
 router.get("/admin/heatmap", requireRole("admin"), ctrl.getAdminDeliveryHeatmap);
 router.get("/admin/incidents", requireRole("admin"), ctrl.listAdminIncidents);
 router.patch("/admin/incidents/:id/resolve", requireRole("admin"), ctrl.resolveAdminIncident);
+
+// Reverse Delivery (Returns)
+router.get("/reverse/available", requireRole("delivery_man"), ctrl.getAvailableReverseDeliveries);
+router.get("/reverse/my", requireRole("delivery_man"), ctrl.getMyReverseDeliveries);
+router.patch(
+  "/reverse/:id/accept",
+  requireRole("delivery_man"),
+  validate({ params: idParamSchema }),
+  ctrl.acceptReverseDelivery
+);
+router.patch(
+  "/reverse/:id/status",
+  requireRole("delivery_man", "admin"),
+  validate({ params: idParamSchema, body: updateDeliveryStatusSchema }),
+  ctrl.updateReverseDeliveryStatus
+);
 
 export default router;

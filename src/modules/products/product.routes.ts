@@ -32,6 +32,9 @@ router.get("/featured", ctrl.getFeaturedProducts);
 // Seller's own catalog — ownership enforced server-side from the session.
 router.get("/mine", ...requireAuth, requireRole("seller", "admin"), ctrl.listMyProducts);
 
+router.get("/:id/recommendations", validate({ params: idParamSchema }), ctrl.getRecommendedProducts);
+router.get("/:id/recommended", validate({ params: idParamSchema }), ctrl.getRecommendedProducts);
+
 router.get("/:id", attachUserIfPresent, validate({ params: idParamSchema }), ctrl.getProductById);
 
 router.post(

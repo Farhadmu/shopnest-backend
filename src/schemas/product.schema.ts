@@ -21,7 +21,18 @@ export const productHighlightSchema = z.union([
   })),
 ]);
 
-export const createProductSchema = z.object({
+function hasUniqueVariantNames(variants?: Array<{ name: string }>): boolean {
+  if (!variants || variants.length <= 1) return true;
+  const names = new Set<string>();
+  for (const v of variants) {
+    const lower = (v.name || "").trim().toLowerCase();
+    if (names.has(lower)) return false;
+    names.add(lower);
+  }
+  return true;
+}
+
+export const createProductBaseSchema = z.object({
   title: z.string().min(1, "Title is required").max(200),
   description: z.string().min(1, "Description is required"),
   price: z.coerce.number().positive("Price must be greater than 0"),
@@ -37,7 +48,21 @@ export const createProductSchema = z.object({
   isFeatured: z.boolean().optional().default(false),
 });
 
-export const updateProductSchema = createProductSchema.partial();
+export const createProductSchema = createProductBaseSchema.refine(
+  (data) => hasUniqueVariantNames(data.variants),
+  {
+    message: "Duplicate variant names are not allowed",
+    path: ["variants"],
+  }
+);
+
+export const updateProductSchema = createProductBaseSchema.partial().refine(
+  (data) => hasUniqueVariantNames(data.variants),
+  {
+    message: "Duplicate variant names are not allowed",
+    path: ["variants"],
+  }
+);
 
 export const updateFeaturedSchema = z.object({
   isFeatured: z.boolean({ required_error: "isFeatured is required" }),

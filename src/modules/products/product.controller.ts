@@ -377,6 +377,94 @@ export const getFeaturedProducts = asyncHandler(async (req: Request, res: Respon
   sendSuccess(res, normalized);
 });
 
+export const getRecommendedProducts = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const limit = Math.min(24, Math.max(1, Number(req.query.limit) || 8));
+
+  if (!id || id === "undefined" || id === "null" || !mongoose.isValidObjectId(id)) {
+    throw ApiError.badRequest("Invalid product ID");
+  }
+
+  const currentProduct = await Product.findById(id).select("_id category status isDeleted storeSuspended").lean();
+  if (!currentProduct) {
+    throw ApiError.notFound("Product not found");
+  }
+
+  const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const currentCategory = (currentProduct.category || "").trim();
+
+  // 1. Check for products in the exact same category (excluding current product)
+  const sameCategoryFilter = await buildPublicProductFilter({
+    category: { $regex: `^${escapeRegex(currentCategory)}$`, $options: "i" },
+    _id: { $ne: currentProduct._id },
+  });
+
+  let products = await Product.find(sameCategoryFilter)
+    .sort({ ratingAvg: -1, sold: -1, createdAt: -1 })
+    .limit(limit)
+    .lean();
+
+  let source: "same_category" | "parent_category" | "fallback" = "same_category";
+  let parentCategoryName: string | undefined = undefined;
+
+  // 2. If no products found in the same category, check the parent category
+  if (products.length === 0 && currentCategory) {
+    const categoryDoc = await Category.findOne({
+      $or: [
+        { name: { $regex: `^${escapeRegex(currentCategory)}$`, $options: "i" } },
+        { slug: currentCategory.toLowerCase() },
+      ],
+    })
+      .select("_id name parent")
+      .lean();
+
+    if (categoryDoc?.parent) {
+      const parentDoc = await Category.findById(categoryDoc.parent).select("_id name").lean();
+      if (parentDoc) {
+        parentCategoryName = parentDoc.name;
+        const parentCategoryNames = await resolveCategoryNames(parentDoc.name);
+        const parentFilter = await buildPublicProductFilter({
+          category: { $in: parentCategoryNames },
+          _id: { $ne: currentProduct._id },
+        });
+
+        products = await Product.find(parentFilter)
+          .sort({ ratingAvg: -1, sold: -1, createdAt: -1 })
+          .limit(limit)
+          .lean();
+
+        if (products.length > 0) {
+          source = "parent_category";
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: if still 0 products, return featured / top-selling active products
+  if (products.length === 0) {
+    const fallbackFilter = await buildPublicProductFilter({
+      _id: { $ne: currentProduct._id },
+    });
+
+    products = await Product.find(fallbackFilter)
+      .sort({ isFeatured: -1, ratingAvg: -1, sold: -1, createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    if (products.length > 0) {
+      source = "fallback";
+    }
+  }
+
+  const normalized = normalizeLeanArray(products as Record<string, unknown>[]);
+  sendSuccess(res, {
+    products: normalized,
+    source,
+    category: currentCategory,
+    parentCategory: parentCategoryName,
+  });
+});
+
 export const getProductById = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   if (!id || id === "undefined" || id === "null" || !mongoose.isValidObjectId(id)) {
@@ -409,6 +497,18 @@ export const getProductById = asyncHandler(async (req: Request, res: Response) =
   sendSuccess(res, normalizeLean(product as Record<string, unknown>));
 });
 
+function generateVariantSku(productTitle: string, variantName: string): string {
+  const cleanTitle = (productTitle || "PROD")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 8);
+  const cleanVar = (variantName || "VAR")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 8);
+  return `${cleanTitle || "PROD"}-${cleanVar || "VAR"}`;
+}
+
 function pickProductFields(
   body: Record<string, unknown>,
   isAdmin: boolean
@@ -426,9 +526,46 @@ function pickProductFields(
   if (Array.isArray(body.images)) allowed.images = body.images as string[];
   if (Array.isArray(body.tags)) allowed.tags = body.tags as string[];
   if (body.specifications && typeof body.specifications === "object") {
-    allowed.specifications = body.specifications as Map<string, string>;
+    const rawSpecs = body.specifications instanceof Map
+      ? Object.fromEntries(body.specifications)
+      : { ...(body.specifications as Record<string, string>) };
+    // Eliminate dual storage: remove Variants from specifications
+    delete rawSpecs["Variants"];
+    delete rawSpecs["variants"];
+    allowed.specifications = rawSpecs as unknown as Map<string, string>;
   }
-  if (Array.isArray(body.variants)) allowed.variants = body.variants as IProductVariant[];
+  if (Array.isArray(body.variants)) {
+    const rawVariants = body.variants as IProductVariant[];
+    const seenNames = new Set<string>();
+    const cleanedVariants: IProductVariant[] = [];
+
+    for (const v of rawVariants) {
+      const name = (v.name || "").trim();
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (seenNames.has(lower)) {
+        throw ApiError.badRequest(`Duplicate variant name "${name}" is not allowed`);
+      }
+      seenNames.add(lower);
+
+      const sku = v.sku && v.sku.trim()
+        ? v.sku.trim().toUpperCase()
+        : generateVariantSku(allowed.title || (typeof body.title === "string" ? body.title : ""), name);
+
+      cleanedVariants.push({
+        name,
+        sku,
+        stock: Math.max(0, Number(v.stock) || 0),
+        price: v.price != null && Number(v.price) >= 0 ? Number(v.price) : undefined,
+        color: v.color?.trim() || undefined,
+      });
+    }
+
+    allowed.variants = cleanedVariants;
+    if (cleanedVariants.length > 0) {
+      allowed.stock = cleanedVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
+    }
+  }
   if (Array.isArray(body.highlights)) allowed.highlights = body.highlights as IProductHighlight[];
   if (Array.isArray(body.packageContents)) allowed.packageContents = body.packageContents as string[];
   if (typeof body.freeDelivery === "boolean") allowed.freeDelivery = body.freeDelivery;

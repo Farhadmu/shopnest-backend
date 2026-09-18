@@ -1,4 +1,4 @@
-﻿import { Schema, model, Types } from "mongoose";
+import { Schema, model, Types } from "mongoose";
 import { applyToJSON } from "../../utils/model-plugins";
 
 // ============================================================
@@ -417,6 +417,10 @@ export interface IReturnRequest {
   rejectionReason?: string;
   approvedAt?: Date;
   rejectedAt?: Date;
+  inventoryRestocked?: boolean;
+  resalable?: boolean;
+  variantName?: string;
+  refundStatus?: "pending" | "processing" | "completed" | "failed";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -486,6 +490,10 @@ const returnRequestSchema = new Schema<IReturnRequest>(
     rejectionReason: { type: String },
     approvedAt: { type: Date },
     rejectedAt: { type: Date },
+    inventoryRestocked: { type: Boolean, default: false },
+    resalable: { type: Boolean },
+    variantName: { type: String },
+    refundStatus: { type: String, enum: ["pending", "processing", "completed", "failed"] },
   },
   { timestamps: true }
 );
@@ -619,11 +627,11 @@ const reverseDeliveryRequestSchema = new Schema<IReverseDeliveryRequest>(
     productImage: { type: String },
     customerId: { type: String, required: true, index: true },
     customerName: { type: String },
-    customerAddress: { type: String, required: true },
+    customerAddress: { type: String, default: "Customer Pickup Address" },
     customerContact: { type: String },
     sellerId: { type: String, required: true, index: true },
     sellerName: { type: String },
-    sellerAddress: { type: String, required: true },
+    sellerAddress: { type: String, default: "Seller Return Warehouse" },
     sellerContact: { type: String },
     assignedDeliveryManId: { type: String, index: true },
     assignedAt: { type: Date },

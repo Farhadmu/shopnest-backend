@@ -27,7 +27,10 @@ export type DeliveryIncidentStatus = "open" | "investigating" | "resolved" | "cl
 export interface IDeliveryIncident {
   _id: Types.ObjectId;
   deliveryRequestId?: string;
+  reverseDeliveryRequestId?: string;
+  returnRequestId?: string;
   orderId?: string;
+  productId?: string;
   deliveryManId: string;
   category: DeliveryIncidentCategory;
   severity: "low" | "medium" | "high" | "critical";
@@ -44,7 +47,10 @@ export interface IDeliveryIncident {
 const deliveryIncidentSchema = new Schema<IDeliveryIncident>(
   {
     deliveryRequestId: { type: String, index: true },
+    reverseDeliveryRequestId: { type: String, index: true },
+    returnRequestId: { type: String, index: true },
     orderId: { type: String, index: true },
+    productId: { type: String, index: true },
     deliveryManId: { type: String, required: true, index: true },
     category: {
       type: String,

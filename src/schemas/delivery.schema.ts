@@ -169,11 +169,17 @@ export const reportIncidentSchema = z.object({
   severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
   description: z.string().min(5, "Description is required"),
   evidenceImages: z.array(z.string()).optional(),
+  returnRequestId: z.string().optional(),
+  reverseDeliveryRequestId: z.string().optional(),
+  productId: z.string().optional(),
 });
 
 export const createIncidentSchema = z.object({
   deliveryRequestId: z.string().optional(),
+  reverseDeliveryRequestId: z.string().optional(),
+  returnRequestId: z.string().optional(),
   orderId: z.string().optional(),
+  productId: z.string().optional(),
   category: incidentCategoryEnum,
   severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
   description: z.string().min(5, "Description is required"),

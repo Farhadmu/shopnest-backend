@@ -19,6 +19,8 @@ export interface CreateComplaintInput {
   productId?: string;
   deliveryId?: string;
   sellerId?: string;
+  returnRequestId?: string;
+  reverseDeliveryRequestId?: string;
   attachments?: string[];
 }
 
@@ -38,6 +40,8 @@ export interface ComplaintListItem {
   productId?: string;
   deliveryId?: string;
   sellerId?: string;
+  returnRequestId?: string;
+  reverseDeliveryRequestId?: string;
   attachments: string[];
 }
 
@@ -114,6 +118,8 @@ export async function createComplaint(input: CreateComplaintInput): Promise<Comp
     productId: input.productId,
     deliveryId: input.deliveryId,
     sellerId: input.sellerId,
+    returnRequestId: input.returnRequestId,
+    reverseDeliveryRequestId: input.reverseDeliveryRequestId,
     attachments: input.attachments || [],
     history: [
       {
@@ -141,6 +147,8 @@ export async function createComplaint(input: CreateComplaintInput): Promise<Comp
       productId: input.productId || undefined,
       deliveryId: input.deliveryId || undefined,
       sellerId: input.sellerId || undefined,
+      returnRequestId: input.returnRequestId || undefined,
+      reverseDeliveryRequestId: input.reverseDeliveryRequestId || undefined,
     },
   });
 
@@ -293,6 +301,8 @@ function mapComplaintListItem(incident: any): ComplaintListItem {
     productId: incident.productId,
     deliveryId: incident.deliveryId,
     sellerId: incident.sellerId,
+    returnRequestId: incident.returnRequestId,
+    reverseDeliveryRequestId: incident.reverseDeliveryRequestId,
     attachments: incident.attachments || [],
   };
 }

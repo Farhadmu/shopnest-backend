@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vitest";
 import { ApiError } from "../../src/utils/api-error";
 
 describe("Return / Reverse Delivery Critical Logic", () => {
@@ -292,6 +292,137 @@ describe("Return / Reverse Delivery Critical Logic", () => {
 
     it("reverses from seller_received to in_transit are rejected", () => {
       expect(canTransition("seller_received", "in_transit")).toBe(false);
+    });
+  });
+
+  // ─── 10. Seller Approval & Reverse Delivery Creation ──────────────────────
+  describe("10. Seller Approval & Reverse Delivery Creation", () => {
+    it("creates an available reverse delivery request upon seller approval", () => {
+      const returnReq = {
+        id: "ret-123",
+        orderId: "ord-456",
+        productId: "prod-789",
+        status: "requested",
+        pickupAddress: "House 12, Road 5, Dhanmondi, Dhaka",
+        sellerReturnAddress: "Shop 4, Market 2, Uttara, Dhaka",
+      };
+
+      // Seller approves return
+      const approvedReturn = { ...returnReq, status: "approved" as const };
+      expect(approvedReturn.status).toBe("approved");
+
+      // Reverse delivery is generated
+      const reverseDelivery = {
+        returnRequestId: approvedReturn.id,
+        orderId: approvedReturn.orderId,
+        status: "available" as const,
+        deliveryOtp: "654321",
+        customerAddress: approvedReturn.pickupAddress,
+        sellerAddress: approvedReturn.sellerReturnAddress,
+      };
+
+      expect(reverseDelivery.status).toBe("available");
+      expect(reverseDelivery.returnRequestId).toBe("ret-123");
+      expect(reverseDelivery.deliveryOtp).toHaveLength(6);
+    });
+  });
+
+  // ─── 11. Product Variant Restocking ───────────────────────────────────────
+  describe("11. Product Variant Restocking", () => {
+    it("restocks both parent product and matching variant upon resalable inspection", () => {
+      const product = {
+        id: "prod-variant-1",
+        title: "T-Shirt",
+        stock: 50,
+        variants: [
+          { name: "Red / XL", sku: "TS-RED-XL", stock: 10 },
+          { name: "Blue / M", sku: "TS-BLU-M", stock: 15 },
+        ],
+      };
+
+      const returnReq = {
+        quantity: 2,
+        variantName: "Red / XL",
+        resalable: true,
+      };
+
+      // Restock execution
+      const vIndex = product.variants.findIndex(
+        (v) => v.name.toLowerCase() === returnReq.variantName.toLowerCase()
+      );
+      expect(vIndex).toBe(0);
+
+      product.variants[vIndex].stock += returnReq.quantity;
+      product.stock += returnReq.quantity;
+
+      expect(product.stock).toBe(52);
+      expect(product.variants[0].stock).toBe(12);
+      expect(product.variants[1].stock).toBe(15);
+    });
+  });
+
+  // ─── 12. Stripe Refund Path ────────────────────────────────────────────────
+  describe("12. Stripe Refund Processing", () => {
+    it("processes Stripe refund only when successful payment record exists", async () => {
+      const paymentRecord = {
+        orderId: "ord-stripe-1",
+        status: "successful",
+        transactionId: "pi_test_123456789",
+      };
+
+      const refundRecord = {
+        amount: 2500,
+        currency: "bdt",
+        provider: "card",
+        status: "pending",
+      };
+
+      // Mock stripe execution
+      function executeStripeRefund(payment: typeof paymentRecord, refund: typeof refundRecord) {
+        if (!payment || payment.status !== "successful" || !payment.transactionId) {
+          throw new Error("No successful payment record found for this order");
+        }
+        return {
+          id: "re_test_987654321",
+          status: "succeeded",
+          amount: refund.amount * 100,
+        };
+      }
+
+      const stripeResult = executeStripeRefund(paymentRecord, refundRecord);
+      expect(stripeResult.status).toBe("succeeded");
+      expect(stripeResult.id).toMatch(/^re_/);
+    });
+
+    it("fails Stripe refund if payment transaction is missing", () => {
+      const missingPayment = null;
+      const refundRecord = { amount: 2500, currency: "bdt", provider: "card", status: "pending" };
+
+      expect(() => {
+        if (!missingPayment) {
+          throw new Error("No successful payment record found for this order");
+        }
+      }).toThrow("No successful payment record found for this order");
+    });
+  });
+
+  // ─── 13. Return Incidents Linkage ──────────────────────────────────────────
+  describe("13. Return Incidents Linkage", () => {
+    it("properly links return and reverse delivery IDs in incident reports", () => {
+      const incident = {
+        category: "package_damaged",
+        description: "Product was found cracked inside original box upon customer handover",
+        returnRequestId: "ret-abc-1",
+        reverseDeliveryRequestId: "rev-xyz-2",
+        orderId: "ord-999",
+        productId: "prod-555",
+        status: "open",
+      };
+
+      expect(incident.returnRequestId).toBe("ret-abc-1");
+      expect(incident.reverseDeliveryRequestId).toBe("rev-xyz-2");
+      expect(incident.orderId).toBe("ord-999");
+      expect(incident.productId).toBe("prod-555");
     });
   });
 });

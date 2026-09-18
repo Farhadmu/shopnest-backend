@@ -19,6 +19,8 @@ export const createComplaintSchema = z.object({
   productId: z.string().optional(),
   deliveryId: z.string().optional(),
   sellerId: z.string().optional(),
+  returnRequestId: z.string().optional(),
+  reverseDeliveryRequestId: z.string().optional(),
 });
 
 export const complaintQuerySchema = z.object({

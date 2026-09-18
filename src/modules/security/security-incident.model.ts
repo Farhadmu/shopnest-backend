@@ -103,6 +103,8 @@ export interface ISecurityIncident {
   productId?: string;
   deliveryId?: string;
   sellerId?: string;
+  returnRequestId?: string;
+  reverseDeliveryRequestId?: string;
   attachments: string[];
   createdAt: Date;
   updatedAt: Date;
@@ -200,6 +202,8 @@ const securityIncidentSchema = new Schema<ISecurityIncident>(
     productId: { type: String, index: true },
     deliveryId: { type: String, index: true },
     sellerId: { type: String, index: true },
+    returnRequestId: { type: String, index: true },
+    reverseDeliveryRequestId: { type: String, index: true },
     attachments: { type: [String], default: [] },
     severity: {
       type: String,

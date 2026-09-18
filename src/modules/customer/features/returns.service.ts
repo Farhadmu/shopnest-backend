@@ -1,4 +1,4 @@
-﻿import { Types, startSession } from "mongoose";
+import { Types, startSession } from "mongoose";
 import crypto from "crypto";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
@@ -332,6 +332,11 @@ export async function rejectReturn(returnId: string, actorId: string, actorName:
 async function createReverseDelivery(returnReq: any): Promise<IReverseDeliveryRequest> {
   const otp = crypto.randomInt(100000, 999999).toString();
 
+  const customerAddress =
+    (returnReq.pickupAddress && returnReq.pickupAddress.trim()) || "Customer Pickup Address";
+  const sellerAddress =
+    (returnReq.sellerReturnAddress && returnReq.sellerReturnAddress.trim()) || "Seller Return Warehouse";
+
   const reverse = await ReverseDeliveryRequest.create({
     returnRequestId: String(returnReq._id),
     orderId: returnReq.orderId,
@@ -339,11 +344,11 @@ async function createReverseDelivery(returnReq: any): Promise<IReverseDeliveryRe
     productTitle: returnReq.productTitle,
     productImage: returnReq.productImage,
     customerId: returnReq.userId,
-    customerName: returnReq.customerName || "",
-    customerAddress: returnReq.pickupAddress || "",
+    customerName: returnReq.customerName || "Customer",
+    customerAddress,
     sellerId: returnReq.sellerId,
-    sellerName: returnReq.sellerName || "",
-    sellerAddress: returnReq.sellerReturnAddress || "",
+    sellerName: returnReq.sellerName || "Seller",
+    sellerAddress,
     deliveryOtp: otp,
     priority: "normal",
     status: "available",
@@ -351,6 +356,7 @@ async function createReverseDelivery(returnReq: any): Promise<IReverseDeliveryRe
   });
 
   returnReq.status = "reverse_available";
+  returnReq.deliveryRequestId = String(reverse._id);
   appendStatus(returnReq, "reverse_available", "Reverse delivery request created");
   await returnReq.save();
 
@@ -363,6 +369,31 @@ export async function getSellerReturns(sellerId: string) {
 }
 
 export async function getDeliveryReverseRequests(deliveryManId: string) {
+  // Self-heal / backfill: if there are any approved returns without an active reverse delivery request, create one
+  const unlinkedApproved = await ReturnRequest.find({
+    status: { $in: ["approved", "reverse_available"] },
+    $or: [{ deliveryRequestId: { $exists: false } }, { deliveryRequestId: null }, { deliveryRequestId: "" }],
+  });
+
+  for (const ret of unlinkedApproved) {
+    try {
+      // Check if ReverseDeliveryRequest already exists for this returnRequestId
+      const existing = await ReverseDeliveryRequest.findOne({ returnRequestId: String(ret._id) });
+      if (existing) {
+        ret.deliveryRequestId = String(existing._id);
+        ret.status = "reverse_available";
+        await ret.save();
+      } else {
+        const rev = await createReverseDelivery(ret);
+        ret.deliveryRequestId = String(rev._id);
+        ret.status = "reverse_available";
+        await ret.save();
+      }
+    } catch (err) {
+      console.error("[getDeliveryReverseRequests] auto-heal failed for return:", ret._id, err);
+    }
+  }
+
   const requests = await ReverseDeliveryRequest.find({ status: "available" }).sort({ priority: -1, createdAt: -1 }).lean();
   return requests.map(normalizeLean);
 }
@@ -626,11 +657,76 @@ export async function inspectReturn(returnId: string, actorId: string, actorName
     await returnReq.save();
 
     if (resalable) {
-      const product = await Product.findById(returnReq.productId);
-      if (product) {
-        const qty = Math.max(1, returnReq.quantity || 1);
-        await Product.findByIdAndUpdate(returnReq.productId, { $inc: { stock: qty } });
+      if (!returnReq.inventoryRestocked) {
+        const product = await Product.findById(returnReq.productId);
+        if (product) {
+          const qty = Math.max(1, returnReq.quantity || 1);
+          const previousStock = product.stock;
+
+          // Support product variants if the product has variants
+          let variantUpdated = false;
+          if (product.variants && product.variants.length > 0) {
+            const vIndex = product.variants.findIndex(
+              (v) =>
+                (returnReq.variantName && v.name.toLowerCase() === returnReq.variantName.toLowerCase()) ||
+                (returnReq.orderItemId && v.sku && v.sku.toLowerCase() === returnReq.orderItemId.toLowerCase())
+            );
+            if (vIndex !== -1) {
+              product.variants[vIndex].stock = (product.variants[vIndex].stock || 0) + qty;
+              variantUpdated = true;
+            }
+          }
+
+          product.stock += qty;
+          await product.save();
+
+          returnReq.inventoryRestocked = true;
+          returnReq.resalable = true;
+          await returnReq.save();
+
+          await AuditLog.create({
+            actorId,
+            actorName,
+            role: "seller",
+            action: "INVENTORY_RESTOCKED",
+            resource: "Product",
+            resourceId: returnReq.productId,
+            status: "success",
+            details: {
+              returnRequestId: returnId,
+              orderId: returnReq.orderId,
+              productId: returnReq.productId,
+              quantity: qty,
+              resalable: true,
+              previousStock,
+              newStock: product.stock,
+              variantUpdated,
+            },
+          });
+        }
       }
+    } else {
+      returnReq.inventoryRestocked = false;
+      returnReq.resalable = false;
+      await returnReq.save();
+
+      await AuditLog.create({
+        actorId,
+        actorName,
+        role: "seller",
+        action: "INVENTORY_NOT_RESTOCKED",
+        resource: "Product",
+        resourceId: returnReq.productId,
+        status: "success",
+        details: {
+          returnRequestId: returnId,
+          orderId: returnReq.orderId,
+          productId: returnReq.productId,
+          quantity: returnReq.quantity,
+          resalable: false,
+          reason: "Product marked not resalable during inspection",
+        },
+      });
     }
 
     await createNotification({
@@ -934,12 +1030,14 @@ export async function sellerReceiveReturn(returnId: string, sellerId: string, pr
 }
 
 export async function processRefund(refundId: string, actorId: string, role: string) {
-  const refund = await Refund.findById(refundId);
-  if (!refund) {
-    const refundByString = await Refund.findOne({ refundId: String(refundId) });
-    if (!refundByString) throw ApiError.notFound("Refund not found");
-    return processRefundLogic(refundByString, actorId, role);
+  let refund: any = null;
+  if (Types.ObjectId.isValid(refundId)) {
+    refund = await Refund.findById(refundId);
   }
+  if (!refund) {
+    refund = await Refund.findOne({ refundId: String(refundId) });
+  }
+  if (!refund) throw ApiError.notFound("Refund not found");
   return processRefundLogic(refund, actorId, role);
 }
 
@@ -1005,6 +1103,10 @@ async function processRefundLogic(refund: IRefund, actorId: string, role: string
         throw new Error("No successful payment record found for this order");
       }
       refundDoc.status = "succeeded";
+    } else if (role === "admin") {
+      // Admin manual execution / completion of refund (COD, SSLCommerz, Bank Transfer, etc.)
+      refundDoc.status = "succeeded";
+      providerRefundId = `MANUAL-${(refundDoc.provider || "MANUAL").toUpperCase()}-COMPLETED`;
     } else if (refundDoc.provider === "sslcommerz" || refundDoc.provider === "mobile_banking" || refundDoc.provider === "bank_transfer") {
       await createAdminNotification({
         type: "refund_alert",
@@ -1019,7 +1121,7 @@ async function processRefundLogic(refund: IRefund, actorId: string, role: string
       }).catch(() => undefined);
       refundDoc.status = "pending";
       providerRefundId = `MANUAL-${refundDoc.provider.toUpperCase()}-PENDING`;
-    } else if (refundDoc.provider === "cash_on_delivery") {
+    } else if (refundDoc.provider === "cash_on_delivery" || refundDoc.provider === "cod") {
       await createAdminNotification({
         type: "refund_alert",
         category: "payments",
@@ -1040,8 +1142,9 @@ async function processRefundLogic(refund: IRefund, actorId: string, role: string
     await refundDoc.save();
 
     if (returnReq) {
-      returnReq.status = "refunded";
-      appendStatus(returnReq, "refunded", providerRefundId ? `Refund processed via ${refundDoc.provider}` : "Refund marked as processing");
+      returnReq.status = refundDoc.status === "succeeded" ? "refunded" : "refund_pending";
+      returnReq.refundStatus = refundDoc.status === "succeeded" ? "completed" : "pending";
+      appendStatus(returnReq, returnReq.status, providerRefundId ? `Refund processed via ${refundDoc.provider}` : "Refund marked as processing");
       await returnReq.save();
     }
 

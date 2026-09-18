@@ -13,7 +13,7 @@ import stripe from "../../../config/stripe";
 import { normalizeLean } from "../../../utils/model-plugins";
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
-  requested: ["under_review", "cancelled"],
+  requested: ["under_review", "approved", "rejected", "cancelled"],
   under_review: ["approved", "rejected", "cancelled"],
   approved: ["reverse_available", "cancelled"],
   rejected: [],

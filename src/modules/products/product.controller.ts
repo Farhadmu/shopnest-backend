@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import mongoose from "mongoose";
-import { Product, IProduct } from "./product.model";
+import { Product, IProduct, IProductVariant, IProductHighlight } from "./product.model";
 import { Store } from "../sellers/store.model";
 import { Category } from "../categories/category.model";
 import { asyncHandler } from "../../utils/async-handler";
@@ -195,7 +195,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
 
   if (skipExactCount) {
     const products = await Product.find(filter)
-      .select("title description price discountPrice images imageUrl category storeId sellerId stock status ratingAvg ratingCount sold views isFeatured freeDelivery aiPick createdAt updatedAt tags specifications")
+      .select("title description price discountPrice images imageUrl category storeId sellerId stock status ratingAvg ratingCount sold views isFeatured freeDelivery aiPick createdAt updatedAt tags specifications variants highlights packageContents")
       .sort(sortOption)
       .skip(skip)
       .limit(limit + 1)
@@ -211,7 +211,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
 
   const [products, total] = await Promise.all([
     Product.find(filter)
-      .select("title description price discountPrice images imageUrl category storeId sellerId stock status ratingAvg ratingCount sold views isFeatured freeDelivery aiPick createdAt updatedAt tags specifications")
+      .select("title description price discountPrice images imageUrl category storeId sellerId stock status ratingAvg ratingCount sold views isFeatured freeDelivery aiPick createdAt updatedAt tags specifications variants highlights packageContents")
       .sort(sortOption)
       .skip(skip)
       .limit(limit)
@@ -409,6 +409,36 @@ export const getProductById = asyncHandler(async (req: Request, res: Response) =
   sendSuccess(res, normalizeLean(product as Record<string, unknown>));
 });
 
+function pickProductFields(
+  body: Record<string, unknown>,
+  isAdmin: boolean
+): Partial<IProduct> {
+  const allowed: Partial<IProduct> = {};
+
+  if (typeof body.title === "string") allowed.title = body.title.trim();
+  if (typeof body.description === "string") allowed.description = body.description.trim();
+  if (body.price !== undefined) allowed.price = Number(body.price);
+  if (body.discountPrice !== undefined) {
+    allowed.discountPrice = body.discountPrice === null ? undefined : Number(body.discountPrice);
+  }
+  if (typeof body.category === "string") allowed.category = body.category.trim();
+  if (body.stock !== undefined) allowed.stock = Number(body.stock);
+  if (Array.isArray(body.images)) allowed.images = body.images as string[];
+  if (Array.isArray(body.tags)) allowed.tags = body.tags as string[];
+  if (body.specifications && typeof body.specifications === "object") {
+    allowed.specifications = body.specifications as Map<string, string>;
+  }
+  if (Array.isArray(body.variants)) allowed.variants = body.variants as IProductVariant[];
+  if (Array.isArray(body.highlights)) allowed.highlights = body.highlights as IProductHighlight[];
+  if (Array.isArray(body.packageContents)) allowed.packageContents = body.packageContents as string[];
+  if (typeof body.freeDelivery === "boolean") allowed.freeDelivery = body.freeDelivery;
+  if (body.warrantyMonths !== undefined) allowed.warrantyMonths = Number(body.warrantyMonths);
+  if (typeof body.warrantyProvider === "string") allowed.warrantyProvider = body.warrantyProvider;
+  if (isAdmin && typeof body.isFeatured === "boolean") allowed.isFeatured = body.isFeatured;
+
+  return allowed;
+}
+
 export const createProduct = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
   const store = await getSellerStore(userId);
@@ -417,10 +447,7 @@ export const createProduct = asyncHandler(async (req: Request, res: Response) =>
   }
 
   const isAdmin = req.user?.role === "admin";
-  const data = { ...req.body } as Partial<IProduct>;
-  if (!isAdmin) {
-    delete data.isFeatured;
-  }
+  const data = pickProductFields(req.body, isAdmin);
 
   const product = await Product.create({
     ...data,
@@ -453,10 +480,7 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response) =>
     storeUpdates = { storeId: store._id.toString(), sellerId: userId };
   }
 
-  const updateData = { ...req.body } as Record<string, unknown>;
-  if (!isAdmin) {
-    delete updateData.isFeatured;
-  }
+  const updateData = pickProductFields(req.body, isAdmin);
 
   Object.assign(product, updateData, storeUpdates);
   await product.save();

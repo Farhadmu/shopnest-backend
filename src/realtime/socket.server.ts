@@ -1,4 +1,4 @@
-﻿import { Server as HttpServer } from "http";
+import { Server as HttpServer } from "http";
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { env } from "../config/env";
 import { logger } from "../utils/logger";
@@ -146,25 +146,45 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
           }
 
           const delivery = await DeliveryRequest.findOne(query).lean();
-          if (!delivery) {
-            callback?.({ success: false, message: "Delivery not found" });
+          if (delivery) {
+            const isCustomer = delivery.customerId === user.id;
+            const isRider = delivery.assignedDeliveryManId === user.id;
+            const isSeller = delivery.sellerId === user.id;
+            const isAdmin = user.role === "admin";
+
+            if (!isCustomer && !isRider && !isSeller && !isAdmin) {
+              callback?.({ success: false, message: "Unauthorized to track this delivery" });
+              return;
+            }
+
+            const roomName = `delivery:${delivery._id}`;
+            socket.join(roomName);
+            logger.info(`[Socket.IO] User ${user.id} joined ${roomName}`);
+            callback?.({ success: true, message: `Joined ${roomName}` });
             return;
           }
 
-          const isCustomer = delivery.customerId === user.id;
-          const isRider = delivery.assignedDeliveryManId === user.id;
-          const isSeller = delivery.sellerId === user.id;
-          const isAdmin = user.role === "admin";
+          // Check if this is a reverse delivery request
+          const reverseDelivery = await ReverseDeliveryRequest.findOne(query).lean();
+          if (reverseDelivery) {
+            const isCustomer = reverseDelivery.customerId === user.id;
+            const isRider = reverseDelivery.assignedDeliveryManId === user.id;
+            const isSeller = reverseDelivery.sellerId === user.id;
+            const isAdmin = user.role === "admin";
 
-          if (!isCustomer && !isRider && !isSeller && !isAdmin) {
-            callback?.({ success: false, message: "Unauthorized to track this delivery" });
+            if (!isCustomer && !isRider && !isSeller && !isAdmin) {
+              callback?.({ success: false, message: "Unauthorized to track this reverse delivery" });
+              return;
+            }
+
+            const roomName = `delivery:${reverseDelivery._id}`;
+            socket.join(roomName);
+            logger.info(`[Socket.IO] User ${user.id} joined reverse ${roomName}`);
+            callback?.({ success: true, message: `Joined ${roomName}` });
             return;
           }
 
-          const roomName = `delivery:${delivery._id}`;
-          socket.join(roomName);
-          logger.info(`[Socket.IO] User ${user.id} joined ${roomName}`);
-          callback?.({ success: true, message: `Joined ${roomName}` });
+          callback?.({ success: false, message: "Delivery not found" });
         } catch (err: any) {
           logger.error("Error joining delivery room", err);
           callback?.({ success: false, message: err?.message || "Failed to join room" });

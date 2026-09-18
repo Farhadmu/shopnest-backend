@@ -30,6 +30,10 @@ import * as compatibilityCtrl from "./features/compatibility.controller";
 import * as bundleCtrl from "./features/bundle.controller";
 import * as lifecycleCtrl from "./features/lifecycle.controller";
 import * as goalsCtrl from "./features/goals.controller";
+import * as decisionScoreCtrl from "./features/decision-score.controller";
+import * as priceHistoryCtrl from "./features/price-history.controller";
+import * as trustCheckerCtrl from "./features/trust-checker.controller";
+import * as returnRiskCtrl from "./features/return-risk.controller";
 import * as notificationCtrl from "../notifications/notification.controller";
 import * as courierCtrl from "../delivery/courier.controller";
 import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
@@ -65,6 +69,14 @@ router.post("/goals", ...requireAuth, goalsCtrl.createGoal);
 router.patch("/goals/:id", ...requireAuth, goalsCtrl.updateGoal);
 router.post("/goals/:id/progress", ...requireAuth, goalsCtrl.addProgress);
 router.delete("/goals/:id", ...requireAuth, goalsCtrl.deleteGoal);
+
+// ============================================================
+// 0.1 PRODUCT CUSTOMER INTELLIGENCE (Decision Score, Price History, Trust, Return Risk)
+// ============================================================
+router.get("/products/:productId/decision-score", attachUserIfPresent, decisionScoreCtrl.getPurchaseDecisionScore);
+router.get("/products/:productId/price-history", attachUserIfPresent, priceHistoryCtrl.getPriceHistory);
+router.get("/products/:productId/trust-checker", attachUserIfPresent, trustCheckerCtrl.getProductTrustChecker);
+router.get("/products/:productId/return-risk", attachUserIfPresent, returnRiskCtrl.getReturnRiskPreview);
 
 
 // ============================================================

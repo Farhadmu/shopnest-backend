@@ -9,6 +9,7 @@ import {
   setAvailabilitySchema,
   updateLocationSchema,
   updateDeliveryStatusSchema,
+  updateReverseDeliveryStatusSchema,
   verifyOtpSchema,
   reportIncidentSchema,
   createIncidentSchema,
@@ -149,7 +150,7 @@ router.patch(
 router.patch(
   "/reverse/:id/status",
   requireRole("delivery_man", "admin"),
-  validate({ params: idParamSchema, body: updateDeliveryStatusSchema }),
+  validate({ params: idParamSchema, body: updateReverseDeliveryStatusSchema }),
   ctrl.updateReverseDeliveryStatus
 );
 

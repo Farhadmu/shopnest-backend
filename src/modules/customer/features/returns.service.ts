@@ -535,15 +535,14 @@ export async function updateReverseDeliveryStatus(
     const reverseStatusToReturnStatus: Partial<Record<IReverseDeliveryRequest["status"], IReturnRequest["status"]>> = {
       picked_up: "picked_up",
       in_transit: "in_transit",
-      seller_received: "seller_received",
       failed: "failed",
       cancelled: "cancelled",
     };
-    const mapped = reverseStatusToReturnStatus[status] ?? returnReq.status;
+    const previousStatus = returnReq.status;
+    const mapped = reverseStatusToReturnStatus[status] ?? previousStatus;
     returnReq.status = mapped;
     if (status === "picked_up") returnReq.pickedUpAt = now;
-    if (status === "seller_received") returnReq.receivedBySellerAt = now;
-    appendStatus(returnReq, returnReq.status, payload?.note);
+    if (mapped !== previousStatus) appendStatus(returnReq, mapped, payload?.note);
     await returnReq.save();
   }
 
@@ -571,8 +570,8 @@ export async function updateReverseDeliveryStatus(
       category: "orders",
       priority: "info",
       source: "order",
-      title: "Return Received by Seller",
-      message: `Your return for order #${String(reverse.orderId).slice(-8).toUpperCase()} has been received by the seller. Inspection will follow.`,
+      title: "Return Delivery Completed",
+      message: `The delivery partner marked the return for order #${String(reverse.orderId).slice(-8).toUpperCase()} as delivered to the seller. Seller confirmation and inspection will follow.`,
       link: `/dashboard/user/orders`,
       relatedId: reverse.orderId,
       relatedType: "order",
@@ -874,21 +873,27 @@ export async function sellerReceiveReturn(returnId: string, sellerId: string, pr
   const returnReq = await ReturnRequest.findById(returnId);
   if (!returnReq) throw ApiError.notFound("Return request not found");
   if (returnReq.sellerId !== sellerId) throw ApiError.forbidden("Only the seller can receive this return");
-  if (returnReq.status !== "in_transit") {
-    throw ApiError.badRequest("Return must be in transit to receive");
+  if (returnReq.status !== "picked_up" && returnReq.status !== "in_transit") {
+    throw ApiError.badRequest("Return must be picked up or in transit to receive");
   }
 
   const now = new Date();
-  returnReq.status = "seller_received";
+  returnReq.status = "inspection_pending";
   returnReq.receivedBySellerAt = now;
-  if (proofImage) {
-    const reverse = await ReverseDeliveryRequest.findOne({ returnRequestId: returnId });
-    if (reverse) {
-      reverse.deliveryProofImage = proofImage;
-      await reverse.save();
+
+  const reverse = await ReverseDeliveryRequest.findOne({ returnRequestId: returnId });
+  if (reverse && ["picked_up", "in_transit", "seller_received"].includes(reverse.status)) {
+    if (reverse.status !== "seller_received") {
+      reverse.status = "seller_received";
+      reverse.statusHistory.push({ status: "seller_received", at: now, note: note || "Product received by seller" });
     }
+    reverse.sellerReceivedAt = now;
+    if (proofImage) reverse.deliveryProofImage = proofImage;
+    await reverse.save();
   }
+
   appendStatus(returnReq, "seller_received", note || "Product received by seller");
+  appendStatus(returnReq, "inspection_pending", "Ready for inspection");
   await returnReq.save();
 
   await AuditLog.create({
@@ -902,7 +907,6 @@ export async function sellerReceiveReturn(returnId: string, sellerId: string, pr
     details: { orderId: returnReq.orderId, productId: returnReq.productId },
   });
 
-  const reverse = await ReverseDeliveryRequest.findOne({ returnRequestId: returnId });
   if (reverse) {
     emitDeliveryEvent(String(reverse._id), "delivery:status_change", {
       deliveryId: String(reverse._id),

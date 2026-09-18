@@ -3,6 +3,20 @@ import { applyToJSON } from "../../utils/model-plugins";
 
 export type ProductStatus = "pending" | "approved" | "rejected";
 
+export interface IProductVariant {
+  name: string;
+  sku?: string;
+  stock?: number;
+  price?: number;
+  color?: string;
+}
+
+export interface IProductHighlight {
+  title: string;
+  description?: string;
+  icon?: string;
+}
+
 export interface IProduct {
   _id: Types.ObjectId;
   title: string;
@@ -16,6 +30,9 @@ export interface IProduct {
   images: string[];
   tags: string[];
   specifications: Map<string, string>;
+  variants: IProductVariant[];
+  highlights: IProductHighlight[];
+  packageContents: string[];
   status: ProductStatus;
   ratingAvg: number;
   ratingCount: number;
@@ -33,6 +50,26 @@ export interface IProduct {
   updatedAt: Date;
 }
 
+const variantSchema = new Schema<IProductVariant>(
+  {
+    name: { type: String, required: true, trim: true },
+    sku: { type: String, trim: true },
+    stock: { type: Number, min: 0, default: 0 },
+    price: { type: Number, min: 0 },
+    color: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
+const highlightSchema = new Schema<IProductHighlight>(
+  {
+    title: { type: String, required: true, trim: true },
+    description: { type: String, trim: true, default: "" },
+    icon: { type: String, trim: true, default: "" },
+  },
+  { _id: false }
+);
+
 const productSchema = new Schema<IProduct>(
   {
     title: { type: String, required: true, trim: true, index: "text" },
@@ -47,6 +84,9 @@ const productSchema = new Schema<IProduct>(
     images: { type: [String], default: [] },
     tags: { type: [String], default: [], index: true },
     specifications: { type: Map, of: String, default: {} },
+    variants: { type: [variantSchema], default: [] },
+    highlights: { type: [highlightSchema], default: [] },
+    packageContents: { type: [String], default: [] },
     status: { type: String, enum: ["pending", "approved", "rejected"], default: "approved", index: true },
     ratingAvg: { type: Number, default: 0, min: 0, max: 5, index: true },
     ratingCount: { type: Number, default: 0 },

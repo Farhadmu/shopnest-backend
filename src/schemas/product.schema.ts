@@ -1,5 +1,26 @@
 import { z } from "zod";
 
+export const productVariantSchema = z.object({
+  name: z.string().min(1, "Variant name is required").trim(),
+  sku: z.string().optional(),
+  stock: z.coerce.number().int().nonnegative("Variant stock cannot be negative").optional().default(0),
+  price: z.coerce.number().nonnegative("Variant price cannot be negative").optional(),
+  color: z.string().optional(),
+});
+
+export const productHighlightSchema = z.union([
+  z.object({
+    title: z.string().min(1, "Highlight title is required").trim(),
+    description: z.string().optional().default(""),
+    icon: z.string().optional().default(""),
+  }),
+  z.string().min(1, "Highlight cannot be empty").trim().transform((title) => ({
+    title,
+    description: "",
+    icon: "",
+  })),
+]);
+
 export const createProductSchema = z.object({
   title: z.string().min(1, "Title is required").max(200),
   description: z.string().min(1, "Description is required"),
@@ -10,6 +31,9 @@ export const createProductSchema = z.object({
   discountPrice: z.coerce.number().nonnegative().optional().nullable(),
   tags: z.array(z.string()).optional().default([]),
   specifications: z.record(z.string(), z.any()).optional().default({}),
+  variants: z.array(productVariantSchema).optional().default([]),
+  highlights: z.array(productHighlightSchema).optional().default([]),
+  packageContents: z.array(z.string().trim()).optional().default([]),
   isFeatured: z.boolean().optional().default(false),
 });
 

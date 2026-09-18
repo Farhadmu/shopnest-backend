@@ -13,41 +13,77 @@ export const getPurchaseDecisionScore = asyncHandler(async (req: Request, res: R
 
   const store = await Store.findById(product.storeId);
 
-  // Compute 4 key dimensions from real metrics
+  // Require real ratings, sales, and verified store data
+  const hasRating =
+    typeof product.ratingAvg === "number" &&
+    product.ratingAvg > 0 &&
+    typeof product.ratingCount === "number" &&
+    product.ratingCount > 0;
+  const hasSales = typeof product.sold === "number" && product.sold > 0;
+
+  if (!hasRating || !hasSales || !store) {
+    return sendSuccess(res, {
+      productId,
+      insufficientData: true,
+      reason: "Insufficient rating, sales, or seller verification data to calculate AI decision score",
+    });
+  }
+
   // 1. Value (Discount ratio & competitive pricing)
-  const discountRatio = product.discountPrice ? (product.price - product.discountPrice) / product.price : 0.05;
-  const valueScore = Math.min(98, Math.max(70, Math.round(80 + discountRatio * 80)));
+  const discountRatio =
+    product.discountPrice && product.discountPrice < product.price
+      ? (product.price - product.discountPrice) / product.price
+      : 0;
+  const valueScore = Math.min(98, Math.max(60, Math.round(75 + discountRatio * 75)));
+  const valueNote =
+    discountRatio > 0
+      ? `${Math.round(discountRatio * 100)}% discount advantage`
+      : "Competitive standard retail price";
 
-  // 2. Quality (Rating average & sentiment)
-  const ratingAvg = product.ratingAvg || 4.5;
-  const qualityScore = Math.min(99, Math.max(65, Math.round((ratingAvg / 5) * 95 + (product.sentiment?.positive || 3))));
+  // 2. Quality (Rating average & verified reviews count)
+  const ratingAvg = product.ratingAvg;
+  const sentimentBonus =
+    product.sentiment?.positive && product.sentiment.positive > 0
+      ? Math.min(5, Math.round(product.sentiment.positive))
+      : 0;
+  const qualityScore = Math.min(99, Math.max(50, Math.round((ratingAvg / 5) * 90 + sentimentBonus)));
+  const qualityNote = `${ratingAvg.toFixed(1)}/5 rating (${product.ratingCount} review${
+    product.ratingCount === 1 ? "" : "s"
+  })`;
 
-  // 3. Popularity (Sold count & views)
-  const sold = product.sold || 12;
-  const popularityScore = Math.min(96, Math.max(60, Math.round(65 + Math.log10(sold + 1) * 15)));
+  // 3. Popularity (Real sold count)
+  const sold = product.sold;
+  const popularityScore = Math.min(98, Math.max(50, Math.round(60 + Math.log10(sold + 1) * 18)));
+  const popularityNote = `${sold} unit${sold === 1 ? "" : "s"} ordered recently`;
 
-  // 4. Reliability (Seller trust & stock stability)
-  const sellerTrust = store?.trustScore || 88;
+  // 4. Reliability (Real seller trust & stock stability)
+  const sellerTrust = typeof store.trustScore === "number" ? store.trustScore : 60;
   const inStockBonus = product.stock > 5 ? 5 : 0;
-  const reliabilityScore = Math.min(98, Math.max(70, Math.round(sellerTrust * 0.95 + inStockBonus)));
+  const reliabilityScore = Math.min(98, Math.max(50, Math.round(sellerTrust * 0.9 + inStockBonus)));
+  const reliabilityNote = `${store.storeName} (${sellerTrust}% trust index)`;
 
   // Overall Weighted Score
-  const overallScore = Math.round(valueScore * 0.35 + qualityScore * 0.30 + popularityScore * 0.15 + reliabilityScore * 0.20);
+  const overallScore = Math.round(
+    valueScore * 0.35 + qualityScore * 0.30 + popularityScore * 0.15 + reliabilityScore * 0.20
+  );
+
+  const recommendation =
+    overallScore >= 85
+      ? "Exceptional Buy · Top verified ratings and seller reliability"
+      : overallScore >= 75
+      ? "Strong Buy · Solid performance within its category"
+      : "Solid Option · Fair value within its price tier";
 
   sendSuccess(res, {
     productId,
     overallScore,
     dimensions: {
-      value: { score: valueScore, label: "Price / Value Ratio", note: `${Math.round(discountRatio * 100)}% discount advantage` },
-      quality: { score: qualityScore, label: "Verified Quality", note: `${ratingAvg.toFixed(1)}/5 user rating score` },
-      popularity: { score: popularityScore, label: "Market Popularity", note: `${sold} units ordered recently` },
-      reliability: { score: reliabilityScore, label: "Seller Reliability", note: `${store?.storeName || "Verified"} high fulfillment standard` },
+      value: { score: valueScore, label: "Price / Value", note: valueNote },
+      quality: { score: qualityScore, label: "Verified Quality", note: qualityNote },
+      popularity: { score: popularityScore, label: "Market Popularity", note: popularityNote },
+      reliability: { score: reliabilityScore, label: "Seller Reliability", note: reliabilityNote },
     },
-    recommendation:
-      overallScore >= 85
-        ? "🌟 Excellent purchase decision! High value and verified seller reliability."
-        : overallScore >= 70
-        ? "👍 Good purchase choice. Solid performance within its price tier."
-        : "Fair choice. Consider comparing with alternative options.",
+    recommendation,
+    insufficientData: false,
   });
 });

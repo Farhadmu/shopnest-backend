@@ -8,12 +8,12 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireRole("seller", "admin"));
 
-router.get("/returns", ctrl.getSellerReturns);
-router.get("/returns/:id", ctrl.getSellerReturnDetails);
-router.post("/returns/:id/approve", ctrl.approveReturn);
-router.post("/returns/:id/reject", ctrl.rejectReturn);
-router.post("/returns/:id/inspect", ctrl.inspectReturn);
-router.post("/returns/:id/receive", ctrl.receiveReturn);
-router.post("/returns/:id/refund-process", ctrl.processRefund);
+router.get("/", ctrl.getSellerReturns);
+router.get("/:id", ctrl.getSellerReturnDetails);
+router.post("/:id/approve", ctrl.approveReturn);
+router.post("/:id/reject", ctrl.rejectReturn);
+router.post("/:id/inspect", ctrl.inspectReturn);
+router.post("/:id/receive", ctrl.receiveReturn);
+router.post("/:id/refund-process", ctrl.processRefund);
 
 export default router;

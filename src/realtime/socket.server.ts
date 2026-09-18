@@ -1,4 +1,4 @@
-import { Server as HttpServer } from "http";
+﻿import { Server as HttpServer } from "http";
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { env } from "../config/env";
 import { logger } from "../utils/logger";
@@ -10,6 +10,7 @@ import {
 import { DeliveryRequest } from "../modules/delivery/delivery-request.model";
 import { DeliveryManDetails } from "../modules/delivery/delivery-man.model";
 import { DeliveryLocation } from "../modules/delivery/delivery-location.model";
+import { ReverseDeliveryRequest } from "../modules/customer/customer-features.model";
 import { isValidCoordinate, calculateDistanceMeters, getApproxCoordinatesFromAddress } from "../utils/geo";
 import { createNotification } from "../modules/notifications/notification.service";
 
@@ -250,7 +251,7 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
             updatedAt: now.toISOString(),
           });
 
-          // If bound to an active delivery mission
+          // If bound to an active delivery mission (normal delivery)
           if (deliveryRequestId) {
             const activeReq = await DeliveryRequest.findOne({
               _id: deliveryRequestId,
@@ -261,7 +262,6 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
             if (activeReq) {
               const deliveryRoom = `delivery:${activeReq._id}`;
 
-              // Sanitize location payload for customer/seller (no private identifiers)
               const liveLocationPayload = {
                 deliveryId: activeReq.id,
                 orderId: activeReq.orderId,
@@ -276,12 +276,10 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
 
               io.to(deliveryRoom).emit("delivery:location_update", liveLocationPayload);
 
-              // ─── Geofencing Telemetry Checks ─────────────────────────────
               if (!authSocket.data.geofenceState) {
                 authSocket.data.geofenceState = {};
               }
 
-              // 1. Pickup Geofence Check (Store Pickup Proximity)
               if (["assigned", "pickup_started"].includes(activeReq.status)) {
                 const pickCoords = getApproxCoordinatesFromAddress(activeReq.pickupAddress);
                 if (pickCoords && !authSocket.data.geofenceState.pickupNotified) {
@@ -316,7 +314,6 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
                 }
               }
 
-              // 2. Customer Dropoff Destination Geofence Check (~300m approaching radius)
               if (["picked_up", "in_transit", "out_for_delivery"].includes(activeReq.status)) {
                 const dropCoords = getApproxCoordinatesFromAddress(activeReq.deliveryAddress);
                 if (dropCoords && !authSocket.data.geofenceState.dropoffNotified) {
@@ -351,7 +348,6 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
                 }
               }
 
-              // Throttled Breadcrumb History in DB
               const lastBreadcrumb = authSocket.data.lastBreadcrumbAt || 0;
               if (Date.now() - lastBreadcrumb > BREADCRUMB_THROTTLE_MS) {
                 authSocket.data.lastBreadcrumbAt = Date.now();
@@ -366,6 +362,119 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
                   heading,
                   recordedAt: now,
                 });
+              }
+            } else {
+              // Check if this is a reverse delivery request
+              const reverseReq = await ReverseDeliveryRequest.findOne({
+                _id: deliveryRequestId,
+                assignedDeliveryManId: user.id,
+                status: { $in: ["accepted", "pickup_started", "picked_up", "in_transit"] },
+              });
+
+              if (reverseReq) {
+                const deliveryRoom = `delivery:${reverseReq._id}`;
+
+                const liveLocationPayload = {
+                  deliveryId: reverseReq.id,
+                  orderId: reverseReq.orderId,
+                  latitude,
+                  longitude,
+                  accuracy,
+                  speed,
+                  heading,
+                  status: reverseReq.status,
+                  updatedAt: now.toISOString(),
+                };
+
+                io.to(deliveryRoom).emit("delivery:location_update", liveLocationPayload);
+
+                if (!authSocket.data.geofenceState) {
+                  authSocket.data.geofenceState = {};
+                }
+
+                if (reverseReq.status === "accepted" || reverseReq.status === "pickup_started") {
+                  const pickCoords = getApproxCoordinatesFromAddress(reverseReq.customerAddress);
+                  if (pickCoords && !authSocket.data.geofenceState.pickupNotified) {
+                    const distToPickup = calculateDistanceMeters(
+                      latitude,
+                      longitude,
+                      pickCoords.latitude,
+                      pickCoords.longitude
+                    );
+                    if (distToPickup <= 300) {
+                      authSocket.data.geofenceState.pickupNotified = true;
+                      io.to(deliveryRoom).emit("geofence:approaching_pickup", {
+                        deliveryId: reverseReq.id,
+                        orderId: reverseReq.orderId,
+                        distanceMeters: distToPickup,
+                        message: "Courier is approaching the customer pickup location!",
+                      });
+
+                      createNotification({
+                        userId: reverseReq.customerId,
+                        type: "delivery_alert",
+                        category: "delivery",
+                        priority: "info",
+                        source: "delivery",
+                        title: "Courier is Arriving for Pickup",
+                        message: `Your delivery partner is within 300m of your pickup address for order #${reverseReq.orderId}. Please have the return item ready.`,
+                        link: `/dashboard/user/orders`,
+                        relatedId: reverseReq.orderId,
+                        relatedType: "order",
+                      }).catch(() => undefined);
+                    }
+                  }
+                }
+
+                if (["picked_up", "in_transit"].includes(reverseReq.status)) {
+                  const dropCoords = getApproxCoordinatesFromAddress(reverseReq.sellerAddress);
+                  if (dropCoords && !authSocket.data.geofenceState.dropoffNotified) {
+                    const distToDrop = calculateDistanceMeters(
+                      latitude,
+                      longitude,
+                      dropCoords.latitude,
+                      dropCoords.longitude
+                    );
+                    if (distToDrop <= 300) {
+                      authSocket.data.geofenceState.dropoffNotified = true;
+                      io.to(deliveryRoom).emit("geofence:approaching_customer", {
+                        deliveryId: reverseReq.id,
+                        orderId: reverseReq.orderId,
+                        distanceMeters: distToDrop,
+                        message: "Courier is approaching the seller destination!",
+                      });
+
+                      createNotification({
+                        userId: reverseReq.sellerId,
+                        type: "delivery_alert",
+                        category: "delivery",
+                        priority: "info",
+                        source: "delivery",
+                        title: "Return Delivery Arriving",
+                        message: `Your return item for order #${reverseReq.orderId} is within 300m of your address.`,
+                        link: `/dashboard/seller/orders`,
+                        relatedId: reverseReq.orderId,
+                        relatedType: "order",
+                      }).catch(() => undefined);
+                    }
+                  }
+                }
+
+                const lastBreadcrumb = authSocket.data.lastBreadcrumbAt || 0;
+                if (Date.now() - lastBreadcrumb > BREADCRUMB_THROTTLE_MS) {
+                  authSocket.data.lastBreadcrumbAt = Date.now();
+                  await DeliveryLocation.create({
+                    deliveryRequestId: reverseReq.id,
+                    deliveryManId: user.id,
+                    latitude,
+                    longitude,
+                    accuracy,
+                    altitude,
+                    speed,
+                    heading,
+                    recordedAt: now,
+                  });
+                }
               }
             }
           }

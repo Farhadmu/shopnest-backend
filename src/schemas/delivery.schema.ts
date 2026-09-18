@@ -120,6 +120,24 @@ export const updateDeliveryStatusSchema = z.object({
   ]) as z.ZodType<DeliveryRequestStatus>,
 });
 
+export const updateReverseDeliveryStatusSchema = z.object({
+  status: z.enum([
+    "available",
+    "assigned",
+    "accepted",
+    "pickup_started",
+    "picked_up",
+    "in_transit",
+    "seller_received",
+    "failed",
+    "cancelled",
+  ]),
+  failureReason: z.string().optional(),
+  deliveryOtp: z.string().optional(),
+  deliveryProofImage: z.string().optional(),
+  note: z.string().optional(),
+});
+
 export const verifyOtpSchema = z.object({
   otp: z.string().length(6, "OTP must be 6 digits"),
 });

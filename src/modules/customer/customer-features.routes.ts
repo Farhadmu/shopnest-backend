@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import * as ctrl from "./ai-features.controller";
 import * as productIntelligence from "./features/product-intelligence.controller";
 import * as deliveryTracking from "./features/delivery-tracking.controller";
@@ -23,6 +23,7 @@ import * as productReportsCtrl from "./features/product-reports.controller";
 import * as commerceAssistantCtrl from "./features/commerce-assistant.controller";
 import * as codRiskCtrl from "./features/cod-risk.controller";
 import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
+import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { aiLimiter } from "../../middlewares/rate-limit.middleware";
 import {
@@ -93,6 +94,12 @@ router.get("/orders/:orderId/tracking", ...requireAuth, deliveryTracking.getAdva
 router.get("/returns", ...requireAuth, returnsCtrl.getReturnRequests);
 router.post("/returns", ...requireAuth, returnsCtrl.createReturnRequest);
 router.get("/returns/:id", ...requireAuth, returnsCtrl.getReturnDetails);
+router.get("/orders/:orderId/return-eligibility", ...requireAuth, returnsCtrl.getReturnEligibilityRoute);
+
+// ============================================================
+// 11b. REFUNDS
+// ============================================================
+router.get("/refunds", ...requireAuth, returnsCtrl.getCustomerRefunds);
 
 // ============================================================
 // 12. SMART PAYMENT CENTER (Feature 12)
@@ -201,7 +208,6 @@ router.get("/search/bangla", attachUserIfPresent, banglaSearchCtrl.searchBanglaB
 router.get("/cod-risk", ...requireAuth, codRiskCtrl.getCODOrderRisk);
 router.get("/products/:productId/trust-report", productIntelligence.getProductTrustReport);
 // Courier comparison moved to customer.routes.ts with correct controller
-router.get("/orders/:orderId/return-eligibility", ...requireAuth, returnsCtrl.getReturnEligibility);
 router.get("/price-alerts", ...requireAuth, priceStockAlertsCtrl.getUserPriceAlerts);
 router.post("/price-alerts", ...requireAuth, priceStockAlertsCtrl.subscribePriceAlert);
 router.delete("/price-alerts/:id", ...requireAuth, priceStockAlertsCtrl.deletePriceAlert);
@@ -225,5 +231,35 @@ router.get("/delivery-feedback/:orderId", ...requireAuth, deliveryTracking.getDe
 router.post("/reports", ...requireAuth, productReportsCtrl.submitProductReport);
 router.get("/reports", ...requireAuth, productReportsCtrl.getUserProductReports);
 router.post("/commerce-assistant", ...requireAuth, aiLimiter, commerceAssistantCtrl.askPersonalCommerceAssistant);
+
+// ============================================================
+// 11b. REFUNDS - Refund Status
+// ============================================================
+router.get("/refunds/:id", ...requireAuth, returnsCtrl.getRefundDetails);
+router.patch("/refunds/:id/process", ...requireAuth, requireRole("seller", "admin"), returnsCtrl.processRefundRoute);
+
+// ============================================================
+// 11c. REVERSE DELIVERY (Delivery Man Routes)
+// ============================================================
+router.get("/reverse-delivery/available", ...requireAuth, requireRole("delivery_man"), returnsCtrl.getDeliveryReverseRequestsRoute);
+router.get("/reverse-delivery/my", ...requireAuth, requireRole("delivery_man"), returnsCtrl.getDeliveryMyReverseRequestsRoute);
+router.get("/reverse-delivery/:id", ...requireAuth, returnsCtrl.getReverseDeliveryDetails);
+router.post("/reverse-delivery/:id/accept", ...requireAuth, requireRole("delivery_man"), returnsCtrl.acceptReverseDeliveryRoute);
+router.post("/reverse-delivery/:id/start-pickup", ...requireAuth, requireRole("delivery_man"), returnsCtrl.startReversePickupRoute);
+router.post("/reverse-delivery/:id/otp", ...requireAuth, requireRole("delivery_man"), returnsCtrl.generateReverseOtpRoute);
+router.post("/reverse-delivery/:id/verify-otp", ...requireAuth, requireRole("delivery_man", "admin"), returnsCtrl.verifyReverseOtpRoute);
+router.post("/reverse-delivery/:id/pickup", ...requireAuth, requireRole("delivery_man"), returnsCtrl.completeReversePickupRoute);
+router.patch("/reverse-delivery/:id/status", ...requireAuth, requireRole("delivery_man", "admin"), returnsCtrl.updateReverseDeliveryStatusRoute);
+router.patch("/reverse-delivery/:id/location", ...requireAuth, requireRole("delivery_man", "admin"), returnsCtrl.updateReverseDeliveryLocationRoute);
+
+// ============================================================
+// 11d. ADMIN - RETURNS & REFUNDS OVERVIEW
+// ============================================================
+router.get("/admin/returns", ...requireAuth, requireRole("admin"), returnsCtrl.getAdminReturnsRoute);
+router.get("/admin/returns/:id", ...requireAuth, requireRole("admin"), returnsCtrl.getAdminReturnDetailsRoute);
+
+// ============================================================
+// 11e. SELLER - RETURN REQUEST ACTIONS (already under /sellers/returns/*)
+// ============================================================
 
 export default router;

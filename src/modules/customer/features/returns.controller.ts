@@ -1,4 +1,4 @@
-﻿import { Request, Response } from "express";
+import { Request, Response } from "express";
 import { asyncHandler } from "../../../utils/async-handler";
 import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
@@ -6,6 +6,7 @@ import { Order } from "../../orders/order.model";
 import { Refund, ReverseDeliveryRequest } from "../customer-features.model";
 import { DeliveryManDetails } from "../../delivery/delivery-man.model";
 import { DeliveryLocation } from "../../delivery/delivery-location.model";
+import { emitDeliveryEvent } from "../../../realtime/socket.server";
 import {
   getReturnEligibility,
   createReturnRequest as serviceCreateReturnRequest,
@@ -85,8 +86,8 @@ export const rejectReturnRoute = asyncHandler(async (req: Request, res: Response
 });
 
 export const inspectReturnRoute = asyncHandler(async (req: Request, res: Response) => {
-  const { inspectionStatus, inspectionNotes } = req.body;
-  const returnReq = await inspectReturn(req.params.id, req.user!.id, req.user!.name || "Seller", inspectionStatus, inspectionNotes);
+  const { inspectionStatus, inspectionNotes, resalable } = req.body;
+  const returnReq = await inspectReturn(req.params.id, req.user!.id, req.user!.name || "Seller", inspectionStatus, inspectionNotes, resalable);
   sendSuccess(res, returnReq, "Inspection updated");
 });
 
@@ -156,6 +157,8 @@ export const completeReversePickupRoute = asyncHandler(async (req: Request, res:
   sendSuccess(res, reverse, "Pickup completed successfully");
 });
 
+const reverseLocationBreadcrumbMap = new Map<string, number>();
+
 export const updateReverseDeliveryLocationRoute = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const { latitude, longitude, accuracy, altitude, speed, heading } = req.body as {
@@ -169,7 +172,7 @@ export const updateReverseDeliveryLocationRoute = asyncHandler(async (req: Reque
 
   const reverse = await ReverseDeliveryRequest.findById(id);
   if (!reverse) throw ApiError.notFound("Reverse delivery request not found");
-  if (reverse.assignedDeliveryManId !== req.user!.id) {
+  if (reverse.assignedDeliveryManId !== req.user!.id && req.user!.role !== "admin") {
     throw ApiError.forbidden("You are not assigned to this reverse delivery");
   }
 
@@ -192,9 +195,9 @@ export const updateReverseDeliveryLocationRoute = asyncHandler(async (req: Reque
     { upsert: true }
   );
 
-  const lastBreadcrumb = (req as any).socket?.data?.lastBreadcrumbAt || 0;
+  const lastBreadcrumb = reverseLocationBreadcrumbMap.get(id) || 0;
   if (Date.now() - lastBreadcrumb > 10_000) {
-    (req as any).socket.data.lastBreadcrumbAt = Date.now();
+    reverseLocationBreadcrumbMap.set(id, Date.now());
     await DeliveryLocation.create({
       deliveryRequestId: id,
       deliveryManId: req.user!.id,
@@ -207,6 +210,19 @@ export const updateReverseDeliveryLocationRoute = asyncHandler(async (req: Reque
       recordedAt: now,
     });
   }
+
+  // Broadcast realtime location update to reverse delivery tracking room
+  emitDeliveryEvent(id, "delivery:location_update", {
+    deliveryId: id,
+    orderId: reverse.orderId,
+    latitude,
+    longitude,
+    accuracy,
+    speed,
+    heading,
+    status: reverse.status,
+    updatedAt: now.toISOString(),
+  });
 
   sendSuccess(res, { success: true, message: "Location updated" });
 });

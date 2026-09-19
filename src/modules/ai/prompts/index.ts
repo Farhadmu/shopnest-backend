@@ -81,19 +81,55 @@ export function buildReviewSummaryPrompt(reviews: Array<{ rating: number; commen
 }
 
 export const COMPARE_SYSTEM = `You are a neutral product comparison assistant. Compare only the products
-given to you, using only the data provided. Do not favor any seller.`;
+given to you, using only the data provided. Never invent benchmark scores, fake reviews, or non-existent specifications. Do not favor any seller. Explain practical trade-offs objectively.`;
+
+export interface CompareProductPromptItem {
+  id: string;
+  title: string;
+  price: number;
+  ratingAvg: number;
+  category: string;
+  stock: number;
+  specifications?: Record<string, string>;
+  warrantyMonths?: number;
+  freeDelivery?: boolean;
+  storeName?: string;
+  trustScore?: number;
+  sentiment?: { positive: number; neutral: number; negative: number };
+}
 
 export function buildComparePrompt(
-  products: Array<{ id: string; title: string; price: number; ratingAvg: number; category: string; stock: number }>
+  products: CompareProductPromptItem[],
+  options?: { userPrompt?: string; priority?: string; weights?: Record<string, number> }
 ) {
   const body = products
-    .map((p) => `- [${p.id}] ${p.title} | price ৳${p.price} | rating ${p.ratingAvg}/5 | stock ${p.stock}`)
+    .map((p) => {
+      const specs = p.specifications && Object.keys(p.specifications).length > 0
+        ? `\n    Specs: ${Object.entries(p.specifications).slice(0, 10).map(([k, v]) => `${k}: ${v}`).join(", ")}`
+        : "";
+      const warranty = p.warrantyMonths ? ` | Warranty: ${p.warrantyMonths}m` : "";
+      const delivery = p.freeDelivery ? " | Free Delivery: Yes" : "";
+      const store = p.storeName ? ` | Seller: ${p.storeName}` : "";
+      return `- [${p.id}] ${p.title} | price ৳${p.price} | rating ${p.ratingAvg}/5 | stock ${p.stock}${warranty}${delivery}${store}${specs}`;
+    })
     .join("\n");
-  return `Compare these products for a shopper deciding between them:\n${body}\n\nReturn JSON:
+
+  const priorityContext = options?.priority ? `\nUser Priority: ${options.priority}` : "";
+  const userQueryContext = options?.userPrompt ? `\nUser Question/Preferences: "${options.userPrompt}"` : "";
+
+  return `Compare these products for a shopper deciding between them:
+${body}${priorityContext}${userQueryContext}
+
+Return JSON:
 {
-  "summary": string (2-4 sentences, neutral),
-  "winnerByValue": string (product id that offers the best value, or "" if tied),
-  "table": [ { "id": string, "prosText": string, "consText": string } ]
+  "summary": string (2-4 sentences, neutral, objective trade-off explanation),
+  "verdict": string (concise purchasing guidance based on verified attributes),
+  "winnerByValue": string (product id that offers the best price-to-feature value, or "" if tied),
+  "winnerByPriority": { "criterion": string, "productId": string, "reason": string },
+  "table": [ { "id": string, "prosText": string, "consText": string } ],
+  "keyDifferences": [ { "aspect": string, "analysis": string } ],
+  "tradeoffs": [ { "productId": string, "advantages": [string], "disadvantages": [string] } ],
+  "suggestedQuestions": [string]
 }`;
 }
 

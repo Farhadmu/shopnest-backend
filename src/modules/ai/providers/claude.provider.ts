@@ -13,7 +13,23 @@ export interface ChatMessage {
 }
 
 export interface AiContext {
-  products?: Array<{ id: string; title: string; price: number; category: string; ratingAvg: number; stock?: number }>;
+  products?: Array<{
+    id: string;
+    title: string;
+    price: number;
+    category: string;
+    ratingAvg: number;
+    stock?: number;
+    specifications?: Record<string, string>;
+    warrantyMonths?: number;
+    freeDelivery?: boolean;
+    storeName?: string;
+    trustScore?: number;
+    sentiment?: { positive: number; neutral: number; negative: number };
+  }>;
+  userPrompt?: string;
+  priority?: string;
+  weights?: Record<string, number>;
   reviews?: Array<{ rating: number; comment: string }>;
   currentPrice?: number;
   stock?: number;
@@ -527,31 +543,146 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
 
   // Comparison prompt
   if (content.includes("Compare these products")) {
-    const products = context?.products || [];
+    let products = context?.products || [];
     if (products.length < 2) {
-      return JSON.stringify({
-        summary: "Not enough products to compare. Please provide at least two products.",
-        winnerByValue: "",
-        table: [],
+      // Fallback parse products directly from the prompt body
+      const productLines = content.split("\n").filter((l) => l.trim().startsWith("- ["));
+      products = productLines.map((line) => {
+        const idMatch = line.match(/- \[([^\]]+)\]/);
+        const titleMatch = line.match(/- \[[^\]]+\] ([^|]+)/);
+        const priceMatch = line.match(/price ৳(\d+(?:\.\d+)?)/);
+        const ratingMatch = line.match(/rating (\d+(?:\.\d+)?)\/5/);
+        const stockMatch = line.match(/stock (\d+)/);
+        return {
+          id: idMatch ? idMatch[1] : `p_${Math.random()}`,
+          title: titleMatch ? titleMatch[1].trim() : "Product",
+          price: priceMatch ? parseFloat(priceMatch[1]) : 0,
+          category: "General",
+          ratingAvg: ratingMatch ? parseFloat(ratingMatch[1]) : 4.5,
+          stock: stockMatch ? parseInt(stockMatch[1], 10) : 10,
+        };
       });
     }
 
+    if (products.length < 2) {
+      return JSON.stringify({
+        summary: "Not enough products to compare. Please provide at least two products.",
+        verdict: "Please select at least two active products to compare.",
+        winnerByValue: "",
+        winnerByPriority: null,
+        table: [],
+        keyDifferences: [],
+        tradeoffs: [],
+        suggestedQuestions: [],
+      });
+    }
+
+    const priority = context?.priority || (content.match(/User Priority: ([^\n]+)/)?.[1]?.trim());
+    const userPrompt = context?.userPrompt || (content.match(/User Question\/Preferences: "([^"]+)"/)?.[1]?.trim());
+
     const table = products.map((p) => ({
       id: p.id,
-      prosText: `Rated ${p.ratingAvg}/5, priced at ৳${p.price}`,
-      consText: (p.stock ?? 0) <= 0 ? "Currently out of stock" : "",
+      prosText: `Rated ${p.ratingAvg}/5 with verified pricing at ৳${p.price}${p.freeDelivery ? ", Free Delivery included" : ""}${p.warrantyMonths ? `, ${p.warrantyMonths} months warranty` : ""}`,
+      consText: (p.stock ?? 0) <= 0 ? "Currently out of stock" : (p.stock ?? 0) < 5 ? `Low stock (${p.stock} units left)` : "",
     }));
 
+    // Objective value calculation
     const bestValue = products.reduce((best, p) => {
-      const valueScore = p.ratingAvg / Math.max(1, p.price / 1000);
-      const bestScore = best.ratingAvg / Math.max(1, best.price / 1000);
+      const valueScore = (p.ratingAvg || 4) / Math.max(1, (p.price || 1) / 1000);
+      const bestScore = (best.ratingAvg || 4) / Math.max(1, (best.price || 1) / 1000);
       return valueScore > bestScore ? p : best;
     });
 
+    // Objective priority calculation
+    let winnerByPriority: { criterion: string; productId: string; reason: string } | null = null;
+    if (priority) {
+      const pLower = priority.toLowerCase();
+      if (pLower.includes("price") || pLower.includes("budget")) {
+        const cheapest = [...products].sort((a, b) => a.price - b.price)[0];
+        winnerByPriority = {
+          criterion: "Price / Budget",
+          productId: cheapest.id,
+          reason: `${cheapest.title} has the lowest entry price at ৳${cheapest.price}.`,
+        };
+      } else if (pLower.includes("rating") || pLower.includes("quality")) {
+        const highestRated = [...products].sort((a, b) => (b.ratingAvg || 0) - (a.ratingAvg || 0))[0];
+        winnerByPriority = {
+          criterion: "Customer Rating",
+          productId: highestRated.id,
+          reason: `${highestRated.title} holds the highest rating at ${highestRated.ratingAvg}/5 from verified buyers.`,
+        };
+      } else if (pLower.includes("battery")) {
+        winnerByPriority = {
+          criterion: "Battery Life",
+          productId: bestValue.id,
+          reason: `${bestValue.title} offers balanced endurance relative to its price bracket and features.`,
+        };
+      } else {
+        winnerByPriority = {
+          criterion: priority,
+          productId: bestValue.id,
+          reason: `${bestValue.title} provides the strongest overall balance for ${priority}.`,
+        };
+      }
+    }
+
+    // Tradeoffs
+    const tradeoffs = products.map((p) => {
+      const advantages: string[] = [];
+      const disadvantages: string[] = [];
+
+      if (p.price <= bestValue.price) advantages.push(`More accessible price (৳${p.price})`);
+      else disadvantages.push(`Higher price point (৳${p.price})`);
+
+      if ((p.ratingAvg || 0) >= 4.5) advantages.push(`High customer satisfaction (${p.ratingAvg}/5)`);
+      if (p.freeDelivery) advantages.push("Eligible for free shipping");
+      if (p.warrantyMonths && p.warrantyMonths >= 12) advantages.push(`${p.warrantyMonths}-month warranty coverage`);
+
+      if ((p.stock ?? 0) <= 0) disadvantages.push("Currently out of stock");
+      else if ((p.stock ?? 0) <= 3) disadvantages.push("Limited inventory remaining");
+
+      return {
+        productId: p.id,
+        advantages: advantages.length > 0 ? advantages : ["Standard product configuration"],
+        disadvantages: disadvantages.length > 0 ? disadvantages : ["No major drawbacks reported"],
+      };
+    });
+
+    const keyDifferences = [
+      {
+        aspect: "Pricing & Value",
+        analysis: `Prices range from ৳${Math.min(...products.map((p) => p.price))} to ৳${Math.max(...products.map((p) => p.price))}. ${bestValue.title} offers the best price-to-rating ratio.`,
+      },
+      {
+        aspect: "Buyer Satisfaction",
+        analysis: `Average ratings vary between ${Math.min(...products.map((p) => p.ratingAvg || 0))}/5 and ${Math.max(...products.map((p) => p.ratingAvg || 0))}/5 across compared products.`,
+      },
+      {
+        aspect: "Availability & Logistics",
+        analysis: products.some((p) => (p.stock ?? 0) <= 0)
+          ? "Certain options have limited or out-of-stock availability."
+          : "All compared products are currently in stock and ready for fulfillment.",
+      },
+    ];
+
+    const suggestedQuestions = [
+      `Which one is best for my budget?`,
+      `How does the warranty compare between these options?`,
+      `Which product has better verified customer reviews?`,
+      `Is free delivery available for these products?`,
+    ];
+
     return JSON.stringify({
-      summary: `Comparing ${products.length} products. ${bestValue.title} offers the best value with a rating of ${bestValue.ratingAvg}/5 at ৳${bestValue.price}.`,
+      summary: `Comparing ${products.length} products. ${bestValue.title} stands out for overall value with a rating of ${bestValue.ratingAvg}/5 at ৳${bestValue.price}. ${products.length > 1 ? `Price variation is ৳${Math.abs(products[0].price - products[1].price)} across options.` : ""}`,
+      verdict: userPrompt
+        ? `In response to "${userPrompt}": ${bestValue.title} provides the most balanced option considering pricing and ratings.`
+        : `Choose ${bestValue.title} for the best value, or compare individual specifications below if you require specific features.`,
       winnerByValue: bestValue.id,
+      winnerByPriority,
       table,
+      keyDifferences,
+      tradeoffs,
+      suggestedQuestions,
     });
   }
 

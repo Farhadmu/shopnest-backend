@@ -26,6 +26,7 @@ router.get(
 );
 
 // Trending and featured products must be registered BEFORE `:id` so it is not captured as a product id.
+router.get("/compare", ctrl.getCompareProducts);
 router.get("/trending", ctrl.getTrendingProducts);
 router.get("/featured", ctrl.getFeaturedProducts);
 

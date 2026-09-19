@@ -394,6 +394,20 @@ export const getCompareProducts = asyncHandler(async (req: Request, res: Respons
   const productMap = new Map(rawProducts.map((p) => [String(p._id), p]));
   const products = validIds.map((id) => productMap.get(id)).filter(Boolean) as (typeof rawProducts[0])[];
   if (products.length === 0) { sendSuccess(res, []); return; }
+  const storeIds = Array.from(new Set(products.map((p) => p.storeId).filter(Boolean)));
+  const stores = await Store.find({
+    $or: [
+      { ownerId: { $in: storeIds } },
+      { _id: { $in: storeIds.filter((id) => mongoose.isValidObjectId(id)) } },
+    ],
+  })
+    .select("_id ownerId storeName slug rating ratingCount trustScore businessInfo location verifiedAt createdAt")
+    .lean();
+  const storeMap = new Map<string, (typeof stores)[0]>();
+  for (const s of stores) {
+    if (s.ownerId) storeMap.set(s.ownerId, s);
+    storeMap.set(String(s._id), s);
+  }
   sendSuccess(res, products);
 });
 

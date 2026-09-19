@@ -1276,8 +1276,10 @@ export const getSellerActiveDeliveries = asyncHandler(async (req: Request, res: 
 
     return {
       ...normalizeLean(d as unknown as Record<string, unknown>),
-      pickupCoordinates: getApproxCoordinatesFromAddress(d.pickupAddress),
+      pickupCoordinates: canonicalStoreLocation || getApproxCoordinatesFromAddress(d.pickupAddress),
       deliveryCoordinates: getApproxCoordinatesFromAddress(d.deliveryAddress),
+      storeLocation: canonicalStoreLocation,
+      sellerStoreName: sellerStore?.storeName || "My Store",
       assignedRider,
       currentLocation,
     };

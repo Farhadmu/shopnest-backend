@@ -319,6 +319,9 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
             };
 
             io.to(deliveryRoom).emit("delivery:location_update", liveLocationPayload);
+            if (activeReq.sellerId) {
+              io.to(`seller:${activeReq.sellerId}:operations`).emit("seller:delivery_location", liveLocationPayload);
+            }
           }
 
           // If bound to an active delivery mission (normal delivery)

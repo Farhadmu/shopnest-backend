@@ -212,6 +212,21 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       }
     );
 
+    // 4b. Join Seller Operations Room (Strictly Seller Scoped)
+    socket.on(
+      "join:seller_operations",
+      (callback?: (res: { success: boolean; message?: string }) => void) => {
+        if (!user || (user.role !== "seller" && user.role !== "admin")) {
+          callback?.({ success: false, message: "Requires SELLER role" });
+          return;
+        }
+        const roomName = `seller:${user.id}:operations`;
+        socket.join(roomName);
+        logger.info(`[Socket.IO] Seller ${user.id} joined ${roomName}`);
+        callback?.({ success: true, message: `Joined ${roomName}` });
+      }
+    );
+
     // 5. Realtime Live GPS Broadcast Event from Delivery Man
     socket.on(
       "location:update",
@@ -244,14 +259,24 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
           const now = new Date();
 
           // Update rider's current operational location in DeliveryManDetails
+          const existingDetails = await DeliveryManDetails.findOne({ userId: user.id });
+          const newAvailability =
+            !existingDetails?.availabilityStatus || existingDetails.availabilityStatus === "offline"
+              ? "available"
+              : existingDetails.availabilityStatus;
+
           await DeliveryManDetails.findOneAndUpdate(
             { userId: user.id },
             {
               $set: {
                 isActive: true,
+                availabilityStatus: newAvailability,
                 lastActiveAt: now,
                 "currentLocation.latitude": latitude,
                 "currentLocation.longitude": longitude,
+                "currentLocation.speed": speed,
+                "currentLocation.heading": heading,
+                "currentLocation.accuracy": accuracy,
                 "currentLocation.updatedAt": now,
               },
             },
@@ -268,8 +293,36 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
             speed,
             heading,
             deliveryRequestId,
+            isLive: true,
+            status: newAvailability,
             updatedAt: now.toISOString(),
           });
+
+          // Also broadcast to all active delivery requests assigned to this courier
+          const activeAssignments = await DeliveryRequest.find({
+            assignedDeliveryManId: user.id,
+            status: { $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"] },
+          }).lean();
+
+          for (const activeReq of activeAssignments) {
+            const deliveryRoom = `delivery:${activeReq._id}`;
+            const liveLocationPayload = {
+              deliveryId: String(activeReq._id),
+              orderId: activeReq.orderId,
+              latitude,
+              longitude,
+              accuracy,
+              speed,
+              heading,
+              status: activeReq.status,
+              updatedAt: now.toISOString(),
+            };
+
+            io.to(deliveryRoom).emit("delivery:location_update", liveLocationPayload);
+            if (activeReq.sellerId) {
+              io.to(`seller:${activeReq.sellerId}:operations`).emit("seller:delivery_location", liveLocationPayload);
+            }
+          }
 
           // If bound to an active delivery mission (normal delivery)
           if (deliveryRequestId) {
@@ -507,10 +560,80 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       }
     );
 
+    // 6. Explicit Stop Live Location Broadcast from Delivery Man
+    socket.on("location:stop", async (callback?: (res: { success: boolean; message?: string }) => void) => {
+      try {
+        if (!user || (user.role !== "delivery_man" && user.role !== "admin")) {
+          callback?.({ success: false, message: "Unauthorized" });
+          return;
+        }
+        const now = new Date();
+        await DeliveryManDetails.findOneAndUpdate(
+          { userId: user.id },
+          {
+            $set: {
+              isActive: false,
+              availabilityStatus: "offline",
+              lastActiveAt: now,
+            },
+          }
+        );
+
+        io.to("admin:operations").emit("admin:rider_status", {
+          riderId: user.id,
+          isLive: false,
+          status: "offline",
+          lastSeenAt: now.toISOString(),
+        });
+
+        logger.info(`[Socket.IO] Rider ${user.id} stopped live GPS broadcast`);
+        callback?.({ success: true });
+      } catch (err: any) {
+        logger.error("location:stop handler error", err);
+        callback?.({ success: false, message: err?.message || "Failed to stop location broadcast" });
+      }
+    });
+
     socket.on("disconnect", (reason) => {
       logger.info(`[Socket.IO] Client disconnected: socketId=${socket.id}, reason=${reason}`);
     });
   });
+
+  /**
+   * ShopNest Logistics Radar Background Sweeper
+   * Periodically checks courier heartbeat timestamps (60s inactivity threshold).
+   * Stale active couriers are automatically marked offline to preserve radar integrity.
+   */
+  // Background Heartbeat Sweep: Transition stale delivery men from online to offline
+  setInterval(async () => {
+    try {
+      const staleThreshold = new Date(Date.now() - 60000); // 60s without heartbeat
+      const staleRiders = await DeliveryManDetails.find({
+        isActive: true,
+        lastActiveAt: { $lt: staleThreshold },
+      }).select("userId lastActiveAt");
+
+      if (staleRiders.length > 0) {
+        const staleIds = staleRiders.map((r) => r.userId);
+        await DeliveryManDetails.updateMany(
+          { userId: { $in: staleIds } },
+          { $set: { isActive: false, availabilityStatus: "offline" } }
+        );
+
+        for (const r of staleRiders) {
+          io.to("admin:operations").emit("admin:rider_status", {
+            riderId: r.userId,
+            isLive: false,
+            status: "offline",
+            lastSeenAt: r.lastActiveAt ? r.lastActiveAt.toISOString() : staleThreshold.toISOString(),
+          });
+        }
+        logger.info(`[Socket.IO Heartbeat] Transitioned ${staleRiders.length} stale delivery partner(s) to offline.`);
+      }
+    } catch (err) {
+      logger.warn("[Socket.IO Heartbeat] Heartbeat sweep warning:", err);
+    }
+  }, 30000);
 
   logger.info("[Socket.IO] Realtime server initialized successfully");
   return io;

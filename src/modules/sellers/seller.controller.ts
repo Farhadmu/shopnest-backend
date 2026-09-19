@@ -159,6 +159,11 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
         ...businessInfo,
         categoryId: new mongoose.Types.ObjectId(categoryId),
       },
+      location: req.body.location ? {
+        latitude: req.body.location.latitude,
+        longitude: req.body.location.longitude,
+        address: req.body.location.address || businessInfo?.businessAddress,
+      } : undefined,
       status: "pending",
     });
   } catch (err) {
@@ -232,6 +237,15 @@ export const updateMyStore = asyncHandler(async (req: Request, res: Response) =>
         ...businessInfo,
       };
     }
+  }
+
+  // Fallback to businessInfo address if location address is omitted
+  if (req.body.location) {
+    store.location = {
+      latitude: req.body.location.latitude,
+      longitude: req.body.location.longitude,
+      address: req.body.location.address || store.businessInfo?.businessAddress,
+    };
   }
   if (resubmit && (store.status === "rejected" || store.status === "pending")) {
     store.status = "pending";

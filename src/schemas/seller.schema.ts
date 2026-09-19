@@ -21,7 +21,15 @@ export const registerStoreSchema = z.object({
       bankBranch: z.string().optional(),
     })
     .optional(),
+  location: z
+    .object({
+      latitude: z.number().min(-90).max(90),
+      longitude: z.number().min(-180).max(180),
+      address: z.string().optional(),
+    })
+    .optional(),
 });
 
+// Partial update schema inherits canonical location boundaries
 export const updateStoreSchema = registerStoreSchema.partial();
 

@@ -599,6 +599,11 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
     });
   });
 
+  /**
+   * ShopNest Logistics Radar Background Sweeper
+   * Periodically checks courier heartbeat timestamps (60s inactivity threshold).
+   * Stale active couriers are automatically marked offline to preserve radar integrity.
+   */
   // Background Heartbeat Sweep: Transition stale delivery men from online to offline
   setInterval(async () => {
     try {

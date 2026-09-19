@@ -1,3 +1,4 @@
+import { Courier } from "../delivery/courier.model";
 import { Review } from "../reviews/review.model";
 import { Request, Response } from "express";
 import mongoose from "mongoose";
@@ -442,6 +443,12 @@ export const getCompareProducts = asyncHandler(async (req: Request, res: Respons
       reviewsByProduct.set(r.productId, list);
     }
   }
+  const couriers = await Courier.find({ isActive: true })
+    .select("name logo estimatedDays rateStructure")
+    .lean();
+  const standardCourier = couriers[0] || null;
+  const standardFee = standardCourier?.rateStructure?.[0]?.price ?? 60;
+  const standardDays = standardCourier?.estimatedDays ?? "2-3 days";
   sendSuccess(res, products);
 });
 

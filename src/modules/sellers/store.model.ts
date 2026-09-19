@@ -24,6 +24,11 @@ export interface IStore {
     payoutAccountName?: string;
     bankBranch?: string;
   };
+  location?: {
+    latitude?: number;
+    longitude?: number;
+    address?: string;
+  };
   rejectionReason?: string;
   verifiedAt?: Date;
   verifiedBy?: string;

@@ -389,7 +389,12 @@ export const getCompareProducts = asyncHandler(async (req: Request, res: Respons
   if (ids.length === 0) { sendSuccess(res, []); return; }
   const validIds = ids.filter((id) => mongoose.isValidObjectId(id));
   if (validIds.length === 0) { sendSuccess(res, []); return; }
-  sendSuccess(res, []);
+  const filter = await buildPublicProductFilter({ _id: { $in: validIds } });
+  const rawProducts = await Product.find(filter).lean();
+  const productMap = new Map(rawProducts.map((p) => [String(p._id), p]));
+  const products = validIds.map((id) => productMap.get(id)).filter(Boolean) as (typeof rawProducts[0])[];
+  if (products.length === 0) { sendSuccess(res, []); return; }
+  sendSuccess(res, products);
 });
 
 export const getRecommendedProducts = asyncHandler(async (req: Request, res: Response) => {

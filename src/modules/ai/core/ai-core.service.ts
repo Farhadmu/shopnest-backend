@@ -329,3 +329,6 @@ NEVER automatically complete, cancel, or reassign deliveries without user confir
 
 // Strict anti-hallucination compliance flag
 export const STRICT_ANTI_HALLUCINATION_MODE = true;
+
+// Maximum allowed conversational turns preserved in prompt envelope
+export const MAX_PROMPT_HISTORY_TURNS = 10;

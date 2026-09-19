@@ -7,6 +7,7 @@ import sellerCopilotRoutes from "./seller-copilot/seller-copilot.routes";
 import customerCopilotRoutes from "./customer-copilot/customer-copilot.routes";
 import deliveryCopilotRoutes from "./delivery-copilot/delivery-copilot.routes";
 import commerceCompanionRoutes from "./commerce-companion.routes";
+import aiCoreRoutes from "./core/ai-core.routes";
 import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
 
 import { requireRole } from "../../middlewares/role.middleware";
@@ -29,6 +30,9 @@ import {
 const router = Router();
 
 router.use(aiLimiter);
+
+// 0. Unified ShopNest AI Intelligence Core Gateway
+router.use("/core", attachUserIfPresent, aiCoreRoutes);
 
 // ShopNest AI Commerce Companion - unified customer assistant
 router.use("/commerce-companion", commerceCompanionRoutes);

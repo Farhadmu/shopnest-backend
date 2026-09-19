@@ -48,7 +48,7 @@ export const createHandoffToken = asyncHandler(async (req: Request, res: Respons
     preferences,
   });
 
-  sendSuccess(res, handoff, 201);
+  sendSuccess(res, handoff, "Handoff token created", 201);
 });
 
 export const consumeHandoffToken = asyncHandler(async (req: Request, res: Response) => {

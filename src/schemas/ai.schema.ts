@@ -23,6 +23,9 @@ export const aiReviewSummarySchema = z.object({
 
 export const aiCompareSchema = z.object({
   productIds: z.array(z.string().min(1)).min(2, "Select at least 2 products").max(5),
+  userPrompt: z.string().max(500).optional(),
+  priority: z.string().max(50).optional(),
+  weights: z.record(z.string(), z.number()).optional(),
 });
 
 export const aiPricingSchema = z.object({

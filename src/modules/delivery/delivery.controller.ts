@@ -1215,10 +1215,26 @@ export const getSellerActiveDeliveries = asyncHandler(async (req: Request, res: 
     .map((d) => d.assignedDeliveryManId)
     .filter((id): id is string => Boolean(id));
 
-  const [riderDetails, riderProfiles] = await Promise.all([
+  const [riderDetails, riderProfiles, sellerStore] = await Promise.all([
     DeliveryManDetails.find({ userId: { $in: riderIds } }).lean(),
     DeliveryManProfile.find({ userId: { $in: riderIds } }).lean(),
+    Store.findOne({ ownerId: sellerId }).lean(),
   ]);
+
+  const detailsMap = new Map(riderDetails.map((d) => [d.userId, d]));
+  const profileMap = new Map(riderProfiles.map((p) => [p.userId, p]));
+
+  const canonicalStoreLocation =
+    sellerStore?.location?.latitude !== undefined &&
+    sellerStore?.location?.latitude !== null &&
+    sellerStore?.location?.longitude !== undefined &&
+    sellerStore?.location?.longitude !== null
+      ? {
+          latitude: sellerStore.location.latitude,
+          longitude: sellerStore.location.longitude,
+          address: sellerStore.location.address || sellerStore.businessInfo?.businessAddress,
+        }
+      : null;
 
   const detailsMap = new Map(riderDetails.map((d) => [d.userId, d]));
   const profileMap = new Map(riderProfiles.map((p) => [p.userId, p]));

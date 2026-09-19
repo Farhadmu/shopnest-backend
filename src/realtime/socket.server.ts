@@ -293,6 +293,8 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
             speed,
             heading,
             deliveryRequestId,
+            isLive: true,
+            status: newAvailability,
             updatedAt: now.toISOString(),
           });
 

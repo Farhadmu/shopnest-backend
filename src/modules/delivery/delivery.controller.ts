@@ -1236,9 +1236,6 @@ export const getSellerActiveDeliveries = asyncHandler(async (req: Request, res: 
         }
       : null;
 
-  const detailsMap = new Map(riderDetails.map((d) => [d.userId, d]));
-  const profileMap = new Map(riderProfiles.map((p) => [p.userId, p]));
-
   const enrichedDeliveries = deliveries.map((d) => {
     let assignedRider: any = null;
     let currentLocation: any = null;
@@ -1774,22 +1771,111 @@ export const approveDeliveryMan = asyncHandler(async (req: Request, res: Respons
   sendSuccess(res, profile.toJSON() as unknown as Record<string, unknown>, `Delivery partner ${status}`);
 });
 
-/** Admin: List all active operations & delivery requests */
+/** Admin: List all active operations, fleet radar, real stores & delivery requests */
 export const listAdminActiveDeliveries = asyncHandler(async (_req: Request, res: Response) => {
-  const [activeRequests, openRequests, deliveryMen] = await Promise.all([
+  const [activeRequests, openRequests, deliveryProfiles, allDetails, realStores] = await Promise.all([
     DeliveryRequest.find({
       status: { $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"] },
     })
       .sort({ createdAt: -1 })
       .lean(),
     DeliveryRequest.find({ status: "available" }).sort({ createdAt: -1 }).lean(),
-    DeliveryManDetails.find({ isActive: true }).lean(),
+    DeliveryManProfile.find().lean(),
+    DeliveryManDetails.find().lean(),
+    Store.find({
+      "location.latitude": { $exists: true, $ne: null },
+      "location.longitude": { $exists: true, $ne: null },
+    })
+      .select("storeName slug description logo location businessInfo rating ratingCount status")
+      .lean(),
   ]);
 
+  const userIds = deliveryProfiles.map((p) => p.userId);
+  const db = mongoose.connection.db;
+  let userDocs: any[] = [];
+  if (db && userIds.length > 0) {
+    const orQueries = userIds.map((id) => ({
+      id,
+      ...(mongoose.isValidObjectId(id) ? { _id: new mongoose.Types.ObjectId(id) } : {}),
+    }));
+    userDocs = await db.collection("user").find({ $or: orQueries }).toArray();
+  }
+  const userMap = new Map<string, any>();
+  for (const u of userDocs) {
+    userMap.set(String(u.id ?? u._id), u);
+  }
+
+  const detailsMap = new Map(allDetails.map((d) => [d.userId, d]));
+
+  // Build active orders map for each rider
+  const riderActiveOrdersMap = new Map<string, Array<{ orderId: string; deliveryId: string; status: string }>>();
+  for (const req of activeRequests) {
+    if (req.assignedDeliveryManId) {
+      const list = riderActiveOrdersMap.get(req.assignedDeliveryManId) || [];
+      list.push({ orderId: req.orderId, deliveryId: String(req._id), status: req.status });
+      riderActiveOrdersMap.set(req.assignedDeliveryManId, list);
+    }
+  }
+
+  const now = Date.now();
+  const allRidersEnriched = deliveryProfiles.map((profile) => {
+    const d = detailsMap.get(profile.userId);
+    const u = userMap.get(profile.userId);
+    const assignedOrders = riderActiveOrdersMap.get(profile.userId) || [];
+
+    const lastActiveTime = d?.lastActiveAt ? new Date(d.lastActiveAt).getTime() : 0;
+    const isActuallyLive = Boolean(d?.isActive && (now - lastActiveTime < 70000));
+
+    return {
+      userId: profile.userId,
+      id: profile.userId,
+      status: profile.status,
+      availabilityStatus: isActuallyLive ? (d?.availabilityStatus || "available") : "offline",
+      isActive: isActuallyLive,
+      isLive: isActuallyLive,
+      rating: d?.rating ?? 0,
+      ratingCount: d?.ratingCount ?? 0,
+      totalDeliveries: d?.totalDeliveries ?? 0,
+      completedDeliveries: d?.completedDeliveries ?? 0,
+      failedDeliveries: d?.failedDeliveries ?? 0,
+      name: d?.personal?.fullName || u?.name || "Delivery Partner",
+      email: d?.personal?.email || u?.email || "",
+      phone: d?.personal?.phone,
+      image: d?.personal?.profilePhoto || u?.image || "",
+      serviceZone: d?.preferences?.preferredServiceZones || [],
+      vehicle: d?.vehicle ? {
+        vehicleType: d.vehicle.vehicleType,
+        vehicleBrand: d.vehicle.vehicleBrand,
+        vehicleModel: d.vehicle.vehicleModel,
+        vehicleRegistrationNumber: d.vehicle.vehicleRegistrationNumber,
+      } : undefined,
+      currentLocation: d?.currentLocation ? {
+        latitude: d.currentLocation.latitude,
+        longitude: d.currentLocation.longitude,
+        speed: d.currentLocation.speed,
+        heading: d.currentLocation.heading,
+        accuracy: d.currentLocation.accuracy,
+        updatedAt: d.currentLocation.updatedAt ? new Date(d.currentLocation.updatedAt).toISOString() : undefined,
+      } : undefined,
+      lastSeenAt: d?.lastActiveAt ? new Date(d.lastActiveAt).toISOString() : d?.currentLocation?.updatedAt ? new Date(d.currentLocation.updatedAt).toISOString() : undefined,
+      activeDeliveriesCount: assignedOrders.length,
+      assignedOrders,
+    };
+  });
+
+  // Enrich active requests with coordinates
+  const enrichedActiveRequests = activeRequests.map((req) => ({
+    ...normalizeLean(req as unknown as Record<string, unknown>),
+    pickupCoordinates: getApproxCoordinatesFromAddress(req.pickupAddress),
+    deliveryCoordinates: getApproxCoordinatesFromAddress(req.deliveryAddress),
+  }));
+
   sendSuccess(res, {
-    activeDeliveries: normalizeLeanArray(activeRequests),
+    activeDeliveries: enrichedActiveRequests,
     openMarketplace: normalizeLeanArray(openRequests),
-    activeRiders: normalizeLeanArray(deliveryMen),
+    activeRiders: allRidersEnriched.filter((r) => r.isLive),
+    allRiders: allRidersEnriched,
+    stores: normalizeLeanArray(realStores),
   });
 });
 

@@ -326,3 +326,6 @@ NEVER automatically complete, cancel, or reassign deliveries without user confir
     }
   }
 }
+
+// Strict anti-hallucination compliance flag
+export const STRICT_ANTI_HALLUCINATION_MODE = true;

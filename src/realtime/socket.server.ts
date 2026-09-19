@@ -599,6 +599,28 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
     });
   });
 
+  // Background Heartbeat Sweep: Transition stale delivery men from online to offline
+  setInterval(async () => {
+    try {
+      const staleThreshold = new Date(Date.now() - 60000); // 60s without heartbeat
+      const staleRiders = await DeliveryManDetails.find({
+        isActive: true,
+        lastActiveAt: { $lt: staleThreshold },
+      }).select("userId lastActiveAt");
+
+      if (staleRiders.length > 0) {
+        const staleIds = staleRiders.map((r) => r.userId);
+        await DeliveryManDetails.updateMany(
+          { userId: { $in: staleIds } },
+          { $set: { isActive: false, availabilityStatus: "offline" } }
+        );
+        logger.info(`[Socket.IO Heartbeat] Transitioned ${staleRiders.length} stale delivery partner(s) to offline.`);
+      }
+    } catch (err) {
+      logger.warn("[Socket.IO Heartbeat] Heartbeat sweep warning:", err);
+    }
+  }, 30000);
+
   logger.info("[Socket.IO] Realtime server initialized successfully");
   return io;
 }

@@ -377,6 +377,21 @@ export const getFeaturedProducts = asyncHandler(async (req: Request, res: Respon
   sendSuccess(res, normalized);
 });
 
+// Compare endpoint: base ID validation
+export const getCompareProducts = asyncHandler(async (req: Request, res: Response) => {
+  const idsQuery = req.query.ids;
+  let ids: string[] = [];
+  if (typeof idsQuery === "string") {
+    ids = idsQuery.split(",").map((s) => s.trim()).filter(Boolean);
+  } else if (Array.isArray(idsQuery)) {
+    ids = (idsQuery as string[]).map((s) => String(s).trim()).filter(Boolean);
+  }
+  if (ids.length === 0) { sendSuccess(res, []); return; }
+  const validIds = ids.filter((id) => mongoose.isValidObjectId(id));
+  if (validIds.length === 0) { sendSuccess(res, []); return; }
+  sendSuccess(res, []);
+});
+
 export const getRecommendedProducts = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const limit = Math.min(24, Math.max(1, Number(req.query.limit) || 8));

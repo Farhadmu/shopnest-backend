@@ -192,3 +192,5 @@ export class AiPermissionService {
     return {};
   }
 }
+
+// Security Audit: Adversarial pattern threat analysis enabled

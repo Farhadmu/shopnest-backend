@@ -446,3 +446,6 @@ export const PRODUCT_RECOMMENDATION_FIELDS = ["title", "price", "category", "rat
 
 // Target fulfillment SLA threshold (hours)
 export const TARGET_FULFILLMENT_SLA_HOURS = 24;
+
+// Maximum retry attempts for customer phone unreachable status
+export const MAX_CUSTOMER_CONTACT_ATTEMPTS = 3;

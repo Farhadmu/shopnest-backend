@@ -76,3 +76,6 @@ export class AiProviderService {
     }
   }
 }
+
+// Telemetry: Provider latency tracking and SLA threshold monitoring
+export const PROVIDER_TIMEOUT_THRESHOLD_MS = 15000;

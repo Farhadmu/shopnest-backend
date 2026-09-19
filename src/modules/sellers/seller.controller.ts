@@ -239,6 +239,7 @@ export const updateMyStore = asyncHandler(async (req: Request, res: Response) =>
     }
   }
 
+  // Fallback to businessInfo address if location address is omitted
   if (req.body.location) {
     store.location = {
       latitude: req.body.location.latitude,

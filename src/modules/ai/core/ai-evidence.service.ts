@@ -99,3 +99,6 @@ export class AiEvidenceService {
     return lines.join("\n");
   }
 }
+
+// Evidence verification confidence levels
+export const EVIDENCE_CONFIDENCE_THRESHOLD = 0.95;

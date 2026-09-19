@@ -159,6 +159,11 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
         ...businessInfo,
         categoryId: new mongoose.Types.ObjectId(categoryId),
       },
+      location: req.body.location ? {
+        latitude: req.body.location.latitude,
+        longitude: req.body.location.longitude,
+        address: req.body.location.address || businessInfo?.businessAddress,
+      } : undefined,
       status: "pending",
     });
   } catch (err) {

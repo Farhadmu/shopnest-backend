@@ -146,3 +146,8 @@ describe("Unified ShopNest AI Core Engine", () => {
     });
   });
 });
+
+  it("should enforce envelope non-reusability after token consumption", async () => {
+    const consumed = await consumeHandoffEnvelope("non-existent-token");
+    expect(consumed).toBeNull();
+  });

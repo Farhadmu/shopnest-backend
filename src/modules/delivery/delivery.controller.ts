@@ -1771,7 +1771,11 @@ export const approveDeliveryMan = asyncHandler(async (req: Request, res: Respons
   sendSuccess(res, profile.toJSON() as unknown as Record<string, unknown>, `Delivery partner ${status}`);
 });
 
-/** Admin: List all active operations, fleet radar, real stores & delivery requests */
+/**
+ * Admin: List all active operations, fleet radar, real stores & delivery requests.
+ * Computes live presence against a strict 70-second heartbeat window and enriches
+ * all couriers with vehicle registrations, active missions, and store coordinates.
+ */
 export const listAdminActiveDeliveries = asyncHandler(async (_req: Request, res: Response) => {
   const [activeRequests, openRequests, deliveryProfiles, allDetails, realStores] = await Promise.all([
     DeliveryRequest.find({

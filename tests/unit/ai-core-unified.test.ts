@@ -143,11 +143,9 @@ describe("Unified ShopNest AI Core Engine", () => {
       // Second consume: fails (single-use token protection)
       const secondConsume = AiHandoffService.consumeHandoff(envelope.handoffId);
       expect(secondConsume).toBeNull();
+      // Verify non-existent token returns null
+      const nonExistent = AiHandoffService.consumeHandoff("non-existent-token");
+      expect(nonExistent).toBeNull();
     });
   });
 });
-
-  it("should enforce envelope non-reusability after token consumption", async () => {
-    const consumed = await consumeHandoffEnvelope("non-existent-token");
-    expect(consumed).toBeNull();
-  });

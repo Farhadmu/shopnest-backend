@@ -186,4 +186,89 @@ describe("Product Comparison Workspace Backend Suite", () => {
     });
   });
 
+  describe("compareProducts AI controller", () => {
+    it("returns structured comparison with evidence-based verdict and trade-offs", async () => {
+      const mockProducts = [
+        {
+          _id: ID_1,
+          title: "Laptop Pro",
+          price: 75000,
+          ratingAvg: 4.8,
+          stock: 10,
+          category: "Laptops",
+          specifications: { RAM: "16 GB", CPU: "Intel Core i7" },
+          freeDelivery: true,
+          storeId: STORE_ID,
+        },
+        {
+          _id: ID_2,
+          title: "Laptop Air",
+          price: 65000,
+          ratingAvg: 4.6,
+          stock: 15,
+          category: "Laptops",
+          specifications: { RAM: "8 GB", CPU: "Intel Core i5" },
+          freeDelivery: false,
+          storeId: STORE_ID,
+        },
+      ];
+
+      storeMocks.find.mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          lean: vi.fn().mockResolvedValue([
+            { _id: STORE_ID, storeName: "Tech Hub", trustScore: 90 },
+          ]),
+        }),
+      });
+
+      productMocks.find.mockReturnValue({
+        lean: vi.fn().mockResolvedValue(mockProducts),
+      });
+
+      claudeMocks.completeJSONWithContext.mockResolvedValue({
+        data: {
+          summary: "Laptop Pro offers superior performance with 16 GB RAM at ৳75,000, while Laptop Air is ৳10,000 cheaper with standard specifications.",
+          verdict: "For intensive programming, Laptop Pro provides better longevity.",
+          winnerByValue: ID_2,
+          winnerByPriority: {
+            criterion: "programming",
+            productId: ID_1,
+            reason: "Double the RAM and stronger CPU configuration.",
+          },
+          table: [
+            { id: ID_1, prosText: "16 GB RAM, High rating", consText: "Higher price" },
+            { id: ID_2, prosText: "Affordable price", consText: "8 GB RAM" },
+          ],
+          tradeoffs: [
+            { productId: ID_1, advantages: ["Higher RAM"], disadvantages: ["Higher price"] },
+            { productId: ID_2, advantages: ["Lower price"], disadvantages: ["Lower RAM"] },
+          ],
+          keyDifferences: [
+            { aspect: "Memory", analysis: "16 GB vs 8 GB RAM" },
+          ],
+        },
+        isFallback: false,
+        provider: "gemini",
+      });
+
+      const req: any = {
+        body: {
+          productIds: [ID_1, ID_2],
+          priority: "programming",
+          userPrompt: "Which laptop is best for coding and docker?",
+        },
+      };
+      const res = createRes();
+
+      await compareProducts(req, res);
+
+      expect(res.json).toHaveBeenCalled();
+      const aiResponse = res.json.mock.calls[0][0];
+      expect(aiResponse).toHaveProperty("summary");
+      expect(aiResponse).toHaveProperty("verdict");
+      expect(aiResponse.winnerByValue).toBe(ID_2);
+      expect(aiResponse.winnerByPriority.criterion).toBe("programming");
+      expect(claudeMocks.completeJSONWithContext).toHaveBeenCalled();
+    });
+  });
 });

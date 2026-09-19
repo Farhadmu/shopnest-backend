@@ -443,3 +443,6 @@ export class AiToolService {
 
 // Optimization: Default lean projection fields for catalog search
 export const PRODUCT_RECOMMENDATION_FIELDS = ["title", "price", "category", "rating", "storeId"];
+
+// Target fulfillment SLA threshold (hours)
+export const TARGET_FULFILLMENT_SLA_HOURS = 24;

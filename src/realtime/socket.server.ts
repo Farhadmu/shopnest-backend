@@ -614,6 +614,15 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
           { userId: { $in: staleIds } },
           { $set: { isActive: false, availabilityStatus: "offline" } }
         );
+
+        for (const r of staleRiders) {
+          io.to("admin:operations").emit("admin:rider_status", {
+            riderId: r.userId,
+            isLive: false,
+            status: "offline",
+            lastSeenAt: r.lastActiveAt ? r.lastActiveAt.toISOString() : staleThreshold.toISOString(),
+          });
+        }
         logger.info(`[Socket.IO Heartbeat] Transitioned ${staleRiders.length} stale delivery partner(s) to offline.`);
       }
     } catch (err) {

@@ -7,6 +7,7 @@ import { DeliveryLocation } from "./delivery-location.model";
 import { DeliveryRating } from "./delivery-rating.model";
 import { DeliveryIncident } from "./delivery-incident.model";
 import { Order } from "../orders/order.model";
+import { Store } from "../sellers/store.model";
 import { ReverseDeliveryRequest } from "../customer/customer-features.model";
 import { createNotification } from "../notifications/notification.service";
 import { asyncHandler } from "../../utils/async-handler";

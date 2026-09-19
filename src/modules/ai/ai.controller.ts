@@ -1,3 +1,4 @@
+// AI Comparison Decision Engine: Multi-model evaluation with structured fallback matrix
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import { Product } from "../products/product.model";

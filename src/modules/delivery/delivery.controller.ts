@@ -182,9 +182,15 @@ export const setAvailability = asyncHandler(async (req: Request, res: Response) 
 
   const details = await DeliveryManDetails.findOneAndUpdate(
     { userId },
-    { $set: update, $setOnInsert: { userId, availabilityStatus: "offline" } },
+    { $set: update, $setOnInsert: { userId } },
     { upsert: true, new: true, runValidators: true, lean: true }
   );
+
+  emitAdminOperationsEvent("admin:rider_status", {
+    riderId: userId,
+    status: details?.availabilityStatus || "offline",
+    isActive: details?.isActive ?? false,
+  });
 
   sendSuccess(
     res,

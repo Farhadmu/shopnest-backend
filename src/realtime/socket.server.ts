@@ -579,6 +579,13 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
           }
         );
 
+        io.to("admin:operations").emit("admin:rider_status", {
+          riderId: user.id,
+          isLive: false,
+          status: "offline",
+          lastSeenAt: now.toISOString(),
+        });
+
         logger.info(`[Socket.IO] Rider ${user.id} stopped live GPS broadcast`);
         callback?.({ success: true });
       } catch (err: any) {

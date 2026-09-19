@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import { Product } from "../products/product.model";
 import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
@@ -133,27 +134,72 @@ export const reviewSummary = asyncHandler(async (req: Request, res: Response) =>
  *    - HTTP 200: Comparative analysis matrix
  */
 export const compareProducts = asyncHandler(async (req: Request, res: Response) => {
-  const { productIds } = req.body as { productIds: string[] };
+  const { productIds, userPrompt, priority, weights } = req.body as {
+    productIds: string[];
+    userPrompt?: string;
+    priority?: string;
+    weights?: Record<string, number>;
+  };
   const filter = await buildPublicProductFilter({ _id: { $in: productIds } });
-  const products = await Product.find(filter);
+  const products = await Product.find(filter).lean();
   if (products.length < 2) throw ApiError.badRequest("Could not find enough matching products to compare");
 
-  const result = await completeJSON(
+  // Fetch store details to enrich seller trust
+  const storeIds = Array.from(new Set(products.map((p) => p.storeId).filter(Boolean)));
+  const stores = await Store.find({
+    $or: [{ ownerId: { $in: storeIds } }, { _id: { $in: storeIds.filter((id) => mongoose.isValidObjectId(id)) } }],
+  })
+    .select("_id ownerId storeName trustScore rating")
+    .lean();
+
+  const storeMap = new Map<string, { storeName: string; trustScore: number }>();
+  for (const s of stores) {
+    const data = { storeName: s.storeName, trustScore: s.trustScore || 80 };
+    if (s.ownerId) storeMap.set(s.ownerId, data);
+    storeMap.set(String(s._id), data);
+  }
+
+  const promptProducts = products.map((p) => {
+    let specs: Record<string, string> = {};
+    if (p.specifications instanceof Map) {
+      specs = Object.fromEntries(p.specifications.entries());
+    } else if (p.specifications && typeof p.specifications === "object") {
+      specs = p.specifications as Record<string, string>;
+    }
+
+    const storeInfo = storeMap.get(p.storeId) || { storeName: "Official Seller", trustScore: 85 };
+
+    return {
+      id: String(p._id),
+      title: p.title,
+      price: p.discountPrice ?? p.price,
+      ratingAvg: p.ratingAvg || 4.5,
+      category: p.category,
+      stock: p.stock,
+      specifications: specs,
+      warrantyMonths: p.warrantyMonths,
+      freeDelivery: Boolean(p.freeDelivery),
+      storeName: storeInfo.storeName,
+      trustScore: storeInfo.trustScore,
+      sentiment: p.sentiment,
+    };
+  });
+
+  const prompt = buildComparePrompt(promptProducts, { userPrompt, priority, weights });
+
+  const result = await completeJSONWithContext(
     [
       {
         role: "user",
-        content: buildComparePrompt(
-          products.map((p) => ({
-            id: p.id,
-            title: p.title,
-            price: p.discountPrice ?? p.price,
-            ratingAvg: p.ratingAvg,
-            category: p.category,
-            stock: p.stock,
-          }))
-        ),
+        content: prompt,
       },
     ],
+    {
+      products: promptProducts,
+      userPrompt,
+      priority,
+      weights,
+    },
     { system: COMPARE_SYSTEM }
   );
 

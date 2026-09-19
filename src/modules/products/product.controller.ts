@@ -427,6 +427,21 @@ export const getCompareProducts = asyncHandler(async (req: Request, res: Respons
     },
   ]);
   const statsMap = new Map(reviewStats.map((r) => [String(r._id), r]));
+  const topReviews = await Review.find({
+    productId: { $in: foundProductIds },
+  })
+    .sort({ helpfulCount: -1, createdAt: -1 })
+    .limit(foundProductIds.length * 4)
+    .select("productId rating comment verifiedPurchase createdAt userName")
+    .lean();
+  const reviewsByProduct = new Map<string, typeof topReviews>();
+  for (const r of topReviews) {
+    const list = reviewsByProduct.get(r.productId) || [];
+    if (list.length < 3) {
+      list.push(r);
+      reviewsByProduct.set(r.productId, list);
+    }
+  }
   sendSuccess(res, products);
 });
 

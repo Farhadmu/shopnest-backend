@@ -298,6 +298,29 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
             updatedAt: now.toISOString(),
           });
 
+          // Also broadcast to all active delivery requests assigned to this courier
+          const activeAssignments = await DeliveryRequest.find({
+            assignedDeliveryManId: user.id,
+            status: { $in: ["assigned", "pickup_started", "picked_up", "in_transit", "out_for_delivery"] },
+          }).lean();
+
+          for (const activeReq of activeAssignments) {
+            const deliveryRoom = `delivery:${activeReq._id}`;
+            const liveLocationPayload = {
+              deliveryId: String(activeReq._id),
+              orderId: activeReq.orderId,
+              latitude,
+              longitude,
+              accuracy,
+              speed,
+              heading,
+              status: activeReq.status,
+              updatedAt: now.toISOString(),
+            };
+
+            io.to(deliveryRoom).emit("delivery:location_update", liveLocationPayload);
+          }
+
           // If bound to an active delivery mission (normal delivery)
           if (deliveryRequestId) {
             const activeReq = await DeliveryRequest.findOne({

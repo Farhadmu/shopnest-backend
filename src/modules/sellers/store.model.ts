@@ -61,6 +61,11 @@ const storeSchema = new Schema<IStore>(
       payoutAccountName: String,
       bankBranch: String,
     },
+    location: {
+      latitude: Number,
+      longitude: Number,
+      address: String,
+    },
     rejectionReason: { type: String },
     verifiedAt: { type: Date },
     verifiedBy: { type: String },

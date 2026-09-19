@@ -212,6 +212,21 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       }
     );
 
+    // 4b. Join Seller Operations Room (Strictly Seller Scoped)
+    socket.on(
+      "join:seller_operations",
+      (callback?: (res: { success: boolean; message?: string }) => void) => {
+        if (!user || (user.role !== "seller" && user.role !== "admin")) {
+          callback?.({ success: false, message: "Requires SELLER role" });
+          return;
+        }
+        const roomName = `seller:${user.id}:operations`;
+        socket.join(roomName);
+        logger.info(`[Socket.IO] Seller ${user.id} joined ${roomName}`);
+        callback?.({ success: true, message: `Joined ${roomName}` });
+      }
+    );
+
     // 5. Realtime Live GPS Broadcast Event from Delivery Man
     socket.on(
       "location:update",

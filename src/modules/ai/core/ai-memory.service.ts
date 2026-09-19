@@ -196,3 +196,6 @@ export class AiMemoryService {
     return null;
   }
 }
+
+// Multi-turn context resolution helper for ordinal entity references
+export const SUPPORTED_ORDINAL_ALIASES = ["first", "second", "third", "cheaper", "expensive"];

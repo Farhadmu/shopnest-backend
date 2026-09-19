@@ -560,6 +560,33 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       }
     );
 
+    // 6. Explicit Stop Live Location Broadcast from Delivery Man
+    socket.on("location:stop", async (callback?: (res: { success: boolean; message?: string }) => void) => {
+      try {
+        if (!user || (user.role !== "delivery_man" && user.role !== "admin")) {
+          callback?.({ success: false, message: "Unauthorized" });
+          return;
+        }
+        const now = new Date();
+        await DeliveryManDetails.findOneAndUpdate(
+          { userId: user.id },
+          {
+            $set: {
+              isActive: false,
+              availabilityStatus: "offline",
+              lastActiveAt: now,
+            },
+          }
+        );
+
+        logger.info(`[Socket.IO] Rider ${user.id} stopped live GPS broadcast`);
+        callback?.({ success: true });
+      } catch (err: any) {
+        logger.error("location:stop handler error", err);
+        callback?.({ success: false, message: err?.message || "Failed to stop location broadcast" });
+      }
+    });
+
     socket.on("disconnect", (reason) => {
       logger.info(`[Socket.IO] Client disconnected: socketId=${socket.id}, reason=${reason}`);
     });

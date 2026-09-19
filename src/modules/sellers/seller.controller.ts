@@ -238,6 +238,14 @@ export const updateMyStore = asyncHandler(async (req: Request, res: Response) =>
       };
     }
   }
+
+  if (req.body.location) {
+    store.location = {
+      latitude: req.body.location.latitude,
+      longitude: req.body.location.longitude,
+      address: req.body.location.address || store.businessInfo?.businessAddress,
+    };
+  }
   if (resubmit && (store.status === "rejected" || store.status === "pending")) {
     store.status = "pending";
     store.rejectionReason = undefined;

@@ -1,3 +1,4 @@
+import { Review } from "../reviews/review.model";
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import { Product, IProduct, IProductVariant, IProductHighlight } from "./product.model";
@@ -408,6 +409,24 @@ export const getCompareProducts = asyncHandler(async (req: Request, res: Respons
     if (s.ownerId) storeMap.set(s.ownerId, s);
     storeMap.set(String(s._id), s);
   }
+  const foundProductIds = products.map((p) => String(p._id));
+  const reviewStats = await Review.aggregate([
+    { $match: { productId: { $in: foundProductIds } } },
+    {
+      $group: {
+        _id: "$productId",
+        totalCount: { $sum: 1 },
+        avgRating: { $avg: "$rating" },
+        verifiedCount: { $sum: { $cond: ["$verifiedPurchase", 1, 0] } },
+        stars1: { $sum: { $cond: [{ $eq: ["$rating", 1] }, 1, 0] } },
+        stars2: { $sum: { $cond: [{ $eq: ["$rating", 2] }, 1, 0] } },
+        stars3: { $sum: { $cond: [{ $eq: ["$rating", 3] }, 1, 0] } },
+        stars4: { $sum: { $cond: [{ $eq: ["$rating", 4] }, 1, 0] } },
+        stars5: { $sum: { $cond: [{ $eq: ["$rating", 5] }, 1, 0] } },
+      },
+    },
+  ]);
+  const statsMap = new Map(reviewStats.map((r) => [String(r._id), r]));
   sendSuccess(res, products);
 });
 

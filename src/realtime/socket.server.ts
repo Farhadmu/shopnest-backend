@@ -259,11 +259,18 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
           const now = new Date();
 
           // Update rider's current operational location in DeliveryManDetails
+          const existingDetails = await DeliveryManDetails.findOne({ userId: user.id });
+          const newAvailability =
+            !existingDetails?.availabilityStatus || existingDetails.availabilityStatus === "offline"
+              ? "available"
+              : existingDetails.availabilityStatus;
+
           await DeliveryManDetails.findOneAndUpdate(
             { userId: user.id },
             {
               $set: {
                 isActive: true,
+                availabilityStatus: newAvailability,
                 lastActiveAt: now,
                 "currentLocation.latitude": latitude,
                 "currentLocation.longitude": longitude,

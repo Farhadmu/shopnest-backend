@@ -58,3 +58,6 @@ export class AiHandoffService {
     return envelope;
   }
 }
+
+// Handoff envelope TTL constraint (15 minutes in milliseconds)
+export const HANDOFF_ENVELOPE_TTL_MS = 15 * 60 * 1000;

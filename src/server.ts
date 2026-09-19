@@ -22,7 +22,7 @@ async function bootstrap() {
     logger.info(`ShopNest API & Socket.IO listening on port ${env.PORT} (${env.NODE_ENV})`);
     logger.info(`Base URL: http://localhost:${env.PORT}${env.API_PREFIX}`);
     if (!env.IS_AI_ENABLED) {
-      logger.warn("No AI provider key is configured - text AI endpoints will return a configuration error until ANTHROPIC_API_KEY or GEMINI_API_KEY is set");
+      logger.warn("No AI provider key is configured - text AI endpoints will return a configuration error until GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or MISTRAL_API_KEY is set");
     }
   });
 

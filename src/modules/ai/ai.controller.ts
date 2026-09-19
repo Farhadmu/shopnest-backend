@@ -37,9 +37,17 @@ export const aiHealth = asyncHandler(async (_req: Request, res: Response) => {
       configured: Boolean(env.GEMINI_API_KEY),
       model: env.GEMINI_MODEL || null,
     },
-    anthropic: {
-      configured: Boolean(env.ANTHROPIC_API_KEY),
-      model: env.ANTHROPIC_MODEL || null,
+    groq: {
+      configured: Boolean(env.GROQ_API_KEY),
+      model: env.GROQ_MODEL || null,
+    },
+    openrouter: {
+      configured: Boolean(env.OPENROUTER_API_KEY),
+      model: env.OPENROUTER_MODEL || null,
+    },
+    mistral: {
+      configured: Boolean(env.MISTRAL_API_KEY),
+      model: env.MISTRAL_MODEL || null,
     },
   });
 });

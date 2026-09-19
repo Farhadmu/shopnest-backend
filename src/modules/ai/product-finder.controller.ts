@@ -21,6 +21,7 @@ import {
   type ProductSource,
   type PriceObservation,
 } from "./product-finder.service";
+import { env } from "../../config/env";
 
 const VISION_MODELS = new Set([
   "claude-3-opus",
@@ -46,6 +47,7 @@ const VISION_MODELS = new Set([
 
 function isVisionModel(model: string): boolean {
   const lower = model.toLowerCase();
+  if (lower.includes("gemini") || lower.includes("vision")) return true;
   if (lower.includes("claude-2") || lower.includes("claude-instant")) return false;
   if (lower.includes("claude-3") || lower.includes("claude-sonnet-4") || lower.includes("claude-4") || lower.includes("claude-opus-4")) return true;
   return VISION_MODELS.has(lower);
@@ -59,18 +61,18 @@ function describeVisionFailure(error: unknown): { progressMessage: string; limit
         return {
           progressMessage: "AI vision provider is not configured on the server.",
           limitation:
-            "AI vision is not configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY on the server and restart it.",
+            "AI vision is not configured. Set GEMINI_API_KEY on the server and restart it.",
         };
       case "authentication":
         return {
           progressMessage: "AI vision provider rejected the server's API key.",
           limitation:
-            "AI vision authentication failed. The server's ANTHROPIC_API_KEY/GEMINI_API_KEY is missing, invalid, or expired — update it and restart the server.",
+            "AI vision authentication failed. The server's GEMINI_API_KEY is missing, invalid, or expired — update it and restart the server.",
         };
       case "model":
         return {
           progressMessage: `Vision model unavailable: ${error.message}`,
-          limitation: `Vision model unavailable (${error.message}). Verify ANTHROPIC_MODEL/GEMINI_MODEL is a vision-capable model.`,
+          limitation: `Vision model unavailable (${error.message}). Verify GEMINI_MODEL is a vision-capable model.`,
         };
       default:
         return {
@@ -198,7 +200,7 @@ Return ONLY valid JSON:
     requiresConfirmation: boolean;
   };
 
-  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+  const model = env.GEMINI_MODEL || "gemini-2.5-flash";
 
   try {
     if (!isVisionModel(model)) {

@@ -100,6 +100,22 @@ export const createOrUpdateDeliveryManProfile = asyncHandler(async (req: Request
     { upsert: true, new: true, runValidators: true, lean: true }
   );
 
+  // Sync profile photo to user account image if updated
+  if (personal && (personal as any).profilePhoto) {
+    const db = mongoose.connection.db;
+    if (db) {
+      await db.collection("user").updateOne(
+        {
+          $or: [
+            { id: userId },
+            ...(mongoose.isValidObjectId(userId) ? [{ _id: new mongoose.Types.ObjectId(userId) }] : []),
+          ],
+        },
+        { $set: { image: (personal as any).profilePhoto } }
+      );
+    }
+  }
+
   const updatedProfile = await DeliveryManProfile.findOne({ userId }).lean();
 
   sendSuccess(

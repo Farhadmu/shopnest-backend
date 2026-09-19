@@ -30,5 +30,6 @@ export const registerStoreSchema = z.object({
     .optional(),
 });
 
+// Partial update schema inherits canonical location boundaries
 export const updateStoreSchema = registerStoreSchema.partial();
 

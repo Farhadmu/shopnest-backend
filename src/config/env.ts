@@ -21,8 +21,24 @@ const envSchema = z.object({
 
   ANTHROPIC_API_KEY: z.string().optional().default(""),
   ANTHROPIC_MODEL: z.string().default("claude-sonnet-4-6"),
+
+  // Primary AI Provider — Gemini
   GEMINI_API_KEY: z.string().optional().default(""),
   GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
+
+  // Fallback 1 — Groq
+  GROQ_API_KEY: z.string().optional().default(""),
+  GROQ_MODEL: z.string().default("llama-3.3-70b-versatile"),
+
+  // Fallback 2 — OpenRouter
+  OPENROUTER_API_KEY: z.string().optional().default(""),
+  OPENROUTER_MODEL: z.string().default("meta-llama/llama-3.3-70b-instruct:free"),
+  OPENROUTER_API_URL: z.string().default("https://openrouter.ai/api/v1"),
+
+  // Fallback 3 — Mistral
+  MISTRAL_API_KEY: z.string().optional().default(""),
+  MISTRAL_MODEL: z.string().default("mistral-small-latest"),
+  MISTRAL_API_URL: z.string().default("https://api.mistral.ai/v1"),
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().default(120),
@@ -45,21 +61,29 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-const aiKeysPresent = parsed.data.ANTHROPIC_API_KEY.length > 0 || parsed.data.GEMINI_API_KEY.length > 0;
+const aiKeysPresent =
+  parsed.data.GEMINI_API_KEY.length > 0 ||
+  parsed.data.GROQ_API_KEY.length > 0 ||
+  parsed.data.OPENROUTER_API_KEY.length > 0 ||
+  parsed.data.MISTRAL_API_KEY.length > 0;
 
 if (!aiKeysPresent && parsed.data.NODE_ENV === "production") {
-  console.warn("⚠️  WARNING: No AI API key configured (ANTHROPIC_API_KEY or GEMINI_API_KEY).");
+  console.warn("⚠️  WARNING: No AI API key configured (GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or MISTRAL_API_KEY).");
   // eslint-disable-next-line no-console
   console.warn("⚠️  All AI features will use rule-based fallback responses.");
   // eslint-disable-next-line no-console
-  console.warn("⚠️  Set ANTHROPIC_API_KEY or GEMINI_API_KEY in production for live AI responses.");
+  console.warn("⚠️  Set at least one AI key in production for live AI responses.");
 }
 
 // Safe startup diagnostics for AI providers (no secrets exposed)
 // eslint-disable-next-line no-console
 console.log(`[AI] Gemini configured: ${parsed.data.GEMINI_API_KEY ? "YES" : "NO"} | model: ${parsed.data.GEMINI_MODEL || "not set"}`);
 // eslint-disable-next-line no-console
-console.log(`[AI] Anthropic configured: ${parsed.data.ANTHROPIC_API_KEY ? "YES" : "NO"} | model: ${parsed.data.ANTHROPIC_MODEL || "not set"}`);
+console.log(`[AI] Groq configured: ${parsed.data.GROQ_API_KEY ? "YES" : "NO"} | model: ${parsed.data.GROQ_MODEL || "not set"}`);
+// eslint-disable-next-line no-console
+console.log(`[AI] OpenRouter configured: ${parsed.data.OPENROUTER_API_KEY ? "YES" : "NO"} | model: ${parsed.data.OPENROUTER_MODEL || "not set"}`);
+// eslint-disable-next-line no-console
+console.log(`[AI] Mistral configured: ${parsed.data.MISTRAL_API_KEY ? "YES" : "NO"} | model: ${parsed.data.MISTRAL_MODEL || "not set"}`);
 
 export const env = {
   ...parsed.data,

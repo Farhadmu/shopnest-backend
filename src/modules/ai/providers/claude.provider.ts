@@ -187,101 +187,259 @@ function stripImages(messages: ChatMessage[]): ChatMessage[] {
   });
 }
 
-async function completeWithClaude(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
-  if (!env.ANTHROPIC_API_KEY) throw new Error("Anthropic is not configured");
+function convertMessagesForOpenAI(
+  messages: ChatMessage[],
+  system?: string
+): Array<{ role: string; content: string | Array<Record<string, unknown>> }> {
+  const result: Array<{ role: string; content: string | Array<Record<string, unknown>> }> = [];
+  if (system) {
+    result.push({ role: "system", content: system });
+  }
 
-  const model = env.ANTHROPIC_MODEL;
+  for (const message of messages) {
+    if (typeof message.content === "string") {
+      result.push({ role: message.role, content: message.content });
+      continue;
+    }
 
-  async function sendToClaude(msgs: ChatMessage[]): Promise<{ content: string; stripped: boolean }> {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const textParts = message.content
+      .filter((part) => part.type === "text")
+      .map((part) => (part as { text: string }).text)
+      .join("\n");
+    const imageParts = message.content.filter((part) => part.type === "image");
+
+    if (imageParts.length === 0) {
+      result.push({ role: message.role, content: textParts });
+    } else {
+      const parts: Array<Record<string, unknown>> = [];
+      if (textParts) {
+        parts.push({ type: "text", text: textParts });
+      }
+      for (const img of imageParts) {
+        if ("source" in img && img.source?.url) {
+          parts.push({
+            type: "image_url",
+            image_url: { url: img.source.url },
+          });
+        }
+      }
+      result.push({ role: message.role, content: parts });
+    }
+  }
+
+  return result;
+}
+
+async function completeWithOpenAICompatible(
+  providerName: "groq" | "openrouter" | "mistral",
+  endpoint: string,
+  apiKey: string,
+  model: string,
+  messages: ChatMessage[],
+  opts: CompleteOptions,
+  extraHeaders?: Record<string, string>
+): Promise<string> {
+  async function send(msgs: ChatMessage[]): Promise<string> {
+    const formattedMessages = convertMessagesForOpenAI(msgs, opts.system);
+
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${apiKey}`,
+        ...(extraHeaders ?? {}),
       },
       body: JSON.stringify({
         model,
-        max_tokens: opts.maxTokens ?? 1024,
+        messages: formattedMessages,
         temperature: opts.temperature ?? 0.4,
-        system: opts.system,
-        messages: msgs,
+        max_tokens: opts.maxTokens ?? 1024,
       }),
     });
 
     if (!response.ok) {
-      let errorMessage = `Anthropic request failed with ${response.status}`;
-      let errorType: string | undefined;
+      let errorMessage = `${providerName} request failed with ${response.status}`;
       let errBody = "";
       try {
         errBody = await response.text();
-        const parsed = JSON.parse(errBody) as { error?: { message?: string; type?: string } };
-        errorType = parsed.error?.type;
-        if (parsed.error?.message) errorMessage = parsed.error.message;
+        const parsed = JSON.parse(errBody) as { error?: { message?: string } | string; message?: string };
+        if (typeof parsed.error === "string") {
+          errorMessage = parsed.error;
+        } else if (parsed.error?.message) {
+          errorMessage = parsed.error.message;
+        } else if (parsed.message) {
+          errorMessage = parsed.message;
+        }
       } catch {
-        // Non-JSON error body — keep the status-based message.
+        // Non-JSON response body
       }
 
-      logger.error("Anthropic API error", { status: response.status, body: errBody });
+      logger.error(`${providerName} API error`, { status: response.status, body: errBody });
 
-      if (
-        errorType === "invalid_request_error" &&
-        errorMessage.toLowerCase().includes("image") &&
-        errorMessage.toLowerCase().includes("support") &&
-        hasImages(msgs)
-      ) {
+      // If provider rejects images, retry once with stripped text
+      const lower = errorMessage.toLowerCase();
+      if ((lower.includes("image") || lower.includes("vision") || lower.includes("multimodal")) && hasImages(msgs)) {
         const stripped = stripImages(msgs);
-        logger.warn("Claude API rejected image content; retrying with stripped text", { model, originalError: errorMessage });
-        const retry = await sendToClaude(stripped);
-        return { content: retry.content, stripped: true };
+        logger.warn(`${providerName} rejected image content; retrying with text only`, {
+          model,
+          originalError: errorMessage,
+        });
+        return send(stripped);
       }
 
-      throw new AiProviderError(classifyProviderError(response.status, errorMessage), errorMessage, response.status, "anthropic");
+      throw new AiProviderError(
+        classifyProviderError(response.status, errorMessage),
+        errorMessage,
+        response.status,
+        providerName
+      );
     }
 
-    const data = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
-    return { content: (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n").trim(), stripped: false };
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+
+    const content = data.choices?.[0]?.message?.content ?? "";
+    return content.trim();
   }
 
-  const result = await sendToClaude(messages);
-  return result.content;
+  return send(messages);
+}
+
+async function completeWithGroq(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
+  if (!env.GROQ_API_KEY) throw new Error("Groq is not configured");
+  const candidateModels = Array.from(new Set([env.GROQ_MODEL, "openai/gpt-oss-20b", "qwen/qwen3.8-27b"])).filter(Boolean);
+  let lastError: Error | null = null;
+
+  for (const model of candidateModels) {
+    try {
+      return await completeWithOpenAICompatible(
+        "groq",
+        "https://api.groq.com/openai/v1/chat/completions",
+        env.GROQ_API_KEY,
+        model,
+        messages,
+        opts
+      );
+    } catch (err: any) {
+      lastError = err;
+      if (err instanceof AiProviderError && err.code === "model") {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError || new Error("Groq completion failed");
+}
+
+async function completeWithOpenRouter(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
+  if (!env.OPENROUTER_API_KEY) throw new Error("OpenRouter is not configured");
+  const endpoint = `${env.OPENROUTER_API_URL.replace(/\/$/, "")}/chat/completions`;
+  const cleanModel = env.OPENROUTER_MODEL.replace(/:free$/, "");
+  const candidateModels = Array.from(new Set([env.OPENROUTER_MODEL, cleanModel])).filter(Boolean);
+  let lastError: Error | null = null;
+
+  for (const model of candidateModels) {
+    try {
+      return await completeWithOpenAICompatible(
+        "openrouter",
+        endpoint,
+        env.OPENROUTER_API_KEY,
+        model,
+        messages,
+        opts,
+        {
+          "HTTP-Referer": "https://shopnest.com",
+          "X-Title": "ShopNest",
+        }
+      );
+    } catch (err: any) {
+      lastError = err;
+      if (err instanceof AiProviderError && err.code === "model") {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError || new Error("OpenRouter completion failed");
+}
+
+async function completeWithMistral(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
+  if (!env.MISTRAL_API_KEY) throw new Error("Mistral is not configured");
+  const endpoint = `${env.MISTRAL_API_URL.replace(/\/$/, "")}/chat/completions`;
+  const candidateModels = Array.from(new Set([env.MISTRAL_MODEL, "open-mistral-7b", "mistral-tiny"])).filter(Boolean);
+  let lastError: Error | null = null;
+
+  for (const model of candidateModels) {
+    try {
+      return await completeWithOpenAICompatible(
+        "mistral",
+        endpoint,
+        env.MISTRAL_API_KEY,
+        model,
+        messages,
+        opts
+      );
+    } catch (err: any) {
+      lastError = err;
+      if (err instanceof AiProviderError && (err.code === "model" || err.status === 429)) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError || new Error("Mistral completion failed");
 }
 
 async function completeWithGemini(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
   if (!env.GEMINI_API_KEY) throw new Error("Gemini is not configured");
 
   const contents = await convertMessagesForGemini(messages);
-
   const systemInstruction = opts.system ? { parts: [{ text: opts.system }] } : undefined;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction,
-      contents,
-      generationConfig: { temperature: opts.temperature ?? 0.4, maxOutputTokens: opts.maxTokens ?? 1024 },
-    }),
-  });
+  const candidateModels = Array.from(new Set([env.GEMINI_MODEL, "gemini-3.6-flash", "gemini-2.5-flash"])).filter(Boolean);
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    let errorMessage = `Gemini request failed with ${response.status}`;
-    let errBody = "";
+  for (const model of candidateModels) {
     try {
-      errBody = await response.text();
-      const parsed = JSON.parse(errBody) as { error?: { message?: string } };
-      if (parsed.error?.message) {
-        errorMessage = parsed.error.message;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction,
+          contents,
+          generationConfig: { temperature: opts.temperature ?? 0.4, maxOutputTokens: Math.max(opts.maxTokens ?? 1024, 2048) },
+        }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = `Gemini request failed with ${response.status}`;
+        let errBody = "";
+        try {
+          errBody = await response.text();
+          const parsed = JSON.parse(errBody) as { error?: { message?: string } };
+          if (parsed.error?.message) {
+            errorMessage = parsed.error.message;
+          }
+        } catch {
+          // Non-JSON error body
+        }
+        logger.error("Gemini API error", { status: response.status, body: errBody });
+        throw new AiProviderError(classifyProviderError(response.status, errorMessage), errorMessage, response.status, "gemini");
       }
-    } catch {
-      // Non-JSON error body — keep the status-based message.
+
+      const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+      return (data.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? "").join("\n").trim();
+    } catch (err: any) {
+      lastError = err;
+      if (err instanceof AiProviderError && err.code === "model") {
+        continue;
+      }
+      throw err;
     }
-    logger.error("Gemini API error", { status: response.status, body: errBody });
-    throw new AiProviderError(classifyProviderError(response.status, errorMessage), errorMessage, response.status, "gemini");
   }
 
-  const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  return (data.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? "").join("\n").trim();
+  throw lastError || new Error("Gemini completion failed");
 }
 
 function generateLocalFallback(messages: ChatMessage[], system?: string, context?: AiContext, role: "customer" | "seller" | "admin" = "customer"): string {
@@ -457,11 +615,14 @@ function generateLocalFallback(messages: ChatMessage[], system?: string, context
 }
 
 /**
- * AI gateway with provider fallback. Gemini is preferred for development/testing;
- * Anthropic is the fallback. Runs the configured providers in order; when every
- * provider fails and `allowFallback` is false, throws a typed AiProviderError
- * carrying the real upstream failure instead of silently degrading to the
- * rule-based fallback.
+ * Multi-Tier AI Gateway with Fallback:
+ * 1. Gemini (Primary)
+ * 2. Groq (Fallback 1)
+ * 3. OpenRouter (Fallback 2)
+ * 4. Mistral (Fallback 3)
+ *
+ * Runs configured providers in order; when all providers fail and `allowFallback`
+ * is false, throws a typed AiProviderError. Otherwise falls back to local rule-based responses.
  */
 async function runProviders(
   messages: ChatMessage[],
@@ -469,8 +630,10 @@ async function runProviders(
   context?: AiContext
 ): Promise<CompleteResult> {
   const providers = [
-    { name: "gemini", fn: () => completeWithGemini(messages, opts), guard: () => env.GEMINI_API_KEY },
-    { name: "anthropic", fn: () => completeWithClaude(messages, opts), guard: () => env.ANTHROPIC_API_KEY },
+    { name: "gemini", fn: () => completeWithGemini(messages, opts), guard: () => Boolean(env.GEMINI_API_KEY) },
+    { name: "groq", fn: () => completeWithGroq(messages, opts), guard: () => Boolean(env.GROQ_API_KEY) },
+    { name: "openrouter", fn: () => completeWithOpenRouter(messages, opts), guard: () => Boolean(env.OPENROUTER_API_KEY) },
+    { name: "mistral", fn: () => completeWithMistral(messages, opts), guard: () => Boolean(env.MISTRAL_API_KEY) },
   ] as const;
 
   let configuredCount = 0;
@@ -484,7 +647,7 @@ async function runProviders(
       return { content, isFallback: false, provider: provider.name };
     } catch (error) {
       lastError = error;
-      logger.warn("AI provider failed; attempting next provider", {
+      logger.warn("AI provider failed; attempting next fallback provider", {
         provider: provider.name,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -495,7 +658,7 @@ async function runProviders(
     if (configuredCount === 0) {
       throw new AiProviderError(
         "not_configured",
-        "No AI provider is configured on the server. Set ANTHROPIC_API_KEY or GEMINI_API_KEY."
+        "No AI provider is configured on the server. Set GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or MISTRAL_API_KEY."
       );
     }
     if (lastError instanceof AiProviderError) throw lastError;

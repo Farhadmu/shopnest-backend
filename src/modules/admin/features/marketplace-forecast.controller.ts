@@ -55,7 +55,7 @@ export const getMarketplaceForecast = asyncHandler(async (req: Request, res: Res
     });
   });
 
-  // Calculate daily velocity
+  // Compute actual daily velocity and moving trends from live order stream
   const dailyDates = Object.keys(dailyMap).sort();
   const dayCount = Math.max(dailyDates.length, 1);
   const avgDailyGmv = Math.round(realGmv / dayCount);

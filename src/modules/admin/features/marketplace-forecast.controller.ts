@@ -143,7 +143,7 @@ export const getMarketplaceForecast = asyncHandler(async (req: Request, res: Res
     .sort((a, b) => b.currentRevenue - a.currentRevenue)
     .slice(0, 8);
 
-  // Regional division demand forecast with high-accuracy velocity classification
+  // Regional division demand forecast across Bangladesh logistics hubs
   const regionalForecasts = Object.entries(divisionMap)
     .map(([division, data]) => {
       const share = totalOrders > 0 ? (data.count / totalOrders) * 100 : 0;

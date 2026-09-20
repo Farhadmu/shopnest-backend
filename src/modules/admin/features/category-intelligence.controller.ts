@@ -268,6 +268,7 @@ export const getCategoryIntelligence = asyncHandler(async (req: Request, res: Re
   const activeCategoriesWithOrders = categories.filter((c) => c.orders > 0);
   const fastestGrowing = [...categories].sort((a, b) => b.growthRate - a.growthRate)[0]?.name || "N/A";
 
+  // Automated market gap analysis for priority vendor acquisition
   const highOpportunityCategories = categories
     .filter((c) => c.demandOpportunity === "HIGH_OPPORTUNITY" || c.orders >= 1)
     .slice(0, 4)

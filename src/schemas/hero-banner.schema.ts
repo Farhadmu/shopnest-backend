@@ -18,10 +18,12 @@ export const createHeroBannerSchema = z.object({
     .refine((value) => value.startsWith("/") || URL.canParse(value), "A valid URL or site path is required")
     .optional()
     .nullable(),
-  overlayColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Overlay color must be a hex color").optional().nullable(),
+  overlayColor: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/, "Overlay color must be a hex color").optional().nullable(),
   overlayOpacity: z.coerce.number().int().min(0).max(100).optional().nullable(),
-  lightTextColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Light text color must be a hex color").optional().nullable(),
-  darkTextColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Dark text color must be a hex color").optional().nullable(),
+  lightTextColor: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/, "Light text color must be a hex color").optional().nullable(),
+  darkTextColor: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/, "Dark text color must be a hex color").optional().nullable(),
+  lightButtonColor: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/, "Light button color must be a hex color").optional().nullable(),
+  darkButtonColor: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/, "Dark button color must be a hex color").optional().nullable(),
   bgClassName: z.string().max(200).optional().nullable(),
   textTheme: z.enum(["light", "dark"]).default("light"),
   isActive: z.boolean().default(true),

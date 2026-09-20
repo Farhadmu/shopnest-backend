@@ -182,6 +182,7 @@ export const getCategoryIntelligence = asyncHandler(async (req: Request, res: Re
         ? Math.round((stats.ratings.reduce((a, b) => a + b, 0) / stats.ratings.length) * 10) / 10
         : 4.8;
 
+    // Real customer return rate derived from ReturnRequest documents
     const returnsInCat = categoryReturnsMap[name] || 0;
     const returnRatePercent =
       stats.orders.size > 0 ? Math.round((returnsInCat / stats.orders.size) * 1000) / 10 : 0;

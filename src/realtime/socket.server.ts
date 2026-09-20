@@ -657,3 +657,11 @@ export function emitAdminOperationsEvent(event: string, data: Record<string, unk
     ioInstance.to("admin:operations").emit(event, data);
   }
 }
+
+/** Broadcast event to a specific seller operations room */
+export function emitSellerOperationsEvent(sellerId: string, event: string, data: Record<string, unknown>): void {
+  if (ioInstance) {
+    ioInstance.to(`seller:${sellerId}:operations`).emit(event, data);
+  }
+}
+

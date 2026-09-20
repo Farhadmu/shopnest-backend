@@ -14,7 +14,7 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess, sendPaginated } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { normalizeLean, normalizeLeanArray } from "../../utils/model-plugins";
-import { emitDeliveryEvent, emitAdminOperationsEvent } from "../../realtime/socket.server";
+import { emitDeliveryEvent, emitAdminOperationsEvent, emitSellerOperationsEvent } from "../../realtime/socket.server";
 import { getApproxCoordinatesFromAddress, calculateDistanceMeters, isValidCoordinate } from "../../utils/geo";
 import {
   acceptReverseDelivery as acceptReverseDeliveryService,
@@ -648,6 +648,16 @@ export const acceptDelivery = asyncHandler(async (req: Request, res: Response) =
     riderId: userId,
   });
 
+  emitSellerOperationsEvent(claimedRequest.sellerId, "seller:delivery_status", {
+    deliveryRequestId: claimedRequest.id,
+    orderId: claimedRequest.orderId,
+    status: "assigned",
+    riderId: userId,
+    riderName: details?.personal?.fullName || "Courier",
+    acceptedAt: new Date().toISOString(),
+  });
+
+
   // 7. Notify seller & customer
   createNotification({
     userId: claimedRequest.sellerId,
@@ -841,6 +851,15 @@ export const updateDeliveryStatus = asyncHandler(async (req: Request, res: Respo
     riderId: userId,
   });
 
+  emitSellerOperationsEvent(deliveryRequest.sellerId, "seller:delivery_status", {
+    deliveryRequestId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    status,
+    failureReason,
+    updatedAt: now.toISOString(),
+  });
+
+
   sendSuccess(res, deliveryRequest.toJSON(), status === "delivered" ? "Delivery completed successfully" : "Status updated");
 });
 
@@ -974,6 +993,20 @@ export const verifyDeliveryOtp = asyncHandler(async (req: Request, res: Response
     orderId: deliveryRequest.orderId,
     riderId: userId,
   });
+
+  emitSellerOperationsEvent(deliveryRequest.sellerId, "seller:delivery_status", {
+    deliveryRequestId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    status: "delivered",
+    deliveredAt: now.toISOString(),
+  });
+
+  emitSellerOperationsEvent(deliveryRequest.sellerId, "delivery:completed", {
+    deliveryRequestId: deliveryRequest.id,
+    orderId: deliveryRequest.orderId,
+    status: "delivered",
+  });
+
 
   // Send completion notifications
   createNotification({

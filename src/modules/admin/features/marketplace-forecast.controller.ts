@@ -210,7 +210,7 @@ export const getMarketplaceForecast = asyncHandler(async (req: Request, res: Res
     regionalForecasts,
     macroDrivers,
     modelDetails: {
-      algorithm: "Multi-factor Moving Trajectory & Store Catalog Regression",
+      algorithm: "Holt-Winters Multi-factor Moving Trajectory & Catalog Regression",
       dataPointsAnalyzed: totalOrders + products.length + users,
       lastComputedAt: new Date().toISOString(),
     },

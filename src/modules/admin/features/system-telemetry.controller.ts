@@ -44,6 +44,7 @@ export const getSystemTelemetry = asyncHandler(async (_req: Request, res: Respon
       ? `${hours}h ${minutes}m ${seconds}s`
       : `${minutes}m ${seconds}s`;
 
+  // V8 heap memory monitoring and diagnostic telemetry
   const mem = process.memoryUsage();
   const heapUsedMB = Math.round((mem.heapUsed / 1024 / 1024) * 10) / 10;
   const heapTotalMB = Math.round((mem.heapTotal / 1024 / 1024) * 10) / 10;

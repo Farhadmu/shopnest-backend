@@ -221,7 +221,20 @@ export const getSellerOrders = asyncHandler(async (req: Request, res: Response) 
     ],
   }).sort({ createdAt: -1 });
 
-  res.status(200).json(orders);
+  const orderIds = orders.map((o) => o.id);
+  const deliveryRequests = await DeliveryRequest.find({ orderId: { $in: orderIds } }).lean();
+  const deliveryReqMap = new Map(deliveryRequests.map((d) => [d.orderId, d]));
+
+  const ordersWithDelivery = orders.map((o) => {
+    const json = o.toJSON();
+    const dReq = deliveryReqMap.get(o.id);
+    return {
+      ...json,
+      deliveryRequest: dReq || null,
+    };
+  });
+
+  res.status(200).json(ordersWithDelivery);
 });
 
 export const updateOrderStatus = asyncHandler(async (req: Request, res: Response) => {
@@ -242,6 +255,15 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
   if (req.user!.role !== "admin" && !isSellerOnOrder) {
     throw ApiError.forbidden("You cannot update this order");
+  }
+
+  // Seller cannot manually advance courier stages (shipped, out_for_delivery, delivered)
+  if (req.user!.role !== "admin") {
+    if (["shipped", "out_for_delivery", "delivered"].includes(status)) {
+      throw ApiError.forbidden(
+        "Courier delivery stages (Dispatched, Out for Delivery, Delivered) are automatically updated by the delivery partner and cannot be manually set by the seller."
+      );
+    }
   }
 
   const previousStatus = order.status;

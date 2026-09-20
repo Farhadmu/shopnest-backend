@@ -162,8 +162,11 @@ export const getCategoryIntelligence = asyncHandler(async (req: Request, res: Re
     const productsInCategory = products.filter((p) => (p.category || "General") === name);
     const inStockCount = productsInCategory.filter((p) => (p.stock || 0) > 0).length;
     const outOfStockCount = productsInCategory.length - inStockCount;
+    // Compute real catalog inventory stock health
     const stockHealthPercent =
-      productsInCategory.length > 0 ? Math.round((inStockCount / productsInCategory.length) * 100) : 100;
+      productsInCategory.length > 0
+        ? Math.min(Math.max(Math.round((inStockCount / productsInCategory.length) * 100), 0), 100)
+        : 100;
 
     const avgOrderValue = stats.orders.size > 0 ? Math.round(stats.revenue / stats.orders.size) : 0;
     const revenueShare = totalRevenue > 0 ? Math.round((stats.revenue / totalRevenue) * 1000) / 10 : 0;

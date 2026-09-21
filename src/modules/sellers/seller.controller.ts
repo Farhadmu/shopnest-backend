@@ -38,6 +38,9 @@ export interface PublicStore {
   followersCount: number;
   status: string;
   createdAt: Date;
+  businessInfo?: {
+    categoryId?: unknown;
+  };
 }
 
 /**
@@ -59,8 +62,8 @@ function maskBusinessInfo<T extends { businessInfo?: Record<string, unknown> }>(
 
 /**
  * Helper: Strips a raw Store document (or lean object) down to its
- * public-safe shape. Excludes ownerId, businessInfo, rejectionReason,
- * verifiedAt, and verifiedBy.
+ * public-safe shape. Excludes ownerId, sensitive businessInfo, rejectionReason,
+ * verifiedAt, and verifiedBy, but preserves safe public category information.
  */
 function toPublicStore(
   store: {
@@ -76,6 +79,9 @@ function toPublicStore(
     followersCount: number;
     status: string;
     createdAt: Date;
+    businessInfo?: {
+      categoryId?: unknown;
+    };
   },
 ): PublicStore {
   return {
@@ -91,6 +97,9 @@ function toPublicStore(
     followersCount: store.followersCount,
     status: store.status,
     createdAt: store.createdAt,
+    businessInfo: store.businessInfo ? {
+      categoryId: store.businessInfo.categoryId,
+    } : undefined,
   };
 }
 
@@ -405,7 +414,29 @@ export const getSellerMetrics = asyncHandler(async (req: Request, res: Response)
  */
 export const listStores = asyncHandler(async (req: Request, res: Response) => {
   const filter = { status: "approved" as const };
-  const stores = await Store.find(filter).sort({ createdAt: -1 }).lean();
+  const stores = await Store.find(filter)
+    .populate("businessInfo.categoryId", "name slug image")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // If some stores have unpopulated categoryId (e.g. raw string), batch lookup
+  const rawCatIds: mongoose.Types.ObjectId[] = [];
+  stores.forEach((s) => {
+    const rawCat = s.businessInfo?.categoryId;
+    if (rawCat && typeof rawCat === "string") {
+      try {
+        const oid = new mongoose.Types.ObjectId(rawCat);
+        rawCatIds.push(oid);
+      } catch {}
+    }
+  });
+
+  let catMap = new Map<string, any>();
+  if (rawCatIds.length > 0) {
+    const catDocs = await Category.find({ _id: { $in: rawCatIds } }).select("name slug image").lean();
+    catMap = new Map(catDocs.map((c) => [String(c._id), { id: String(c._id), name: c.name, slug: c.slug, image: c.image }]));
+  }
+
   const storeIds = stores.flatMap((store) => [
     store._id.toString(),
     store.slug,
@@ -429,6 +460,14 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
 
   res.status(200).json(
     stores.map((store) => {
+      if (
+        store.businessInfo?.categoryId &&
+        typeof store.businessInfo.categoryId === "string" &&
+        catMap.has(store.businessInfo.categoryId)
+      ) {
+        store.businessInfo.categoryId = catMap.get(store.businessInfo.categoryId);
+      }
+
       const storeProducts =
         productsByStore.get(store._id.toString()) ||
         productsByStore.get(store.slug) ||

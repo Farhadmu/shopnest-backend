@@ -1,4 +1,5 @@
 import { Request } from "express";
+import { ApiError } from "./api-error";
 
 /**
  * Resolves the current user's id from the request, falling back to a
@@ -7,5 +8,8 @@ import { Request } from "express";
  * almost every controller.
  */
 export function getUserId(req: Request, fallback: string = "anonymous-guest"): string {
+  if (req.user?.banned) {
+    throw ApiError.forbidden("Your account has been suspended. Access to data is blocked.");
+  }
   return req.user?.id || fallback;
 }

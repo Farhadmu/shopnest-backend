@@ -780,12 +780,15 @@ function pickProductFields(
 
 export const createProduct = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
+  const isAdmin = req.user?.role === "admin";
   const store = await getSellerStore(userId);
   if (!store) {
     throw ApiError.badRequest("You must create a store before adding products. Please complete your store setup first.");
   }
+  if (!isAdmin && (store.status === "suspended" || store.status === "rejected")) {
+    throw ApiError.forbidden("Your store is currently suspended. Listing new products is restricted while under review.");
+  }
 
-  const isAdmin = req.user?.role === "admin";
   const data = pickProductFields(req.body, isAdmin);
 
   const product = await Product.create({
@@ -815,6 +818,9 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response) =>
     const store = await getSellerStore(userId);
     if (!store) {
       throw ApiError.badRequest("You must create a store before updating products. Please complete your store setup first.");
+    }
+    if (store.status === "suspended") {
+      throw ApiError.forbidden("Your store is currently suspended. Editing product listings is restricted while under review.");
     }
     storeUpdates = { storeId: store._id.toString(), sellerId: userId };
   }
@@ -860,6 +866,13 @@ export const deleteProduct = asyncHandler(async (req: Request, res: Response) =>
 
   if (!isAdmin && !isOwner) {
     throw ApiError.forbidden("You do not have permission to delete this product");
+  }
+
+  if (!isAdmin) {
+    const store = await getSellerStore(userId);
+    if (store && store.status === "suspended") {
+      throw ApiError.forbidden("Your store is currently suspended. Deleting product listings is restricted while under review.");
+    }
   }
 
   product.isDeleted = true;

@@ -313,6 +313,10 @@ export const createCoupon = asyncHandler(async (req: Request, res: Response) => 
   }
 
   if (role === "seller") {
+    const store = await Store.findOne({ ownerId: req.user!.id });
+    if (store && store.status === "suspended") {
+      throw ApiError.forbidden("Your store is currently suspended. Coupon creation is restricted while under review.");
+    }
     await assertCategoryLimitNotExceeded(req.body, req.user!.id);
     await assertCategoriesNotLockedToOtherSeller(req.body, req.user!.id);
   }

@@ -215,35 +215,63 @@ export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: R
  *    - HTTP 200: Updated store document with status message and populated category
  */
 export const updateSellerStatus = asyncHandler(async (req: Request, res: Response) => {
-  const { status, rejectionReason } = req.body as {
+  const { status, rejectionReason, suspensionReason } = req.body as {
     status: "pending" | "approved" | "rejected" | "suspended";
     rejectionReason?: string;
+    suspensionReason?: string;
   };
 
   const updateFields: Record<string, unknown> = { status };
-  if (rejectionReason !== undefined) updateFields.rejectionReason = rejectionReason;
-  if (status === "approved") {
+  const unsetFields: Record<string, unknown> = {};
+  const effectiveReason = suspensionReason || rejectionReason;
+
+  if (status === "suspended") {
+    if (effectiveReason !== undefined) {
+      updateFields.suspensionReason = effectiveReason;
+      updateFields.rejectionReason = effectiveReason;
+    }
+    // Clear past appeal so seller has a fresh appeal submission form
+    unsetFields.appeal = 1;
+  } else if (status === "rejected") {
+    if (effectiveReason !== undefined) {
+      updateFields.rejectionReason = effectiveReason;
+    }
+  } else if (status === "approved") {
     updateFields.verifiedAt = new Date();
     updateFields.verifiedBy = req.user!.id;
     updateFields.rejectionReason = "";
+    updateFields.suspensionReason = "";
+    unsetFields.appeal = 1;
   }
 
-  const store = await Store.findByIdAndUpdate(req.params.id, updateFields, { new: true }).populate(
+  const updateQuery: Record<string, unknown> = { $set: updateFields };
+  if (Object.keys(unsetFields).length > 0) {
+    updateQuery.$unset = unsetFields;
+  }
+
+  const store = await Store.findByIdAndUpdate(req.params.id, updateQuery, { new: true }).populate(
     "businessInfo.categoryId",
     "name slug image"
   );
   if (!store) throw ApiError.notFound("Store not found");
 
-  // Sync role to better-auth's user collection
+  // Sync role to better-auth's user collection (Modern pattern: keep 'seller' role on suspension so seller can access dashboard read-only/appeal)
   try {
     const db = mongoose.connection.db;
     if (db) {
-      const targetRole = status === "approved" ? "seller" : "customer";
       const userOid = safeObjectId(store.ownerId);
-      await db.collection("user").updateOne(
-        { $or: [{ id: store.ownerId }, ...(userOid ? [{ _id: userOid }] : [])] },
-        { $set: { role: targetRole } }
-      );
+      if (status === "approved") {
+        await db.collection("user").updateOne(
+          { $or: [{ id: store.ownerId }, ...(userOid ? [{ _id: userOid }] : [])] },
+          { $set: { role: "seller" } }
+        );
+      } else if (status === "rejected") {
+        await db.collection("user").updateOne(
+          { $or: [{ id: store.ownerId }, ...(userOid ? [{ _id: userOid }] : [])] },
+          { $set: { role: "customer" } }
+        );
+      }
+      // Note: On "suspended", role remains "seller" with store.status="suspended"
     }
   } catch (err) {
     logger.warn("Could not sync role to user collection on seller status update", err);
@@ -261,12 +289,12 @@ export const updateSellerStatus = asyncHandler(async (req: Request, res: Respons
       link = "/dashboard/seller";
     } else if (status === "rejected") {
       title = "⚠️ Seller Application Update";
-      message = `Your application for "${store.storeName}" was not approved.${rejectionReason ? ` Reason: ${rejectionReason}` : " You may review your information and resubmit."}`;
+      message = `Your application for "${store.storeName}" was not approved.${effectiveReason ? ` Reason: ${effectiveReason}` : " You may review your information and resubmit."}`;
       link = "/become-seller";
     } else if (status === "suspended") {
       title = "🚨 Store Suspended";
-      message = `Your store "${store.storeName}" has been suspended by an administrator. Please contact support.`;
-      link = "/support";
+      message = `Your store "${store.storeName}" has been suspended by an administrator.${effectiveReason ? ` Reason: ${effectiveReason}` : " Please review the compliance notice in your Seller Dashboard."}`;
+      link = "/become-seller";
     }
 
     await createNotification({
@@ -278,7 +306,7 @@ export const updateSellerStatus = asyncHandler(async (req: Request, res: Respons
       relatedId: store.id,
     });
   } catch (err) {
-    logger.warn("Could not create notification for seller status update", err);
+    logger.warn("Could not send store status notification to seller", err);
   }
 
   await logSecurityEvent("ADMIN_ACTION", `Seller store ${store.storeName} set to ${status}`, {

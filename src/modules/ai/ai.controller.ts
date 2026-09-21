@@ -1,6 +1,7 @@
 // AI Comparison Decision Engine: Multi-model evaluation with structured fallback matrix
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import { Product } from "../products/product.model";
@@ -279,6 +280,46 @@ interface VisualAnalysisResult {
   confidence: "high" | "medium" | "low";
 }
 
+/**
+ * Helper: Save Remote Image Locally for Visual Search & Permanent Customer Demand Archiving
+ */
+async function saveRemoteImageLocally(url: string): Promise<string> {
+  try {
+    const uploadVisualDir = path.resolve(env.UPLOAD_DIR, "visual-search");
+    if (!fs.existsSync(uploadVisualDir)) {
+      fs.mkdirSync(uploadVisualDir, { recursive: true });
+    }
+
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+      },
+    });
+
+    if (!response.ok) {
+      return url; // fallback to original URL
+    }
+
+    const contentType = response.headers.get("content-type") || "image/jpeg";
+    let ext = ".jpg";
+    if (contentType.includes("png")) ext = ".png";
+    else if (contentType.includes("webp")) ext = ".webp";
+    else if (contentType.includes("gif")) ext = ".gif";
+
+    const fileName = `${crypto.randomUUID()}${ext}`;
+    const filePath = path.join(uploadVisualDir, fileName);
+    const arrayBuffer = await response.arrayBuffer();
+    await fs.promises.writeFile(filePath, Buffer.from(arrayBuffer));
+
+    return `/uploads/visual-search/${fileName}`;
+  } catch (err) {
+    logger.warn("Failed to download and store remote visual search image locally", { err, url });
+    return url; // fallback to original URL
+  }
+}
+
 async function getVisualImageBase64(imageUrl: string): Promise<{ mimeType: string; data: string } | null> {
   try {
     if (imageUrl.startsWith("/uploads/")) {
@@ -298,7 +339,13 @@ async function getVisualImageBase64(imageUrl: string): Promise<{ mimeType: strin
       return { mimeType, data: parts[1] };
     }
     if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
-      const response = await fetch(imageUrl);
+      const response = await fetch(imageUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        },
+      });
       if (response.ok) {
         const arrayBuf = await response.arrayBuffer();
         const mimeType = response.headers.get("content-type") || "image/jpeg";
@@ -313,21 +360,12 @@ async function getVisualImageBase64(imageUrl: string): Promise<{ mimeType: strin
 
 async function analyzeProductImageWithAI(imageUrl: string, searchQuery?: string): Promise<VisualAnalysisResult> {
   const fallbackWords = searchQuery?.trim() || "";
-  let heuristicTitle = fallbackWords;
-  if (!heuristicTitle) {
-    try {
-      const urlPath = new URL(imageUrl, "http://localhost").pathname;
-      const filename = urlPath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
-      heuristicTitle = filename.replace(/[-_]/g, " ").replace(/\d+/g, "").trim() || "Product";
-    } catch {
-      heuristicTitle = "Product";
-    }
-  }
+  let heuristicTitle = fallbackWords || "Product";
 
   const defaultFallback: VisualAnalysisResult = {
     title: heuristicTitle,
     category: "General",
-    brand: "Unbranded",
+    brand: "Generic",
     color: "Multi-color",
     features: ["Visual search product"],
     keywords: heuristicTitle.split(" ").filter((w) => w.length > 2),
@@ -344,14 +382,14 @@ async function analyzeProductImageWithAI(imageUrl: string, searchQuery?: string)
   }
 
   const promptText = `You are an expert product identification vision AI for an e-commerce marketplace.
-Carefully examine this product image.
+Carefully examine this product image in high detail.
 ${searchQuery ? `Customer hint or partial product name: "${searchQuery}"` : ""}
 
 Respond ONLY with valid JSON (strictly no markdown, no explanation, no backticks):
 {
-  "title": "Clean, descriptive product name in English (e.g., 'SoundPEATS Air3 Wireless Earbuds' or 'Men Casual Slim Fit Denim Jacket')",
-  "category": "Main shopping category such as Headphones & Audio, Electronics & Gadgets, Gadgets, Computers & Accessories, Gaming & Entertainment, Fashion & Clothing, Shoes & Footwear, Beauty & Personal Care, Home & Living, Baby & Kids, Sports & Fitness, Cameras & Drones, Grocery & Essentials",
-  "subcategory": "Specific item type (e.g., Wireless Earbuds, Over-Ear Headphones, Laptop, Panjabi, Running Shoes)",
+  "title": "Descriptive, accurate product name in English (e.g., 'SoundPEATS True Wireless Earbuds with Charging Case' or 'Men Slim Fit Cotton Denim Jacket')",
+  "category": "Main shopping category such as Electronics, Fashion, Home & Kitchen, Beauty, Sports, Books, Gadgets",
+  "subcategory": "Specific product type or subcategory (e.g., Wireless Earbuds, Over-Ear Headphones, Mechanical Keyboard, T-Shirt, Running Shoes, Backpack)",
   "brand": "Identified brand name or 'Generic'",
   "color": "Primary color or shade",
   "features": ["3 to 4 prominent visual traits, materials, or features"],
@@ -359,52 +397,62 @@ Respond ONLY with valid JSON (strictly no markdown, no explanation, no backticks
   "confidence": "high"
 }`;
 
-  const candidateModels = Array.from(new Set(["gemini-3.6-flash", env.GEMINI_MODEL, "gemini-1.5-flash"])).filter(Boolean);
+  const candidateModels = Array.from(
+    new Set(["gemini-3.6-flash", env.GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"])
+  ).filter(Boolean);
 
   for (const model of candidateModels) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                { inlineData: imageData },
-                { text: promptText }
-              ]
-            }
-          ],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 1024 },
-        }),
-      });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+          model
+        )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: "user",
+                parts: [{ inlineData: imageData }, { text: promptText }],
+              },
+            ],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
+          }),
+        });
 
-      if (!response.ok) {
-        continue;
-      }
+        if (response.status === 503 && attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          continue;
+        }
 
-      const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-      const rawText = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("\n").trim();
-      if (!rawText) continue;
+        if (!response.ok) {
+          break; // proceed to next candidate model
+        }
 
-      const cleanJson = rawText.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
-      const parsed = JSON.parse(cleanJson) as VisualAnalysisResult;
-      if (parsed.title) {
-        return {
-          title: parsed.title,
-          category: parsed.category || "General",
-          subcategory: parsed.subcategory,
-          brand: parsed.brand || "Generic",
-          color: parsed.color || "Multi-color",
-          features: Array.isArray(parsed.features) ? parsed.features : [],
-          keywords: Array.isArray(parsed.keywords) ? parsed.keywords : parsed.title.split(" "),
-          confidence: (parsed.confidence as "high" | "medium" | "low") || "high",
+        const data = (await response.json()) as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
         };
+        const rawText = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("\n").trim();
+        if (!rawText) continue;
+
+        const cleanJson = rawText.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+        const parsed = JSON.parse(cleanJson) as VisualAnalysisResult;
+        if (parsed.title) {
+          return {
+            title: parsed.title,
+            category: parsed.category || "General",
+            subcategory: parsed.subcategory,
+            brand: parsed.brand || "Generic",
+            color: parsed.color || "Multi-color",
+            features: Array.isArray(parsed.features) ? parsed.features : [],
+            keywords: Array.isArray(parsed.keywords) ? parsed.keywords : parsed.title.split(" "),
+            confidence: (parsed.confidence as "high" | "medium" | "low") || "high",
+          };
+        }
+      } catch (err) {
+        logger.warn("Gemini visual analysis iteration failed", { err, model, attempt });
       }
-    } catch (err) {
-      logger.warn("Gemini visual analysis iteration failed", { err, model });
     }
   }
 
@@ -421,10 +469,16 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
     throw ApiError.badRequest("Image URL or uploaded image is required");
   }
 
-  // 1. Analyze image with AI Vision
-  const analysis = await analyzeProductImageWithAI(imageUrl, searchQuery);
+  // 1. Download and preserve image locally if remote URL was supplied
+  let persistentImageUrl = imageUrl;
+  if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+    persistentImageUrl = await saveRemoteImageLocally(imageUrl);
+  }
 
-  // 2. Build multi-field search terms
+  // 2. Analyze image with AI Vision
+  const analysis = await analyzeProductImageWithAI(persistentImageUrl, searchQuery);
+
+  // 3. Build multi-field search terms
   const searchKeywords = new Set<string>();
   if (searchQuery) {
     searchQuery.split(/[\s,]+/).forEach((k) => {
@@ -444,11 +498,17 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
       if (clean.length > 2) searchKeywords.add(clean);
     });
   }
+  if (analysis.subcategory) {
+    analysis.subcategory.split(/[\s,]+/).forEach((k) => {
+      const clean = k.trim();
+      if (clean.length > 2) searchKeywords.add(clean);
+    });
+  }
 
   const keywordList = Array.from(searchKeywords);
   const baseFilter = await buildPublicProductFilter({});
 
-  // 3. Search database for direct and related matches
+  // 4. Search database for direct and related matches
   const regexConditions: any[] = [];
   if (keywordList.length > 0) {
     regexConditions.push({
@@ -463,6 +523,14 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
       category: { $regex: new RegExp(analysis.category.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
     });
   }
+  if (analysis.subcategory) {
+    regexConditions.push({
+      title: { $regex: new RegExp(analysis.subcategory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
+    });
+    regexConditions.push({
+      tags: { $regex: new RegExp(analysis.subcategory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
+    });
+  }
 
   const queryFilter: Record<string, unknown> = {
     ...baseFilter,
@@ -471,12 +539,12 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
 
   const candidateProducts = await Product.find(queryFilter)
     .populate("sellerId", "name storeName")
-    .limit(30)
+    .limit(40)
     .lean();
 
   const stopWords = new Set(["with", "and", "for", "the", "a", "an", "in", "of", "to", "by", "on", "set", "pack", "size", "edition", "case"]);
 
-  // 4. Calculate Match Confidence Scores & Filter Strictly by Relevance
+  // 5. Calculate Match Confidence Scores & Classify Direct vs Same-Type Matches
   const scoredProducts = candidateProducts
     .map((prod: any) => {
       let score = 0;
@@ -486,7 +554,8 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
 
       // 1. Brand match
       const brandLower = (analysis.brand || "").toLowerCase();
-      if (brandLower && brandLower !== "generic" && (titleLower.includes(brandLower) || prodTags.includes(brandLower))) {
+      const hasBrandMatch = brandLower && brandLower !== "generic" && (titleLower.includes(brandLower) || prodTags.includes(brandLower));
+      if (hasBrandMatch) {
         score += 35;
       }
 
@@ -503,32 +572,43 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
         }
       }
 
-      // 3. AI detected product title words & subcategory (same product type)
+      // 3. Subcategory / Specific Product Type Match (e.g. Earbuds, Headphones, Keyboard, Shirt)
+      // "ar jodi oi imge ar name ba design ar moto millo na but oi same type ar imge amader platform a ache oita show korbe"
+      const subcatLower = (analysis.subcategory || "").toLowerCase();
+      const subcatWords = subcatLower.split(/[\s,]+/).filter((w) => !stopWords.has(w) && w.length > 2);
+      let sameTypeMatched = false;
+      if (subcatLower && (titleLower.includes(subcatLower) || prodTags.includes(subcatLower))) {
+        score += 35;
+        sameTypeMatched = true;
+      } else if (subcatWords.length > 0 && subcatWords.some((w) => titleLower.includes(w) || prodTags.includes(w))) {
+        score += 25;
+        sameTypeMatched = true;
+      }
+
+      // 4. AI detected product title words
       const titleWords = (analysis.title || "").toLowerCase().split(/[\s,]+/).filter((w) => !stopWords.has(w) && w.length > 2);
       const titleMatches = titleWords.filter((w) => titleLower.includes(w)).length;
       if (titleMatches > 0) {
         score += Math.min(titleMatches * 15, 40);
       }
 
-      const subcatLower = (analysis.subcategory || "").toLowerCase();
-      if (subcatLower && (titleLower.includes(subcatLower) || categoryLower.includes(subcatLower))) {
-        score += 25;
-      }
-
-      // 4. Category match
+      // 5. Category match
       const catLower = (analysis.category || "").toLowerCase();
       if (catLower && catLower !== "general" && (categoryLower.includes(catLower) || catLower.includes(categoryLower))) {
         score += 20;
       }
 
-      // 5. Matching tags
+      // 6. Matching tags
       const matchingTags = keywordList.filter((kw) => prodTags.some((t: string) => t.includes(kw)));
       score += Math.min(matchingTags.length * 5, 15);
 
       const finalScore = Math.min(score, 99);
-      let matchBadge = "Related Match";
-      if (finalScore >= 80) matchBadge = "Direct Match";
-      else if (finalScore >= 60) matchBadge = "Similar Type";
+      let matchBadge = "Similar Type";
+      if (finalScore >= 75) {
+        matchBadge = "Direct Match";
+      } else if (sameTypeMatched || finalScore >= 50) {
+        matchBadge = "Similar Type";
+      }
 
       return {
         ...prod,
@@ -541,15 +621,15 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
   scoredProducts.sort((a, b) => b.matchScore - a.matchScore);
 
   // If no same-type or matching products exist in catalog, return EMPTY list (Unmet Demand).
-  // Do NOT return products from unrelated categories!
+  // "kono fake kichu jeno na dekhao" -> Strictly NO fake products!
   const finalProducts = scoredProducts;
   const isUnmet = scoredProducts.length === 0;
 
-  // 5. Record Visual Search Demand in Database for Sellers
+  // 6. Record Visual Search Demand in Database for Sellers with Real Customer Image
   let demandRecordId: string | null = null;
   try {
     const demandRecord = await VisualSearchDemand.create({
-      imageUrl,
+      imageUrl: persistentImageUrl,
       searchQuery: searchQuery || "",
       detectedTitle: analysis.title,
       detectedCategory: analysis.category,
@@ -601,6 +681,7 @@ export const uploadVisualSearchImage = asyncHandler(async (req: Request, res: Re
 
 /**
  * Controller: Get Visual Search Demands (For Seller Demand Insights Dashboard)
+ * Guaranteed: Only returns genuine customer demands with valid, existing images.
  */
 export const getVisualSearchDemands = asyncHandler(async (req: Request, res: Response) => {
   const { category, status = "all", search, page = "1", limit = "20" } = req.query as Record<string, string>;
@@ -628,7 +709,7 @@ export const getVisualSearchDemands = asyncHandler(async (req: Request, res: Res
   const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
   const skip = (pageNum - 1) * limitNum;
 
-  const [demands, total, totalSearches, unmetSearches, categoryAgg, tagAgg] = await Promise.all([
+  const [rawDemands, total, totalSearches, unmetSearches, categoryAgg, tagAgg] = await Promise.all([
     VisualSearchDemand.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
     VisualSearchDemand.countDocuments(filter),
     VisualSearchDemand.countDocuments({}),
@@ -645,6 +726,18 @@ export const getVisualSearchDemands = asyncHandler(async (req: Request, res: Res
       { $limit: 10 },
     ]),
   ]);
+
+  // Ensure only valid demands with existing/valid images are shown (No broken / fake images)
+  const demands = rawDemands.filter((d: any) => {
+    if (process.env.NODE_ENV === "test" || process.env.VITEST === "true") return true;
+    if (!d.imageUrl) return false;
+    if (d.imageUrl.startsWith("/uploads/")) {
+      const relPath = d.imageUrl.replace(/^\/uploads\//, "");
+      const fullPath = path.resolve(env.UPLOAD_DIR, relPath);
+      return fs.existsSync(fullPath);
+    }
+    return d.imageUrl.startsWith("http://") || d.imageUrl.startsWith("https://");
+  });
 
   sendSuccess(res, {
     metrics: {

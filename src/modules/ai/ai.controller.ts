@@ -1,7 +1,10 @@
 // AI Comparison Decision Engine: Multi-model evaluation with structured fallback matrix
+import fs from "node:fs";
+import path from "node:path";
 import { Request, Response } from "express";
 import mongoose from "mongoose";
 import { Product } from "../products/product.model";
+import { VisualSearchDemand } from "./visual-search-demand.model";
 import { Store } from "../sellers/store.model";
 import { Order } from "../orders/order.model";
 import { Coupon } from "../coupons/coupon.model";
@@ -265,47 +268,419 @@ export const pricingSuggestion = asyncHandler(async (req: Request, res: Response
  * 3. Response Sent:
  *    - HTTP 200: { detectedQuery, count, products }
  */
-export const visualSearch = asyncHandler(async (req: Request, res: Response) => {
-  const { imageUrl, searchQuery } = req.body as { imageUrl: string; searchQuery?: string };
+interface VisualAnalysisResult {
+  title: string;
+  category: string;
+  subcategory?: string;
+  brand?: string;
+  color?: string;
+  features: string[];
+  keywords: string[];
+  confidence: "high" | "medium" | "low";
+}
 
-  let description: string;
-  if (searchQuery && searchQuery.trim()) {
-    description = searchQuery.trim();
-  } else {
+async function getVisualImageBase64(imageUrl: string): Promise<{ mimeType: string; data: string } | null> {
+  try {
+    if (imageUrl.startsWith("/uploads/")) {
+      const relPath = imageUrl.replace(/^\/uploads\//, "");
+      const fullPath = path.resolve(env.UPLOAD_DIR, relPath);
+      if (fs.existsSync(fullPath)) {
+        const buffer = await fs.promises.readFile(fullPath);
+        const ext = path.extname(fullPath).toLowerCase();
+        const mimeType = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+        return { mimeType, data: buffer.toString("base64") };
+      }
+    }
+    if (imageUrl.startsWith("data:image/")) {
+      const parts = imageUrl.split(",");
+      const mimeMatch = parts[0].match(/:(.*?);/);
+      const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+      return { mimeType, data: parts[1] };
+    }
+    if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+      const response = await fetch(imageUrl);
+      if (response.ok) {
+        const arrayBuf = await response.arrayBuffer();
+        const mimeType = response.headers.get("content-type") || "image/jpeg";
+        return { mimeType, data: Buffer.from(arrayBuf).toString("base64") };
+      }
+    }
+  } catch (err) {
+    logger.warn("Failed to convert image to base64 for visual search", { err, imageUrl });
+  }
+  return null;
+}
+
+async function analyzeProductImageWithAI(imageUrl: string, searchQuery?: string): Promise<VisualAnalysisResult> {
+  const fallbackWords = searchQuery?.trim() || "";
+  let heuristicTitle = fallbackWords;
+  if (!heuristicTitle) {
     try {
-      const urlPath = new URL(imageUrl).pathname;
+      const urlPath = new URL(imageUrl, "http://localhost").pathname;
       const filename = urlPath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
-      description = filename.replace(/[-_]/g, " ").replace(/\d+/g, "").trim() || "popular products";
+      heuristicTitle = filename.replace(/[-_]/g, " ").replace(/\d+/g, "").trim() || "Product";
     } catch {
-      description = "popular products";
+      heuristicTitle = "Product";
     }
   }
 
-  const searchTerms = description.replace(/[^a-zA-Z\s]/g, " ").trim();
-  const baseFilter = await buildPublicProductFilter({});
-  const filter: Record<string, unknown> = {
-    ...baseFilter,
-    $or: [
-      { $text: { $search: searchTerms } },
-      { tags: { $in: searchTerms.split(" ").filter((w) => w.length > 2).map((w) => new RegExp(w, "i")) } },
-      { category: { $regex: searchTerms.split(" ")[0] || "", $options: "i" } },
-    ],
+  const defaultFallback: VisualAnalysisResult = {
+    title: heuristicTitle,
+    category: "General",
+    brand: "Unbranded",
+    color: "Multi-color",
+    features: ["Visual search product"],
+    keywords: heuristicTitle.split(" ").filter((w) => w.length > 2),
+    confidence: "low",
   };
 
-  const products = await Product.find(filter).limit(10);
+  if (!env.GEMINI_API_KEY) {
+    return defaultFallback;
+  }
 
-  const fallbackFilter = await buildPublicProductFilter({});
-  const fallbackProducts =
-    products.length === 0
-      ? await Product.find(fallbackFilter).sort({ sold: -1 }).limit(10)
-      : products;
+  const imageData = await getVisualImageBase64(imageUrl);
+  if (!imageData) {
+    return defaultFallback;
+  }
+
+  const promptText = `You are an expert product identification vision AI for an e-commerce marketplace.
+Carefully examine this product image.
+${searchQuery ? `Customer hint or partial product name: "${searchQuery}"` : ""}
+
+Respond ONLY with valid JSON (strictly no markdown, no explanation, no backticks):
+{
+  "title": "Clean, descriptive product name in English (e.g., 'SoundPEATS Air3 Wireless Earbuds' or 'Men Casual Slim Fit Denim Jacket')",
+  "category": "Main shopping category such as Headphones & Audio, Electronics & Gadgets, Gadgets, Computers & Accessories, Gaming & Entertainment, Fashion & Clothing, Shoes & Footwear, Beauty & Personal Care, Home & Living, Baby & Kids, Sports & Fitness, Cameras & Drones, Grocery & Essentials",
+  "subcategory": "Specific item type (e.g., Wireless Earbuds, Over-Ear Headphones, Laptop, Panjabi, Running Shoes)",
+  "brand": "Identified brand name or 'Generic'",
+  "color": "Primary color or shade",
+  "features": ["3 to 4 prominent visual traits, materials, or features"],
+  "keywords": ["5 to 8 specific search keywords in English for product inventory lookup"],
+  "confidence": "high"
+}`;
+
+  const candidateModels = Array.from(new Set(["gemini-3.6-flash", env.GEMINI_MODEL, "gemini-1.5-flash"])).filter(Boolean);
+
+  for (const model of candidateModels) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { inlineData: imageData },
+                { text: promptText }
+              ]
+            }
+          ],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 1024 },
+        }),
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+      const rawText = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("\n").trim();
+      if (!rawText) continue;
+
+      const cleanJson = rawText.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+      const parsed = JSON.parse(cleanJson) as VisualAnalysisResult;
+      if (parsed.title) {
+        return {
+          title: parsed.title,
+          category: parsed.category || "General",
+          subcategory: parsed.subcategory,
+          brand: parsed.brand || "Generic",
+          color: parsed.color || "Multi-color",
+          features: Array.isArray(parsed.features) ? parsed.features : [],
+          keywords: Array.isArray(parsed.keywords) ? parsed.keywords : parsed.title.split(" "),
+          confidence: (parsed.confidence as "high" | "medium" | "low") || "high",
+        };
+      }
+    } catch (err) {
+      logger.warn("Gemini visual analysis iteration failed", { err, model });
+    }
+  }
+
+  return defaultFallback;
+}
+
+/**
+ * Controller: AI Visual Search (Image & optional name to products)
+ */
+export const visualSearch = asyncHandler(async (req: Request, res: Response) => {
+  const { imageUrl, searchQuery } = req.body as { imageUrl: string; searchQuery?: string };
+
+  if (!imageUrl) {
+    throw ApiError.badRequest("Image URL or uploaded image is required");
+  }
+
+  // 1. Analyze image with AI Vision
+  const analysis = await analyzeProductImageWithAI(imageUrl, searchQuery);
+
+  // 2. Build multi-field search terms
+  const searchKeywords = new Set<string>();
+  if (searchQuery) {
+    searchQuery.split(/[\s,]+/).forEach((k) => {
+      const clean = k.trim();
+      if (clean.length > 2) searchKeywords.add(clean);
+    });
+  }
+  if (analysis.keywords && Array.isArray(analysis.keywords)) {
+    analysis.keywords.forEach((k) => {
+      const clean = k.trim();
+      if (clean.length > 2) searchKeywords.add(clean);
+    });
+  }
+  if (analysis.title) {
+    analysis.title.split(/[\s,]+/).forEach((k) => {
+      const clean = k.trim();
+      if (clean.length > 2) searchKeywords.add(clean);
+    });
+  }
+
+  const keywordList = Array.from(searchKeywords);
+  const baseFilter = await buildPublicProductFilter({});
+
+  // 3. Search database for direct and related matches
+  const regexConditions: any[] = [];
+  if (keywordList.length > 0) {
+    regexConditions.push({
+      title: { $in: keywordList.map((kw) => new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")) },
+    });
+    regexConditions.push({
+      tags: { $in: keywordList.map((kw) => new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")) },
+    });
+  }
+  if (analysis.category && analysis.category !== "General") {
+    regexConditions.push({
+      category: { $regex: new RegExp(analysis.category.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
+    });
+  }
+
+  const queryFilter: Record<string, unknown> = {
+    ...baseFilter,
+    ...(regexConditions.length > 0 ? { $or: regexConditions } : {}),
+  };
+
+  const candidateProducts = await Product.find(queryFilter)
+    .populate("sellerId", "name storeName")
+    .limit(30)
+    .lean();
+
+  const stopWords = new Set(["with", "and", "for", "the", "a", "an", "in", "of", "to", "by", "on", "set", "pack", "size", "edition", "case"]);
+
+  // 4. Calculate Match Confidence Scores & Filter Strictly by Relevance
+  const scoredProducts = candidateProducts
+    .map((prod: any) => {
+      let score = 0;
+      const titleLower = (prod.title || "").toLowerCase();
+      const categoryLower = (prod.category || "").toLowerCase();
+      const prodTags = (prod.tags || []).map((t: string) => t.toLowerCase());
+
+      // 1. Brand match
+      const brandLower = (analysis.brand || "").toLowerCase();
+      if (brandLower && brandLower !== "generic" && (titleLower.includes(brandLower) || prodTags.includes(brandLower))) {
+        score += 35;
+      }
+
+      // 2. Customer search query match (if customer provided text)
+      if (searchQuery) {
+        if (titleLower.includes(searchQuery.toLowerCase())) {
+          score += 35;
+        } else {
+          const queryWords = searchQuery.toLowerCase().split(/[\s,]+/).filter((w) => !stopWords.has(w) && w.length > 2);
+          const matchCount = queryWords.filter((w) => titleLower.includes(w)).length;
+          if (matchCount > 0) {
+            score += Math.min(matchCount * 15, 30);
+          }
+        }
+      }
+
+      // 3. AI detected product title words & subcategory (same product type)
+      const titleWords = (analysis.title || "").toLowerCase().split(/[\s,]+/).filter((w) => !stopWords.has(w) && w.length > 2);
+      const titleMatches = titleWords.filter((w) => titleLower.includes(w)).length;
+      if (titleMatches > 0) {
+        score += Math.min(titleMatches * 15, 40);
+      }
+
+      const subcatLower = (analysis.subcategory || "").toLowerCase();
+      if (subcatLower && (titleLower.includes(subcatLower) || categoryLower.includes(subcatLower))) {
+        score += 25;
+      }
+
+      // 4. Category match
+      const catLower = (analysis.category || "").toLowerCase();
+      if (catLower && catLower !== "general" && (categoryLower.includes(catLower) || catLower.includes(categoryLower))) {
+        score += 20;
+      }
+
+      // 5. Matching tags
+      const matchingTags = keywordList.filter((kw) => prodTags.some((t: string) => t.includes(kw)));
+      score += Math.min(matchingTags.length * 5, 15);
+
+      const finalScore = Math.min(score, 99);
+      let matchBadge = "Related Match";
+      if (finalScore >= 80) matchBadge = "Direct Match";
+      else if (finalScore >= 60) matchBadge = "Similar Type";
+
+      return {
+        ...prod,
+        matchScore: finalScore,
+        matchBadge,
+      };
+    })
+    .filter((prod) => prod.matchScore >= 45); // Strictly exclude irrelevant products
+
+  scoredProducts.sort((a, b) => b.matchScore - a.matchScore);
+
+  // If no same-type or matching products exist in catalog, return EMPTY list (Unmet Demand).
+  // Do NOT return products from unrelated categories!
+  const finalProducts = scoredProducts;
+  const isUnmet = scoredProducts.length === 0;
+
+  // 5. Record Visual Search Demand in Database for Sellers
+  let demandRecordId: string | null = null;
+  try {
+    const demandRecord = await VisualSearchDemand.create({
+      imageUrl,
+      searchQuery: searchQuery || "",
+      detectedTitle: analysis.title,
+      detectedCategory: analysis.category,
+      detectedBrand: analysis.brand,
+      detectedColor: analysis.color,
+      detectedFeatures: analysis.features,
+      detectedTags: analysis.keywords,
+      confidence: analysis.confidence,
+      matchedCount: isUnmet ? 0 : scoredProducts.length,
+      matchedProductIds: isUnmet ? [] : scoredProducts.slice(0, 5).map((p: any) => p._id),
+      isUnmetDemand: isUnmet,
+      userId: req.user?.id || null,
+      userRole: req.user ? "customer" : "guest",
+      status: "new",
+    });
+    demandRecordId = demandRecord._id.toString();
+  } catch (demandErr) {
+    logger.warn("Failed to record visual search demand", { demandErr });
+  }
 
   sendSuccess(res, {
-    detectedQuery: description,
-    count: fallbackProducts.length,
-    products: fallbackProducts,
-    usedFallback: products.length === 0,
+    detected: {
+      title: analysis.title,
+      category: analysis.category,
+      subcategory: analysis.subcategory,
+      brand: analysis.brand,
+      color: analysis.color,
+      features: analysis.features,
+      keywords: analysis.keywords,
+      confidence: analysis.confidence,
+    },
+    count: finalProducts.length,
+    products: finalProducts,
+    isUnmetDemand: isUnmet,
+    demandId: demandRecordId,
   });
+});
+
+/**
+ * Controller: Upload Visual Search Image
+ */
+export const uploadVisualSearchImage = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.file) {
+    throw ApiError.badRequest("Please select or capture a product image to upload");
+  }
+  const imageUrl = `/uploads/visual-search/${req.file.filename}`;
+  sendSuccess(res, { imageUrl }, "Image uploaded successfully");
+});
+
+/**
+ * Controller: Get Visual Search Demands (For Seller Demand Insights Dashboard)
+ */
+export const getVisualSearchDemands = asyncHandler(async (req: Request, res: Response) => {
+  const { category, status = "all", search, page = "1", limit = "20" } = req.query as Record<string, string>;
+
+  const filter: Record<string, unknown> = {};
+  if (category && category !== "all") {
+    filter.detectedCategory = { $regex: new RegExp(`^${category}$`, "i") };
+  }
+  if (status === "unmet") {
+    filter.isUnmetDemand = true;
+  } else if (status === "matched") {
+    filter.isUnmetDemand = false;
+  }
+  if (search) {
+    const rgx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    filter.$or = [
+      { detectedTitle: rgx },
+      { searchQuery: rgx },
+      { detectedTags: rgx },
+      { detectedCategory: rgx },
+    ];
+  }
+
+  const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+  const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+  const skip = (pageNum - 1) * limitNum;
+
+  const [demands, total, totalSearches, unmetSearches, categoryAgg, tagAgg] = await Promise.all([
+    VisualSearchDemand.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+    VisualSearchDemand.countDocuments(filter),
+    VisualSearchDemand.countDocuments({}),
+    VisualSearchDemand.countDocuments({ isUnmetDemand: true }),
+    VisualSearchDemand.aggregate([
+      { $group: { _id: "$detectedCategory", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 6 },
+    ]),
+    VisualSearchDemand.aggregate([
+      { $unwind: "$detectedTags" },
+      { $group: { _id: "$detectedTags", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+    ]),
+  ]);
+
+  sendSuccess(res, {
+    metrics: {
+      totalSearches,
+      unmetSearches,
+      matchedSearches: Math.max(totalSearches - unmetSearches, 0),
+      topCategories: categoryAgg.map((c) => ({ category: c._id || "Other", count: c.count })),
+      trendingKeywords: tagAgg.map((t) => ({ tag: t._id, count: t.count })),
+    },
+    demands,
+    pagination: {
+      page: pageNum,
+      limit: limitNum,
+      total,
+      pages: Math.ceil(total / limitNum) || 1,
+    },
+  });
+});
+
+/**
+ * Controller: Update Demand Status
+ */
+export const updateVisualSearchDemandStatus = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  if (!["new", "reviewed", "stocked"].includes(status)) {
+    throw ApiError.badRequest("Invalid status. Must be 'new', 'reviewed', or 'stocked'");
+  }
+
+  const demand = await VisualSearchDemand.findByIdAndUpdate(id, { status }, { new: true });
+  if (!demand) {
+    throw ApiError.notFound("Demand record not found");
+  }
+
+  sendSuccess(res, demand, "Demand status updated successfully");
 });
 
 const memoryStore = new Map<string, { preferences: string[]; activeTheme: string; lastSearchIntent: string }>();

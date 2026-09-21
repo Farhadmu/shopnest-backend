@@ -133,3 +133,27 @@ export const complaintEvidenceUpload = multer({
     callback(null, true);
   },
 });
+
+const visualSearchUploadDirectory = path.resolve(env.UPLOAD_DIR, "visual-search");
+fs.mkdirSync(visualSearchUploadDirectory, { recursive: true });
+
+const visualSearchStorage = multer.diskStorage({
+  destination: (_request, _file, callback) => callback(null, visualSearchUploadDirectory),
+  filename: (_request, file, callback) => {
+    const extension = path.extname(file.originalname).toLowerCase() || ".jpg";
+    callback(null, `${crypto.randomUUID()}${extension}`);
+  },
+});
+
+export const visualSearchImageUpload = multer({
+  storage: visualSearchStorage,
+  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
+  fileFilter: (_request, file, callback) => {
+    if (!file.mimetype.startsWith("image/")) {
+      callback(ApiError.badRequest("Only image files can be uploaded for visual search"));
+      return;
+    }
+    callback(null, true);
+  },
+});
+

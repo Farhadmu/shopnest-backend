@@ -87,19 +87,44 @@ async function buildProductFilter(
       baseFilter.storeId = null;
     }
   }
+  const rawProductIds = query.ids || query.products;
+  if (rawProductIds) {
+    const ids = rawProductIds
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => mongoose.isValidObjectId(s));
+    if (ids.length > 0) {
+      baseFilter._id = { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) };
+    }
+  }
   if (query.sellerId) {
     baseFilter.sellerId = query.sellerId;
   }
   if (query.seller) {
-    const store = await resolveStore(query.seller);
-    if (store) {
-      baseFilter.$or = [
-        { sellerId: store.ownerId },
-        { storeId: store._id.toString() },
-      ];
-    } else {
-      baseFilter.sellerId = null;
+    const rawIds = query.seller.split(",").map((s) => s.trim()).filter(Boolean);
+    const validRawObjectIds = rawIds.filter((s) => mongoose.isValidObjectId(s));
+    const storeQueryOr: Record<string, unknown>[] = [
+      { slug: { $in: rawIds.map((s) => s.toLowerCase()) } },
+      { ownerId: { $in: rawIds } },
+      { storeName: { $in: rawIds.map((s) => new RegExp(`^${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i")) } },
+    ];
+    if (validRawObjectIds.length > 0) {
+      storeQueryOr.push({ _id: { $in: validRawObjectIds } });
     }
+
+    const stores = await Store.find({ $or: storeQueryOr }).lean();
+
+    const ownerIds = stores.map((s) => s.ownerId).filter(Boolean);
+    const storeIds = stores.map((s) => s._id.toString());
+    const slugs = stores.map((s) => s.slug).filter(Boolean);
+
+    const allSellerKeys = Array.from(new Set([...ownerIds, ...rawIds]));
+    const allStoreKeys = Array.from(new Set([...storeIds, ...validRawObjectIds, ...slugs, ...rawIds]));
+
+    baseFilter.$or = [
+      { sellerId: { $in: allSellerKeys } },
+      { storeId: { $in: allStoreKeys } },
+    ];
   }
   if (query.rating) {
     baseFilter.ratingAvg = { $gte: Number(query.rating) };
@@ -150,9 +175,13 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
 
   const filter = await buildProductFilter(query);
 
-  if (query.category) {
-    const names = await resolveCategoryNames(query.category);
-    filter.category = { $in: names };
+  const rawCategory = query.category || query.categories;
+  if (rawCategory) {
+    const names = await resolveCategoryNames(rawCategory);
+    if (names.length > 0) {
+      const regexPatterns = names.map((name) => new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"));
+      filter.category = { $in: regexPatterns };
+    }
   }
 
   let sortOption: Record<string, 1 | -1> = { createdAt: -1 };
@@ -275,6 +304,8 @@ export const getSellerOptions = asyncHandler(async (_req: Request, res: Response
 
   const options = stores.map((store) => ({
     id: store._id.toString(),
+    slug: store.slug,
+    ownerId: store.ownerId,
     name: store.storeName,
     rating: store.rating,
     productCount: byStoreId.get(store._id.toString()) ?? 0,

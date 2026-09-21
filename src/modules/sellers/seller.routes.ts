@@ -1,4 +1,4 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import * as ctrl from "./seller.controller";
 import * as followCtrl from "./store-follow.controller";
 import sellerIntelligenceRoutes from "./seller-intelligence.routes";
@@ -22,9 +22,9 @@ router.post("/stores/:storeId/follow", ...requireAuth, followCtrl.followStore);
 router.delete("/stores/:storeId/follow", ...requireAuth, followCtrl.unfollowStore);
 router.get("/", ctrl.listStores);
 
-router.post("/register", ...requireAuth, requireRole("customer", "seller"), validate({ body: registerStoreSchema }), ctrl.registerStore);
-router.get("/me", ...requireAuth, requireRole("customer", "seller", "admin"), ctrl.getMyStore);
-router.patch("/me", ...requireAuth, requireRole("customer", "seller", "admin"), validate({ body: updateStoreSchema }), ctrl.updateMyStore);
+router.post("/register", ...requireAuth, validate({ body: registerStoreSchema }), ctrl.registerStore);
+router.get("/me", ...requireAuth, ctrl.getMyStore);
+router.patch("/me", ...requireAuth, validate({ body: updateStoreSchema }), ctrl.updateMyStore);
 router.get("/metrics", ...requireAuth, requireRole("seller", "admin"), ctrl.getSellerMetrics);
 
 export default router;

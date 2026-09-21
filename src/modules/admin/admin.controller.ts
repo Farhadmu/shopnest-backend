@@ -113,6 +113,22 @@ export const listSellersForModeration = asyncHandler(async (req: Request, res: R
       .map((id) => safeObjectId(id))
       .filter((id): id is mongoose.Types.ObjectId => id !== null);
 
+    // Collect any categoryIds that were not populated (e.g. if saved as raw string ID)
+    const rawCatIds: mongoose.Types.ObjectId[] = [];
+    stores.forEach((s) => {
+      const rawCat = s.businessInfo?.categoryId;
+      if (rawCat && typeof rawCat === "string") {
+        const oid = safeObjectId(rawCat);
+        if (oid) rawCatIds.push(oid);
+      }
+    });
+
+    let catMap = new Map<string, any>();
+    if (rawCatIds.length > 0) {
+      const catDocs = await Category.find({ _id: { $in: rawCatIds } }).select("name slug image").lean();
+      catMap = new Map(catDocs.map((c) => [String(c._id), { id: String(c._id), name: c.name, slug: c.slug, image: c.image }]));
+    }
+
     const userDocs = await db
       .collection("user")
       .find({
@@ -125,6 +141,13 @@ export const listSellersForModeration = asyncHandler(async (req: Request, res: R
     const enriched = stores.map((store) => {
       const u = userMap.get(store.ownerId);
       const json = store.toJSON();
+      if (
+        json.businessInfo?.categoryId &&
+        typeof json.businessInfo.categoryId === "string" &&
+        catMap.has(json.businessInfo.categoryId)
+      ) {
+        json.businessInfo.categoryId = catMap.get(json.businessInfo.categoryId);
+      }
       return {
         ...json,
         ownerEmail: u?.email || null,
@@ -155,6 +178,14 @@ export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: R
   const store = await Store.findById(req.params.id).populate("businessInfo.categoryId", "name slug image");
   if (!store) throw ApiError.notFound("Store not found");
 
+  const storeJson = store.toJSON();
+  if (storeJson.businessInfo?.categoryId && typeof storeJson.businessInfo.categoryId === "string") {
+    const catDoc = await Category.findById(storeJson.businessInfo.categoryId).select("name slug image").lean();
+    if (catDoc) {
+      storeJson.businessInfo.categoryId = { id: String(catDoc._id), name: catDoc.name, slug: catDoc.slug, image: catDoc.image };
+    }
+  }
+
   const db = mongoose.connection.db;
   let ownerUser: any = null;
   if (db) {
@@ -184,7 +215,7 @@ export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: R
   const totalOrders = orderAgg[0]?.totalOrders?.length ?? 0;
 
   const result = {
-    ...store.toJSON(),
+    ...storeJson,
     ownerEmail: ownerUser?.email || null,
     ownerFullName: ownerUser?.name || store.businessInfo?.ownerName || null,
     ownerImage: ownerUser?.image || null,

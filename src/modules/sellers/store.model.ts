@@ -30,6 +30,14 @@ export interface IStore {
     address?: string;
   };
   rejectionReason?: string;
+  suspensionReason?: string;
+  appeal?: {
+    reason: string;
+    email?: string;
+    submittedAt?: Date;
+    status: "pending" | "reviewed" | "rejected";
+    adminResponse?: string;
+  };
   verifiedAt?: Date;
   verifiedBy?: string;
   status: StoreStatus;
@@ -67,6 +75,14 @@ const storeSchema = new Schema<IStore>(
       address: String,
     },
     rejectionReason: { type: String },
+    suspensionReason: { type: String },
+    appeal: {
+      reason: { type: String },
+      email: { type: String },
+      submittedAt: { type: Date, default: Date.now },
+      status: { type: String, enum: ["pending", "reviewed", "rejected"], default: "pending" },
+      adminResponse: { type: String },
+    },
     verifiedAt: { type: Date },
     verifiedBy: { type: String },
     status: { type: String, enum: ["pending", "approved", "rejected", "suspended"], default: "pending" },

@@ -794,6 +794,9 @@ export const getPublicHomepageCoupons = asyncHandler(async (_req: Request, res: 
     return {
       ...coupon.toJSON(),
       storeName: store?.storeName,
+      storeSlug: store?.slug,
+      storeId: store?._id?.toString(),
+      sellerId: coupon.createdBy,
       logo: store?.logo,
     };
   });
@@ -829,13 +832,28 @@ export const getSellerLockedCategories = asyncHandler(async (req: Request, res: 
 /** GET /coupons/public/store/:sellerId - approved, currently-live coupons for one seller's public store page. */
 export const getPublicStoreCoupons = asyncHandler(async (req: Request, res: Response) => {
   const now = new Date();
+  const sellerId = req.params.sellerId;
+
+  const ownerIds = [sellerId];
+  if (sellerId && sellerId.length === 24) {
+    const store = await Store.findById(sellerId).select("ownerId slug").lean();
+    if (store && store.ownerId) {
+      ownerIds.push(String(store.ownerId));
+    }
+  }
+  const storeBySlug = await Store.findOne({ slug: sellerId.toLowerCase() }).select("ownerId _id").lean();
+  if (storeBySlug) {
+    if (storeBySlug.ownerId) ownerIds.push(String(storeBySlug.ownerId));
+    ownerIds.push(storeBySlug._id.toString());
+  }
+
   const coupons = await Coupon.find({
-    placement: "store",
-    createdBy: req.params.sellerId,
+    placement: { $in: ["store", "homepage"] },
+    createdBy: { $in: ownerIds },
     approvalStatus: "approved",
     isActive: true,
     $or: [{ expiresAt: { $exists: false } }, { expiresAt: { $gt: now } }],
-  }).sort({ createdAt: -1 });
+  }).sort({ value: -1, createdAt: -1 });
 
   res.status(200).json(coupons);
 });

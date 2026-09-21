@@ -52,6 +52,7 @@ export interface AuthUser {
   name: string;
   role: "customer" | "seller" | "admin" | "delivery_man";
   image?: string | null;
+  banned?: boolean;
 }
 
 declare global {
@@ -137,12 +138,19 @@ export async function resolveUserFromSessionToken(token: string): Promise<AuthUs
     }
   }
 
+  const isBanned = Boolean(
+    userDoc.banned === true ||
+    userDoc.status === "suspended" ||
+    userDoc.status === "blocked"
+  );
+
   return {
     id: String(userDoc.id ?? userDoc._id),
     email: userDoc.email,
     name: userDoc.name ?? userDoc.email,
     role,
     image: userDoc.image ?? null,
+    banned: isBanned,
   };
 }
 
@@ -274,11 +282,14 @@ export const attachUserIfPresent = asyncHandler(async (req: Request, _res: Respo
   }
 });
 
-/** Rejects the request with 401 unless a valid session was attached. */
+/** Rejects the request with 401 unless a valid session was attached, or 403 if suspended. */
 export const requireAuth = [
   attachUserIfPresent,
   (req: Request, _res: Response, next: NextFunction) => {
     if (!req.user) return next(ApiError.unauthorized("Authentication required"));
+    if (req.user.banned) {
+      return next(ApiError.forbidden("Your account has been suspended. Please contact support."));
+    }
     next();
   },
 ];

@@ -1,8 +1,11 @@
+import mongoose from "mongoose";
 import { Request, Response } from "express";
 import { usersCollection, safeObjectId } from "./user.model";
 import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
+import { DeviceSession } from "../security/security-intelligence.model";
+import { Store } from "../sellers/store.model";
 
 /**
  * Controller: Get Logged-In User Profile
@@ -113,19 +116,57 @@ export const adminListUsers = asyncHandler(async (req: Request, res: Response) =
  */
 export const adminSetUserStatus = asyncHandler(async (req: Request, res: Response) => {
   const { banned } = req.body as { banned: boolean };
-  const objectId = safeObjectId(req.params.id);
+  const targetId = req.params.id;
+  const objectId = safeObjectId(targetId);
 
   const result = await usersCollection().findOneAndUpdate(
-    { $or: [{ id: req.params.id }, ...(objectId ? [{ _id: objectId }] : [])] },
+    { $or: [{ id: targetId }, ...(objectId ? [{ _id: objectId }] : [])] },
     { $set: { banned } },
     { returnDocument: "after" }
   );
 
   if (!result) throw ApiError.notFound("User not found");
 
+  const resolvedId = String(result.id ?? result._id);
+
+  if (banned) {
+    // 1. Invalidate all active Better-Auth sessions for this user so they are immediately logged out
+    const db = mongoose.connection.db;
+    if (db) {
+      const userObjectId = safeObjectId(resolvedId);
+      await db.collection("session").deleteMany({
+        $or: [
+          { userId: resolvedId },
+          { user_id: resolvedId },
+          { userId: targetId },
+          ...(userObjectId ? [{ userId: userObjectId }] : []),
+          ...(objectId ? [{ userId: objectId }] : []),
+        ],
+      });
+    }
+
+    // 2. Revoke all device intelligence sessions
+    await DeviceSession.updateMany(
+      { $or: [{ userId: resolvedId }, { userId: targetId }] },
+      { $set: { status: "revoked" } }
+    );
+
+    // 3. If user owns a store, suspend their store
+    await Store.updateMany(
+      { $or: [{ ownerId: resolvedId }, { ownerId: targetId }] },
+      { $set: { status: "suspended" } }
+    );
+  } else {
+    // If user is unbanned/activated, restore their suspended store to approved if applicable
+    await Store.updateMany(
+      { $or: [{ ownerId: resolvedId }, { ownerId: targetId }], status: "suspended" },
+      { $set: { status: "approved" } }
+    );
+  }
+
   sendSuccess(
     res,
-    { id: String(result.id ?? result._id), banned },
-    banned ? "User suspended" : "User activated"
+    { id: resolvedId, banned },
+    banned ? "User suspended, all sessions revoked, and store deactivated" : "User activated"
   );
 });

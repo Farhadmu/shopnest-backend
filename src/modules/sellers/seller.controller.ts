@@ -11,6 +11,14 @@ import { createNotification } from "../notifications/notification.service";
 import { logger } from "../../utils/logger";
 import mongoose from "mongoose";
 
+function safeObjectId(id: string) {
+  try {
+    return new mongoose.Types.ObjectId(id);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Helper: Converts any string into a URL-friendly slug.
  */
@@ -413,10 +421,82 @@ export const getSellerMetrics = asyncHandler(async (req: Request, res: Response)
  *    - HTTP 200: Raw array of Store documents (Store[])
  */
 export const listStores = asyncHandler(async (req: Request, res: Response) => {
-  const filter = { status: "approved" as const };
+  const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string, 10) || 12));
+  const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+  const category = typeof req.query.category === "string" ? req.query.category.trim() : "";
+  const sort = typeof req.query.sort === "string" ? req.query.sort.trim() : "highest_rated";
+
+  const filter: Record<string, unknown> = { status: "approved" as const };
+
+  if (search) {
+    const regex = new RegExp(search, "i");
+    filter.$or = [{ storeName: regex }, { slug: regex }, { description: regex }];
+  }
+
+  if (category && category !== "all" && category !== "All Stores" && category !== "All") {
+    let catOids: mongoose.Types.ObjectId[] = [];
+    const directOid = safeObjectId(category);
+    if (directOid) {
+      catOids.push(directOid);
+    } else {
+      const cleanName = category.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const cleanSlug = category.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+      const catDocs = await Category.find({
+        $or: [
+          { slug: cleanSlug },
+          { slug: category.toLowerCase() },
+          { name: new RegExp(`^${cleanName}$`, "i") },
+          { name: new RegExp(cleanName, "i") },
+        ],
+      }).select("_id");
+      catOids = catDocs.map((c) => c._id);
+    }
+
+    if (catOids.length > 0) {
+      filter["businessInfo.categoryId"] = { $in: catOids };
+    }
+  }
+
+  let sortQuery: Record<string, 1 | -1> = { createdAt: -1 };
+  if (sort === "Highest Rated" || sort === "highest_rated") {
+    sortQuery = { rating: -1, ratingCount: -1, createdAt: -1 };
+  } else if (sort === "Most Popular" || sort === "most_popular") {
+    sortQuery = { followersCount: -1, ratingCount: -1, createdAt: -1 };
+  } else if (sort === "Newest" || sort === "newest") {
+    sortQuery = { createdAt: -1 };
+  }
+
+  const [total, totalApprovedStores, allCategories, globalStoreCategoryAgg] = await Promise.all([
+    Store.countDocuments(filter),
+    Store.countDocuments({ status: "approved" }),
+    Category.find().select("_id name slug").lean(),
+    Store.aggregate([
+      { $match: { status: "approved" } },
+      { $group: { _id: "$businessInfo.categoryId", count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const catNameById = new Map<string, string>();
+  for (const cat of allCategories) {
+    catNameById.set(cat._id.toString(), cat.name);
+  }
+
+  const categoryCounts: Record<string, number> = {};
+  for (const row of globalStoreCategoryAgg) {
+    if (row._id) {
+      const catName = catNameById.get(String(row._id)) || "General";
+      categoryCounts[catName] = (categoryCounts[catName] || 0) + row.count;
+    }
+  }
+
+  const totalPages = Math.ceil(total / limit) || 1;
+
   const stores = await Store.find(filter)
     .populate("businessInfo.categoryId", "name slug image")
-    .sort({ createdAt: -1 })
+    .sort(sortQuery)
+    .skip((page - 1) * limit)
+    .limit(limit)
     .lean();
 
   // If some stores have unpopulated categoryId (e.g. raw string), batch lookup
@@ -451,6 +531,26 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
     .sort({ sold: -1, createdAt: -1 })
     .lean();
 
+  const productIds = products.map((p) => p._id.toString());
+  const productToStoreMap = new Map<string, string>();
+  for (const product of products) {
+    productToStoreMap.set(product._id.toString(), product.storeId);
+  }
+
+  const reviews = productIds.length
+    ? await Review.find({ productId: { $in: productIds } }).select("productId rating").lean()
+    : [];
+
+  const storeReviewsMap = new Map<string, number[]>();
+  for (const review of reviews) {
+    const storeId = productToStoreMap.get(review.productId);
+    if (storeId) {
+      const list = storeReviewsMap.get(storeId) || [];
+      list.push(review.rating);
+      storeReviewsMap.set(storeId, list);
+    }
+  }
+
   const productsByStore = new Map<string, typeof products>();
   for (const product of products) {
     const storeProducts = productsByStore.get(product.storeId) || [];
@@ -458,30 +558,70 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
     productsByStore.set(product.storeId, storeProducts);
   }
 
-  res.status(200).json(
-    stores.map((store) => {
-      if (
-        store.businessInfo?.categoryId &&
-        typeof store.businessInfo.categoryId === "string" &&
-        catMap.has(store.businessInfo.categoryId)
-      ) {
-        store.businessInfo.categoryId = catMap.get(store.businessInfo.categoryId);
+  const resultStores = stores.map((store) => {
+    if (
+      store.businessInfo?.categoryId &&
+      typeof store.businessInfo.categoryId === "string" &&
+      catMap.has(store.businessInfo.categoryId)
+    ) {
+      store.businessInfo.categoryId = catMap.get(store.businessInfo.categoryId);
+    }
+
+    const storeProducts =
+      productsByStore.get(store._id.toString()) ||
+      productsByStore.get(store.slug) ||
+      productsByStore.get(store.ownerId) ||
+      [];
+    const salesNumber = storeProducts.reduce((total, product) => total + (product.sold || 0), 0);
+
+    const storeIdKey = store._id.toString();
+    const storeSlugKey = store.slug;
+    const storeOwnerKey = store.ownerId;
+
+    const ratingsList = [
+      ...(storeReviewsMap.get(storeIdKey) || []),
+      ...(storeSlugKey ? (storeReviewsMap.get(storeSlugKey) || []) : []),
+      ...(storeOwnerKey ? (storeReviewsMap.get(storeOwnerKey) || []) : []),
+    ];
+
+    let storeRating = 0;
+    let storeRatingCount = ratingsList.length;
+
+    if (ratingsList.length > 0) {
+      storeRating = Number((ratingsList.reduce((sum, r) => sum + r, 0) / ratingsList.length).toFixed(1));
+    } else {
+      const ratedProducts = storeProducts.filter((p) => p.ratingAvg && p.ratingAvg > 0);
+      if (ratedProducts.length > 0) {
+        const totalRating = ratedProducts.reduce((sum, p) => sum + (p.ratingAvg || 0), 0);
+        storeRating = Number((totalRating / ratedProducts.length).toFixed(1));
+        storeRatingCount = ratedProducts.reduce((sum, p) => sum + (p.ratingCount || 1), 0);
+      } else {
+        storeRating = 0;
+        storeRatingCount = 0;
       }
+    }
 
-      const storeProducts =
-        productsByStore.get(store._id.toString()) ||
-        productsByStore.get(store.slug) ||
-        productsByStore.get(store.ownerId) ||
-        [];
-      const salesNumber = storeProducts.reduce((total, product) => total + (product.sold || 0), 0);
+    return {
+      ...toPublicStore(store),
+      rating: storeRating,
+      ratingCount: storeRatingCount,
+      products: storeProducts.slice(0, 3),
+      salesNumber,
+    };
+  });
 
-      return {
-        ...toPublicStore(store),
-        products: storeProducts.slice(0, 3),
-        salesNumber,
-      };
-    }),
-  );
+  // Return server-side pagination metadata with global category counts
+  res.status(200).json({
+    data: resultStores,
+    items: resultStores,
+    total,
+    totalApprovedStores,
+    categoryCounts,
+    page,
+    limit,
+    totalPages,
+    hasMore: page < totalPages,
+  });
 });
 
 /**

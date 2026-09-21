@@ -5,6 +5,7 @@ import { sendSuccess } from "../../../../utils/api-response";
 import { ApiError } from "../../../../utils/api-error";
 import { SecurityLog } from "../../../security/securityLog.model";
 import { AuditLog } from "../../../security/auditLog.model";
+import { DeviceSession } from "../../../security/security-intelligence.model";
 
 // 5. ACCOUNT SECURITY
 export const getAccountSecurity = asyncHandler(async (req: Request, res: Response) => {
@@ -72,12 +73,29 @@ export const updateUserStatus = asyncHandler(async (req: Request, res: Response)
   const db = mongoose.connection.db;
   if (!db) throw ApiError.internal("Database connection unavailable");
 
+  const isBanned = status === "suspended" || status === "blocked";
   const result = await db.collection("user").updateOne(
     { _id: new mongoose.Types.ObjectId(id) },
-    { $set: { status, updatedAt: new Date() } }
+    { $set: { status, banned: isBanned, updatedAt: new Date() } }
   );
 
   if (result.matchedCount === 0) throw ApiError.notFound("User not found");
+
+  if (isBanned) {
+    // Invalidate Better-Auth sessions
+    await db.collection("session").deleteMany({
+      $or: [
+        { userId: id },
+        { user_id: id },
+        { userId: new mongoose.Types.ObjectId(id) },
+      ],
+    });
+    // Revoke device sessions
+    await DeviceSession.updateMany(
+      { userId: id },
+      { $set: { status: "revoked" } }
+    );
+  }
 
   await AuditLog.create({
     actorId: req.user?.id || "system",

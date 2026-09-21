@@ -33,7 +33,8 @@ export const aiPricingSchema = z.object({
 });
 
 export const aiVisualSearchSchema = z.object({
-  imageUrl: z.string().url(),
+  imageUrl: z.string().min(1, "Image URL or path is required"),
+  searchQuery: z.string().optional(),
 });
 
 export const aiAnalyzeImagesSchema = z.object({

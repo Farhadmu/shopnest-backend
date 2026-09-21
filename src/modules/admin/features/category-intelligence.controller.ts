@@ -226,7 +226,7 @@ export const getCategoryIntelligence = asyncHandler(async (req: Request, res: Re
         price: bestProd.price,
         unitsSold: 0,
         revenue: 0,
-        image: bestProd.images?.[0] || bestProd.image || null,
+        image: (bestProd as any).images?.[0] || (bestProd as any).image || null,
       };
     }
 

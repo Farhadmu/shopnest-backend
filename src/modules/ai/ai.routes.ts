@@ -13,6 +13,7 @@ import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middlew
 import { requireRole } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { aiLimiter } from "../../middlewares/rate-limit.middleware";
+import { visualSearchImageUpload } from "../../middlewares/upload.middleware";
 import {
   aiCompareSchema,
   aiDescriptionSchema,
@@ -67,8 +68,30 @@ router.post(
   ctrl.pricingSuggestion
 );
 
-// POST /api/v1/ai/visual-search - public
-router.post("/visual-search", validate({ body: aiVisualSearchSchema }), ctrl.visualSearch);
+// AI Visual Search Endpoints
+router.post(
+  "/visual-search/upload",
+  visualSearchImageUpload.single("image"),
+  ctrl.uploadVisualSearchImage
+);
+router.post(
+  "/visual-search",
+  attachUserIfPresent,
+  validate({ body: aiVisualSearchSchema }),
+  ctrl.visualSearch
+);
+router.get(
+  "/visual-search/demands",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  ctrl.getVisualSearchDemands
+);
+router.patch(
+  "/visual-search/demands/:id/status",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  ctrl.updateVisualSearchDemandStatus
+);
 
 // 36. AI Commerce Memory
 router.get("/memory", attachUserIfPresent, ctrl.getAiCommerceMemory);

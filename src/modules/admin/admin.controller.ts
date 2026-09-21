@@ -178,7 +178,7 @@ export const getSellerDetailsForAdmin = asyncHandler(async (req: Request, res: R
   const store = await Store.findById(req.params.id).populate("businessInfo.categoryId", "name slug image");
   if (!store) throw ApiError.notFound("Store not found");
 
-  const storeJson = store.toJSON();
+  const storeJson: any = store.toJSON();
   if (storeJson.businessInfo?.categoryId && typeof storeJson.businessInfo.categoryId === "string") {
     const catDoc = await Category.findById(storeJson.businessInfo.categoryId).select("name slug image").lean();
     if (catDoc) {

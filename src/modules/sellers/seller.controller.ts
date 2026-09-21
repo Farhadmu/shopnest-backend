@@ -7,6 +7,8 @@ import { asyncHandler } from "../../utils/async-handler";
 import { sendSuccess } from "../../utils/api-response";
 import { ApiError } from "../../utils/api-error";
 import { getSellerContext } from "./seller-store.util";
+import { createNotification } from "../notifications/notification.service";
+import { logger } from "../../utils/logger";
 import mongoose from "mongoose";
 
 /**
@@ -137,6 +139,37 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
       existing.status = "pending";
       existing.rejectionReason = undefined;
       await existing.save();
+
+      // Dispatch real-time in-app notifications
+      try {
+        await createNotification({
+          userId: req.user!.id,
+          type: "seller_approval",
+          title: "Application Resubmitted",
+          message: `Your seller application for "${existing.storeName}" has been resubmitted and is awaiting admin review.`,
+          link: "/become-seller",
+          relatedId: existing._id.toString(),
+        });
+
+        const db = mongoose.connection.db;
+        if (db) {
+          const admins = await db.collection("user").find({ role: "admin" }).project({ id: 1, _id: 1 }).toArray();
+          for (const admin of admins) {
+            const adminId = admin.id || admin._id.toString();
+            await createNotification({
+              userId: adminId,
+              type: "seller_approval",
+              title: "Seller Application Resubmitted",
+              message: `Merchant "${existing.storeName}" has resubmitted their application for review.`,
+              link: `/dashboard/admin/sellers/${existing._id.toString()}`,
+              relatedId: existing._id.toString(),
+            });
+          }
+        }
+      } catch (notifErr) {
+        logger.warn("Could not dispatch application resubmission notification", notifErr);
+      }
+
       return sendSuccess(res, maskBusinessInfo(existing.toJSON()), "Application resubmitted, pending admin approval", 200);
     }
     throw ApiError.conflict("You already have a store");
@@ -176,6 +209,36 @@ export const registerStore = asyncHandler(async (req: Request, res: Response) =>
       throw ApiError.conflict("You already have a store");
     }
     throw err;
+  }
+
+  // Dispatch real-time in-app notifications
+  try {
+    await createNotification({
+      userId: req.user!.id,
+      type: "seller_approval",
+      title: "Seller Application Submitted",
+      message: `Your application for "${store.storeName}" has been received and is pending KYC verification.`,
+      link: "/become-seller",
+      relatedId: store._id.toString(),
+    });
+
+    const db = mongoose.connection.db;
+    if (db) {
+      const admins = await db.collection("user").find({ role: "admin" }).project({ id: 1, _id: 1 }).toArray();
+      for (const admin of admins) {
+        const adminId = admin.id || admin._id.toString();
+        await createNotification({
+          userId: adminId,
+          type: "seller_approval",
+          title: "New Seller Application",
+          message: `New seller application received for "${store.storeName}".`,
+          link: `/dashboard/admin/sellers/${store._id.toString()}`,
+          relatedId: store._id.toString(),
+        });
+      }
+    }
+  } catch (notifErr) {
+    logger.warn("Could not dispatch new seller application notification", notifErr);
   }
 
   sendSuccess(res, maskBusinessInfo(store.toJSON()), "Store created, pending admin approval", 201);
@@ -380,4 +443,70 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
       };
     }),
   );
+});
+
+/**
+ * Controller: Submit Store Appeal
+ * Allows a suspended seller to submit an official appeal request with remediation details.
+ */
+export const submitStoreAppeal = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.id;
+  const { reason, email } = req.body as { reason: string; email?: string };
+
+  if (!reason || !reason.trim()) {
+    throw ApiError.badRequest("Appeal explanation reason is required");
+  }
+
+  const store = await Store.findOne({ ownerId: userId });
+  if (!store) {
+    throw ApiError.notFound("No store found for this account");
+  }
+
+  if (store.status !== "suspended") {
+    throw ApiError.badRequest("Appeals can only be submitted for suspended stores");
+  }
+
+  store.appeal = {
+    reason: reason.trim(),
+    email: email?.trim() || req.user?.email || "",
+    submittedAt: new Date(),
+    status: "pending",
+  };
+
+  await store.save();
+
+  // Notify applicant and all admin users
+  try {
+    await createNotification({
+      userId,
+      type: "seller_approval",
+      title: "Appeal Statement Received",
+      message: `Your compliance appeal for "${store.storeName}" has been received. Our review desk will respond within 24–48 hours.`,
+      link: "/become-seller",
+      relatedId: store._id.toString(),
+    });
+
+    const db = mongoose.connection.db;
+    if (db) {
+      const admins = await db.collection("user").find({ role: "admin" }).project({ id: 1, _id: 1 }).toArray();
+      for (const admin of admins) {
+        const adminId = admin.id || admin._id.toString();
+        await createNotification({
+          userId: adminId,
+          type: "seller_approval",
+          title: "📬 Merchant Compliance Appeal",
+          message: `Store "${store.storeName}" submitted a compliance appeal: "${reason.slice(0, 80)}${reason.length > 80 ? "..." : ""}"`,
+          link: `/dashboard/admin/sellers/${store._id.toString()}`,
+          relatedId: store._id.toString(),
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn("Could not dispatch appeal notifications", err);
+  }
+
+  sendSuccess(res, {
+    message: "Appeal submitted successfully. Compliance desk will review within 24-48 business hours.",
+    store,
+  });
 });

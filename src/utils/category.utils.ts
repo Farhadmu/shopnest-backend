@@ -7,7 +7,7 @@ export function invalidateCategoryCache(): void {
   cache.clear();
 }
 
-export async function resolveCategoryNames(categoryNameOrSlug: string): Promise<string[]> {
+async function resolveSingleCategoryNames(categoryNameOrSlug: string): Promise<string[]> {
   const cached = cache.get(categoryNameOrSlug);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.value;
@@ -50,4 +50,18 @@ export async function resolveCategoryNames(categoryNameOrSlug: string): Promise<
 
   cache.set(categoryNameOrSlug, { value: names, expiresAt: Date.now() + CACHE_TTL_MS });
   return names;
+}
+
+export async function resolveCategoryNames(categoryInput?: string | string[]): Promise<string[]> {
+  if (!categoryInput) return [];
+  const rawList = Array.isArray(categoryInput) ? categoryInput : [categoryInput];
+  const parts = rawList
+    .flatMap((s) => (typeof s === "string" ? s.split(",") : []))
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) return [];
+
+  const results = await Promise.all(parts.map((p) => resolveSingleCategoryNames(p)));
+  return Array.from(new Set(results.flat()));
 }

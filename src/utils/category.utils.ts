@@ -13,10 +13,16 @@ async function resolveSingleCategoryNames(categoryNameOrSlug: string): Promise<s
     return cached.value;
   }
 
+  const cleanSlug = categoryNameOrSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+
   const root = await Category.findOne({
     $or: [
       { name: { $regex: `^${categoryNameOrSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } },
       { slug: categoryNameOrSlug.toLowerCase() },
+      { slug: cleanSlug },
     ],
   })
     .select("_id name")

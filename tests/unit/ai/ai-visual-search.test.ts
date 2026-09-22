@@ -11,6 +11,7 @@ const demandMocks = vi.hoisted(() => ({
   countDocuments: vi.fn(),
   aggregate: vi.fn(),
   findByIdAndUpdate: vi.fn(),
+  findByIdAndDelete: vi.fn(),
 }));
 
 vi.mock("../../../src/modules/products/product.model", () => ({
@@ -181,5 +182,79 @@ describe("AI Visual Search & Seller Demand Insights", () => {
     expect(responseData.metrics.totalSearches).toBe(5);
     expect(responseData.metrics.unmetSearches).toBe(2);
     expect(responseData.demands).toHaveLength(1);
+  });
+
+  it("should return similar-type products even when user product name doesn't match directly", async () => {
+    const mockProducts = [
+      {
+        _id: "prod_diff_brand",
+        title: "BassPro High-Definition Wireless Headphones",
+        category: "Electronics",
+        price: 4200,
+        tags: ["headphones", "wireless", "audio", "bass"],
+        images: ["/uploads/basspro.jpg"],
+      },
+    ];
+
+    const chainableFind = {
+      populate: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      lean: vi.fn().mockResolvedValue(mockProducts),
+    };
+
+    productMocks.find.mockReturnValue(chainableFind);
+    demandMocks.create.mockResolvedValue({ _id: "demand_similar_1", isUnmetDemand: false });
+
+    const { visualSearch } = await import("../../../src/modules/ai/ai.controller");
+
+    const req: any = {
+      body: {
+        imageUrl: "/uploads/visual-search/sony-wh-1000xm5.jpg",
+        searchQuery: "Sony WH-1000XM5 Noise Cancelling", // Different model/brand from store's BassPro
+      },
+    };
+
+    let responseData: any = null;
+    const res: any = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockImplementation((data) => {
+        responseData = data;
+        return res;
+      }),
+    };
+
+    await visualSearch(req, res, () => {});
+
+    expect(responseData).toBeDefined();
+    expect(responseData.success).toBe(true);
+    expect(responseData.count).toBe(1);
+    expect(responseData.products[0].matchBadge).toBe("Similar Type");
+    expect(responseData.products[0].matchScore).toBeGreaterThanOrEqual(25);
+  });
+
+  it("should delete a visual search demand record by id", async () => {
+    demandMocks.findByIdAndDelete.mockResolvedValue({ _id: "demand_del_123" });
+
+    const { deleteVisualSearchDemand } = await import("../../../src/modules/ai/ai.controller");
+
+    const req: any = {
+      params: { id: "demand_del_123" },
+    };
+
+    let responseData: any = null;
+    const res: any = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockImplementation((data) => {
+        responseData = data;
+        return res;
+      }),
+    };
+
+    await deleteVisualSearchDemand(req, res, () => {});
+
+    expect(responseData).toBeDefined();
+    expect(responseData.success).toBe(true);
+    expect(responseData.id).toBe("demand_del_123");
+    expect(demandMocks.findByIdAndDelete).toHaveBeenCalledWith("demand_del_123");
   });
 });

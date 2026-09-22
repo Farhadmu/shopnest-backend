@@ -360,11 +360,50 @@ async function getVisualImageBase64(imageUrl: string): Promise<{ mimeType: strin
 
 async function analyzeProductImageWithAI(imageUrl: string, searchQuery?: string): Promise<VisualAnalysisResult> {
   const fallbackWords = searchQuery?.trim() || "";
-  let heuristicTitle = fallbackWords || "Product";
+  let heuristicTitle = fallbackWords;
+
+  // Extract from filename or URL slug if searchQuery is absent
+  if (!heuristicTitle) {
+    try {
+      const cleanUrl = imageUrl.split("?")[0].split("#")[0];
+      const filename = path.basename(cleanUrl);
+      const nameWithoutExt = filename.replace(/\.[^/.]+$/, "");
+      // if not a pure uuid or random hash
+      if (!/^[0-9a-fA-F-]{20,}$/.test(nameWithoutExt)) {
+        const cleanedName = nameWithoutExt.replace(/[-_+]/g, " ").trim();
+        if (cleanedName.length > 2) {
+          heuristicTitle = cleanedName;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!heuristicTitle) {
+    heuristicTitle = "Product";
+  }
+
+  // Infer broad category and subcategory if any common keyword/model is present
+  const textToAnalyze = `${heuristicTitle} ${imageUrl}`.toLowerCase();
+  let inferredCategory = "General";
+  let inferredSubcategory: string | undefined = undefined;
+
+  if (/(headphone|earphone|earbud|speaker|soundbar|audio|xm[345]|airpod|buds)/i.test(textToAnalyze)) {
+    inferredCategory = "Electronics";
+    inferredSubcategory = "Headphones";
+  } else if (/(phone|smartphone|tablet|laptop|computer|keyboard|mouse|monitor|gpu|cpu)/i.test(textToAnalyze)) {
+    inferredCategory = "Electronics";
+    inferredSubcategory = "Gadgets & Computers";
+  } else if (/(shirt|pant|jeans|jacket|hoodie|shoe|sneaker|dress|watch|bag|backpack)/i.test(textToAnalyze)) {
+    inferredCategory = "Fashion";
+    inferredSubcategory = "Clothing & Accessories";
+  }
 
   const defaultFallback: VisualAnalysisResult = {
     title: heuristicTitle,
-    category: "General",
+    category: inferredCategory,
+    subcategory: inferredSubcategory,
     brand: "Generic",
     color: "Multi-color",
     features: ["Visual search product"],
@@ -542,42 +581,69 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
     .limit(40)
     .lean();
 
+  // If candidate count is low and we have a valid category, fetch additional approved products in that category
+  // so buyers can see same-type / related products even if exact title keywords differ!
+  let allCandidates = [...candidateProducts];
+  if (allCandidates.length < 8 && analysis.category && analysis.category !== "General") {
+    const existingIds = new Set(allCandidates.map((p: any) => p._id?.toString()));
+    const categoryFilter = {
+      ...baseFilter,
+      _id: { $nin: Array.from(existingIds) },
+      category: { $regex: new RegExp(analysis.category.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
+    };
+    const categoryExtras = await Product.find(categoryFilter)
+      .populate("sellerId", "name storeName")
+      .limit(20)
+      .lean();
+    for (const extra of categoryExtras) {
+      const extraId = extra._id?.toString();
+      if (extraId && !existingIds.has(extraId)) {
+        existingIds.add(extraId);
+        allCandidates.push(extra);
+      }
+    }
+  }
+
   const stopWords = new Set(["with", "and", "for", "the", "a", "an", "in", "of", "to", "by", "on", "set", "pack", "size", "edition", "case"]);
 
-  // 5. Calculate Match Confidence Scores & Classify Direct vs Same-Type Matches
-  const scoredProducts = candidateProducts
+  // 5. Calculate Multi-Tier Match Confidence Scores & Classify Direct vs Same-Type Matches
+  const scoredProducts = allCandidates
     .map((prod: any) => {
       let score = 0;
       const titleLower = (prod.title || "").toLowerCase();
       const categoryLower = (prod.category || "").toLowerCase();
+      const descLower = (prod.description || "").toLowerCase();
       const prodTags = (prod.tags || []).map((t: string) => t.toLowerCase());
 
       // 1. Brand match
       const brandLower = (analysis.brand || "").toLowerCase();
       const hasBrandMatch = brandLower && brandLower !== "generic" && (titleLower.includes(brandLower) || prodTags.includes(brandLower));
       if (hasBrandMatch) {
-        score += 35;
+        score += 25;
       }
 
       // 2. Customer search query match (if customer provided text)
+      let queryExactMatched = false;
       if (searchQuery) {
-        if (titleLower.includes(searchQuery.toLowerCase())) {
+        const qClean = searchQuery.toLowerCase().trim();
+        if (titleLower.includes(qClean) || prodTags.includes(qClean)) {
           score += 35;
+          queryExactMatched = true;
         } else {
-          const queryWords = searchQuery.toLowerCase().split(/[\s,]+/).filter((w) => !stopWords.has(w) && w.length > 2);
-          const matchCount = queryWords.filter((w) => titleLower.includes(w)).length;
+          const queryWords = qClean.split(/[\s,]+/).filter((w) => !stopWords.has(w) && w.length > 2);
+          const matchCount = queryWords.filter((w) => titleLower.includes(w) || prodTags.includes(w)).length;
           if (matchCount > 0) {
             score += Math.min(matchCount * 15, 30);
           }
         }
       }
 
-      // 3. Subcategory / Specific Product Type Match (e.g. Earbuds, Headphones, Keyboard, Shirt)
-      // "ar jodi oi imge ar name ba design ar moto millo na but oi same type ar imge amader platform a ache oita show korbe"
+      // 3. Subcategory / Specific Product Type Match (e.g. Earbuds, Headphones, Keyboard, Shirt, Shoes)
+      // "customer or guest jodi product ar name jne tahole to vaoi oi rltd imge thakle ber kore dibe but name ar shathe na milleu somossa nai same dekhte ba onno rokom design adekhte same type ar product holeu show korbe"
       const subcatLower = (analysis.subcategory || "").toLowerCase();
       const subcatWords = subcatLower.split(/[\s,]+/).filter((w) => !stopWords.has(w) && w.length > 2);
       let sameTypeMatched = false;
-      if (subcatLower && (titleLower.includes(subcatLower) || prodTags.includes(subcatLower))) {
+      if (subcatLower && (titleLower.includes(subcatLower) || prodTags.includes(subcatLower) || descLower.includes(subcatLower))) {
         score += 35;
         sameTypeMatched = true;
       } else if (subcatWords.length > 0 && subcatWords.some((w) => titleLower.includes(w) || prodTags.includes(w))) {
@@ -587,27 +653,35 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
 
       // 4. AI detected product title words
       const titleWords = (analysis.title || "").toLowerCase().split(/[\s,]+/).filter((w) => !stopWords.has(w) && w.length > 2);
-      const titleMatches = titleWords.filter((w) => titleLower.includes(w)).length;
+      const titleMatches = titleWords.filter((w) => titleLower.includes(w) || prodTags.includes(w)).length;
       if (titleMatches > 0) {
-        score += Math.min(titleMatches * 15, 40);
+        score += Math.min(titleMatches * 10, 30);
       }
 
       // 5. Category match
       const catLower = (analysis.category || "").toLowerCase();
       if (catLower && catLower !== "general" && (categoryLower.includes(catLower) || catLower.includes(categoryLower))) {
-        score += 20;
+        score += 25;
       }
 
-      // 6. Matching tags
-      const matchingTags = keywordList.filter((kw) => prodTags.some((t: string) => t.includes(kw)));
+      // 6. Color match (visual appearance / design cue)
+      const colorLower = (analysis.color || "").toLowerCase();
+      if (colorLower && colorLower !== "multi-color" && (titleLower.includes(colorLower) || prodTags.includes(colorLower) || descLower.includes(colorLower))) {
+        score += 10;
+      }
+
+      // 7. Matching tags / keywords
+      const matchingTags = keywordList.filter((kw) => prodTags.some((t: string) => t.includes(kw)) || titleLower.includes(kw));
       score += Math.min(matchingTags.length * 5, 15);
 
       const finalScore = Math.min(score, 99);
-      let matchBadge = "Similar Type";
-      if (finalScore >= 75) {
+      let matchBadge = "Related Product";
+      if (finalScore >= 70 || (queryExactMatched && hasBrandMatch)) {
         matchBadge = "Direct Match";
-      } else if (sameTypeMatched || finalScore >= 50) {
+      } else if (sameTypeMatched || finalScore >= 30) {
         matchBadge = "Similar Type";
+      } else {
+        matchBadge = "Related Product";
       }
 
       return {
@@ -616,7 +690,7 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
         matchBadge,
       };
     })
-    .filter((prod) => prod.matchScore >= 45); // Strictly exclude irrelevant products
+    .filter((prod) => prod.matchScore >= 15); // Keeps direct, same-type, and category related items
 
   scoredProducts.sort((a, b) => b.matchScore - a.matchScore);
 
@@ -774,6 +848,19 @@ export const updateVisualSearchDemandStatus = asyncHandler(async (req: Request, 
   }
 
   sendSuccess(res, demand, "Demand status updated successfully");
+});
+
+/**
+ * Controller: Delete Visual Search Demand
+ */
+export const deleteVisualSearchDemand = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const demand = await VisualSearchDemand.findByIdAndDelete(id);
+  if (!demand) {
+    throw ApiError.notFound("Demand record not found");
+  }
+
+  sendSuccess(res, { id }, "Demand record deleted successfully");
 });
 
 const memoryStore = new Map<string, { preferences: string[]; activeTheme: string; lastSearchIntent: string }>();

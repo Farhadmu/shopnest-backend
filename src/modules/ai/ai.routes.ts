@@ -92,6 +92,12 @@ router.patch(
   requireRole("seller", "admin"),
   ctrl.updateVisualSearchDemandStatus
 );
+router.delete(
+  "/visual-search/demands/:id",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  ctrl.deleteVisualSearchDemand
+);
 
 // 36. AI Commerce Memory
 router.get("/memory", attachUserIfPresent, ctrl.getAiCommerceMemory);

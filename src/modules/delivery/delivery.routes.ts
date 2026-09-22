@@ -1,4 +1,4 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import * as ctrl from "./delivery.controller";
 import { requireAuth } from "../../middlewares/auth.middleware";
 import { requireRole } from "../../middlewares/role.middleware";
@@ -29,16 +29,16 @@ router.use(...requireAuth);
  */
 router.post(
   "/upload-document",
-  requireRole("delivery_man", "customer", "admin"),
+  requireRole("delivery_man", "customer", "seller", "admin"),
   deliveryDocumentUpload.single("file"),
   ctrl.uploadDeliveryDocument
 );
 
 // Profile management (delivery men, applicants & admin)
-router.get("/profile", requireRole("delivery_man", "customer", "admin"), ctrl.getDeliveryManProfile);
+router.get("/profile", requireRole("delivery_man", "customer", "seller", "admin"), ctrl.getDeliveryManProfile);
 router.patch(
   "/profile",
-  requireRole("delivery_man", "customer", "admin"),
+  requireRole("delivery_man", "customer", "seller", "admin"),
   validate({ body: createOrUpdateProfileSchema }),
   ctrl.createOrUpdateDeliveryManProfile
 );
@@ -114,13 +114,13 @@ router.get("/seller/active-deliveries", requireRole("seller", "admin"), ctrl.get
 router.get("/tracking/:orderId", ctrl.getDeliveryTracking);
 router.post(
   "/requests/:id/rate",
-  requireRole("customer", "admin"),
+  requireRole("customer", "seller", "admin"),
   validate({ params: idParamSchema, body: rateDeliverySchema }),
   ctrl.rateDelivery
 );
 router.post(
   "/orders/:orderId/rate",
-  requireRole("customer", "admin"),
+  requireRole("customer", "seller", "admin"),
   validate({ body: rateDeliverySchema }),
   ctrl.rateDelivery
 );

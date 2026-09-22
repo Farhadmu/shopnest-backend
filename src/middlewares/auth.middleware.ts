@@ -119,7 +119,12 @@ export async function resolveUserFromSessionToken(token: string): Promise<AuthUs
   }
   if (!userDoc) return null;
 
-  let role = (userDoc.role as AuthUser["role"]) ?? "customer";
+  const rawRole = String(userDoc.role || "").toLowerCase().trim();
+  let role: AuthUser["role"] = "customer";
+  if (rawRole === "seller") role = "seller";
+  else if (rawRole === "admin") role = "admin";
+  else if (rawRole === "delivery_man" || rawRole === "delivery") role = "delivery_man";
+  else role = "customer";
   if (role === "customer") {
     try {
       const uId = String(userDoc.id ?? userDoc._id);

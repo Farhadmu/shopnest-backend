@@ -862,6 +862,19 @@ export const deleteVisualSearchDemand = asyncHandler(async (req: Request, res: R
     throw ApiError.notFound("Demand record not found");
   }
 
+  // Clean up local uploaded file if present
+  if (demand.imageUrl && demand.imageUrl.startsWith("/uploads/visual-search/")) {
+    const relPath = demand.imageUrl.replace(/^\/uploads\//, "");
+    const fullPath = path.resolve(env.UPLOAD_DIR, relPath);
+    if (fs.existsSync(fullPath)) {
+      try {
+        await fs.promises.unlink(fullPath);
+      } catch (e) {
+        logger.warn("Failed to unlink deleted demand image", { err: e, path: fullPath });
+      }
+    }
+  }
+
   sendSuccess(res, { id }, "Demand record deleted successfully");
 });
 

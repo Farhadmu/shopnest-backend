@@ -18,19 +18,21 @@ const listCache = new Map<string, { value: { products: Record<string, unknown>[]
 
 function isCacheableQuery(query: Record<string, string | undefined>): boolean {
   if (query.search) return false;
-  if (query.seller) return false;
-  if (query.store) return false;
+  if (query.category || query.categories) return false;
+  if (query.ids || query.products) return false;
+  if (query.seller || query.sellerId) return false;
+  if (query.store || query.storeId) return false;
   if (query.minPrice !== undefined || query.maxPrice !== undefined) return false;
   if (query.rating || query.productRating) return false;
   if (query.verified === "true" || query.verified === "1" || query.inStock === "true" || query.inStock === "1" || query.aiPick === "true" || query.aiPick === "1" || query.freeDelivery === "true" || query.freeDelivery === "1") return false;
   if (query.status && query.status !== "approved") return false;
   if (query.isFeatured !== undefined) return false;
-  if (query.sort === "featured") return false;
+  if (query.sort && query.sort !== "newest") return false;
   return true;
 }
 
-function buildListCacheKey(filter: Record<string, unknown>, sortOption: Record<string, 1 | -1>, page: number, limit: number): string {
-  return JSON.stringify({ f: filter, s: sortOption, p: page, l: limit });
+function buildListCacheKey(query: Record<string, string | undefined>, sortOption: Record<string, 1 | -1>, page: number, limit: number): string {
+  return JSON.stringify({ q: query, s: sortOption, p: page, l: limit });
 }
 
 function getFromListCache(key: string): { products: Record<string, unknown>[]; total: number; hasMore: boolean } | null {
@@ -212,7 +214,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   const canCache = isCacheableQuery(query) && !skipExactCount && !bypassCache;
 
   if (canCache) {
-    const cacheKey = buildListCacheKey(filter, sortOption, page, limit);
+    const cacheKey = buildListCacheKey(query, sortOption, page, limit);
     const cached = getFromListCache(cacheKey);
     if (cached) {
       res.set("X-Total-Count", String(cached.total));
@@ -257,7 +259,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   const normalizedProducts = normalizeLeanArray(products as Record<string, unknown>[]);
 
   if (canCache) {
-    setListCache(buildListCacheKey(filter, sortOption, page, limit), {
+    setListCache(buildListCacheKey(query, sortOption, page, limit), {
       products: normalizedProducts,
       total,
       hasMore: false,

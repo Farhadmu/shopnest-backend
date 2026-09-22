@@ -8,6 +8,7 @@ import {
   AdminAIEvidence,
 } from "./admin-ai.types";
 import * as tools from "./admin-ai.tools";
+import { Store } from "../sellers/store.model";
 import { AiProviderService } from "../ai/core/ai-provider.service";
 import { ChatMessage } from "../ai/providers/claude.provider";
 
@@ -259,7 +260,23 @@ export class AdminAiOrchestrator {
 
       state.recentEntities.lastSellers = res.sellers.map((s) => ({ id: s.id, storeName: s.storeName, status: s.status }));
 
-      const title = isPending ? `Found ${res.count} pending seller applications:` : `Found ${res.count} registered sellers:`;
+      const [approvedCount, pendingCount, totalCount] = await Promise.all([
+        Store.countDocuments({ status: "approved" }),
+        Store.countDocuments({ status: "pending" }),
+        Store.countDocuments({}),
+      ]);
+
+      let title = "";
+      if (parsed.language === "bn" || parsed.language === "banglish") {
+        title = isPending
+          ? `প্ল্যাটফর্মে মোট ${pendingCount}টি পেন্ডিং সেলার রিকোয়েস্ট রয়েছে:`
+          : `আপনার প্ল্যাটফর্মে মোট ${totalCount}টি সেলার/স্টোর রয়েছে (${approvedCount}টি অনুমোদিত ও সক্রিয়, ${pendingCount}টি পেন্ডিং ভেরিফিকেশন):`;
+      } else {
+        title = isPending
+          ? `Found ${pendingCount} pending seller applications waiting for review:`
+          : `Your platform has ${totalCount} registered stores (${approvedCount} approved active, ${pendingCount} pending verification):`;
+      }
+
       const quickReplies = res.sellers.length > 0
         ? isPending
           ? [`Approve ${res.sellers[0].storeName}`, `Reject ${res.sellers[0].storeName}`, "Show all sellers"]
@@ -271,7 +288,23 @@ export class AdminAiOrchestrator {
         conversationId,
         intent: parsed.intent,
         confidence: 0.95,
-        evidence: res.evidence,
+        evidence: [
+          ...res.evidence,
+          {
+            source: "MongoDB.Store",
+            fact: "Total Registered Stores Count",
+            value: totalCount,
+            recordCount: totalCount,
+            timestamp: new Date().toISOString(),
+          },
+          {
+            source: "MongoDB.Store",
+            fact: "Approved Active Stores Count",
+            value: approvedCount,
+            recordCount: approvedCount,
+            timestamp: new Date().toISOString(),
+          },
+        ],
         actions: [],
         referencedEntities: {
           sellers: res.sellers,

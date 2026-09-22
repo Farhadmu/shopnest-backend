@@ -354,10 +354,12 @@ export class AiToolService {
     }
 
     const evidence: AIEvidence[] = [];
-    const [orderCount, activeRiders, activeStores, anomaliesCount] = await Promise.all([
+    const [orderCount, activeRiders, approvedStores, totalStores, pendingStores, anomaliesCount] = await Promise.all([
       Order.countDocuments({}),
-      DeliveryManDetails.countDocuments({ isOnline: true }),
-      Store.countDocuments({ status: "active" }),
+      DeliveryManDetails.countDocuments({ isOnline: true }).catch(() => 0),
+      Store.countDocuments({ status: "approved" }),
+      Store.countDocuments({}),
+      Store.countDocuments({ status: "pending" }),
       AnomalyLog.countDocuments({ status: { $ne: "resolved" } }),
     ]);
 
@@ -368,7 +370,9 @@ export class AiToolService {
       AiEvidenceService.fromDatabase("PlatformCommand", "Total Marketplace GMV", `৳${gmv}`),
       AiEvidenceService.fromDatabase("PlatformCommand", "Total Orders", orderCount),
       AiEvidenceService.fromDatabase("PlatformCommand", "Active Online Riders", activeRiders),
-      AiEvidenceService.fromDatabase("PlatformCommand", "Active Stores", activeStores),
+      AiEvidenceService.fromDatabase("PlatformCommand", "Approved Active Stores", approvedStores),
+      AiEvidenceService.fromDatabase("PlatformCommand", "Total Registered Stores", totalStores),
+      AiEvidenceService.fromDatabase("PlatformCommand", "Pending Store Approvals", pendingStores),
       AiEvidenceService.fromDatabase("PlatformCommand", "Unresolved Anomalies", anomaliesCount)
     );
 
@@ -379,11 +383,13 @@ export class AiToolService {
         totalGmv: gmv,
         orderCount,
         activeRiders,
-        activeStores,
+        activeStores: approvedStores,
+        totalStores,
+        pendingStores,
         unresolvedAnomalies: anomaliesCount,
       },
       evidence,
-      summary: `ShopNest platform GMV stands at ৳${gmv.toLocaleString()} with ${activeRiders} couriers online.`,
+      summary: `ShopNest platform GMV stands at ৳${gmv.toLocaleString()} with ${approvedStores} approved active stores (${totalStores} total stores, ${pendingStores} pending).`,
     };
   }
 

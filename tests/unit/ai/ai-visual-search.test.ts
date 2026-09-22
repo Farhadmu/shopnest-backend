@@ -48,6 +48,7 @@ describe("AI Visual Search & Seller Demand Insights", () => {
     ];
 
     const chainableFind = {
+      select: vi.fn().mockReturnThis(),
       populate: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       lean: vi.fn().mockResolvedValue(mockProducts),
@@ -91,6 +92,7 @@ describe("AI Visual Search & Seller Demand Insights", () => {
 
   it("should mark isUnmetDemand as true when 0 catalog matches are found", async () => {
     const chainableEmptyFind = {
+      select: vi.fn().mockReturnThis(),
       populate: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       lean: vi.fn().mockResolvedValue([]),
@@ -197,6 +199,7 @@ describe("AI Visual Search & Seller Demand Insights", () => {
     ];
 
     const chainableFind = {
+      select: vi.fn().mockReturnThis(),
       populate: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       lean: vi.fn().mockResolvedValue(mockProducts),

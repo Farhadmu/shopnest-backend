@@ -578,6 +578,7 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
   };
 
   const candidateProducts = await Product.find(queryFilter)
+    .select("_id title description price discountPrice category tags images ratingAvg ratingCount stock sold sellerId")
     .populate("sellerId", "name storeName")
     .limit(40)
     .lean();

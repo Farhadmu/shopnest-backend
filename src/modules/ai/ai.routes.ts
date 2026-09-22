@@ -86,6 +86,12 @@ router.get(
   requireRole("seller", "admin"),
   ctrl.getVisualSearchDemands
 );
+router.get(
+  "/visual-search/demands/:id",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  ctrl.getVisualSearchDemandById
+);
 router.patch(
   "/visual-search/demands/:id/status",
   ...requireAuth,

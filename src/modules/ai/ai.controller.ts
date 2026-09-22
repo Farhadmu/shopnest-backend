@@ -835,6 +835,18 @@ export const getVisualSearchDemands = asyncHandler(async (req: Request, res: Res
 });
 
 /**
+ * Controller: Get Single Visual Search Demand by ID
+ */
+export const getVisualSearchDemandById = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const demand = await VisualSearchDemand.findById(id).lean();
+  if (!demand) {
+    throw ApiError.notFound("Demand record not found");
+  }
+  sendSuccess(res, demand);
+});
+
+/**
  * Controller: Update Demand Status
  */
 export const updateVisualSearchDemandStatus = asyncHandler(async (req: Request, res: Response) => {

@@ -46,6 +46,7 @@ const visualSearchDemandSchema = new Schema<IVisualSearchDemand>(
 );
 
 visualSearchDemandSchema.index({ createdAt: -1 });
+visualSearchDemandSchema.index({ detectedCategory: 1, isUnmetDemand: 1, createdAt: -1 });
 
 export const VisualSearchDemand = model<IVisualSearchDemand>(
   "VisualSearchDemand",

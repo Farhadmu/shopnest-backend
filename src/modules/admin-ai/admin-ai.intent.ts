@@ -33,6 +33,9 @@ export interface ParsedAdminIntent {
     incidentId?: string;
     reason?: string;
     statusFilter?: string;
+    sellerStatus?: string;
+    isLowStock?: boolean;
+    deliveryStatus?: string;
     ordinalReference?: "first" | "second" | "third" | "last" | "that_one";
     targetNavigationUrl?: string;
   };

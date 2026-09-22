@@ -502,6 +502,7 @@ Respond ONLY with valid JSON (strictly no markdown, no explanation, no backticks
  * Controller: AI Visual Search (Image & optional name to products)
  */
 export const visualSearch = asyncHandler(async (req: Request, res: Response) => {
+  const startTime = Date.now();
   const { imageUrl, searchQuery } = req.body as { imageUrl: string; searchQuery?: string };
 
   if (!imageUrl) {
@@ -739,6 +740,7 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
     products: finalProducts,
     isUnmetDemand: isUnmet,
     demandId: demandRecordId,
+    latencyMs: Date.now() - startTime,
   });
 });
 

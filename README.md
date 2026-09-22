@@ -1,12 +1,21 @@
-# ShopNest Backend
+<p align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=1,12,24&height=280&section=header&text=ShopNest%20Backend&fontSize=56&fontAlignY=36&desc=%E2%9A%A1%20Express%20%2B%20TypeScript%20REST%20%26%20Socket.io%20API%20Gateway&descAlignY=60&descAlign=50" alt="ShopNest Backend Header" width="100%" />
+</p>
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.7.3-blue)
-![Node.js](https://img.shields.io/badge/Node.js-22.x-green)
-![Express](https://img.shields.io/badge/Express-4.21.2-black)
-![MongoDB](https://img.shields.io/badge/MongoDB-Mongoose_8.9.5-47A248)
-![Zod](https://img.shields.io/badge/Zod-3.24.1-ED8A00)
-![Stripe](https://img.shields.io/badge/Stripe-22.6.1-635BFF)
-![Better Auth](https://img.shields.io/badge/Better_Auth-1.7.1-green)
+<p align="center">
+  <a href="https://readme-typing-svg.demolab.com">
+    <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=19&duration=3000&pause=1000&color=A855F7&center=true&vCenter=true&width=750&lines=Node.js+22+%2B+Express+4+%2B+MongoDB+Mongoose+8;Real-Time+WebSocket+Milestone+Tracking+%26+Telemetry;Multi-Provider+AI+Hub+(Gemini+2.0%2C+Groq%2C+Mistral);SSLCommerz%2C+Stripe+%26+Escrow-Secured+Order+Engine;4-Tier+Seller+Risk+Matrix+%26+Fraud+Audit+Telemetry" alt="Typing SVG" />
+  </a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/TypeScript-5.7.3-blue?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Node.js-22.x-green?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" />
+  <img src="https://img.shields.io/badge/Express-4.21.2-black?style=for-the-badge&logo=express&logoColor=white" alt="Express" />
+  <img src="https://img.shields.io/badge/MongoDB-Mongoose_8.9-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB" />
+  <img src="https://img.shields.io/badge/Better_Auth-1.7.1-green?style=for-the-badge&logo=auth0&logoColor=white" alt="Better Auth" />
+  <img src="https://img.shields.io/badge/Stripe-22.6.1-635BFF?style=for-the-badge&logo=stripe&logoColor=white" alt="Stripe" />
+</p>
 
 **AI-Powered Multi-Vendor Commerce & Seller Platform — Backend API**
 
@@ -1883,11 +1892,20 @@ Debug logs are only emitted when `NODE_ENV !== "production"`.
 
 ---
 
-## Contact
+## 👨‍💻 Maintainer & Contact
 
-- **Backend Repository:** https://github.com/Farhadmu/shopnest-backend
-- **Frontend Repository:** https://github.com/Farhadmu/shopnest-frontend
+<p align="center">
+  <a href="https://github.com/Farhadmu">
+    <img src="https://img.shields.io/badge/Maintained%20by-Farhadmu-8b5cf6?style=for-the-badge&logo=github&logoColor=white" alt="Farhadmu GitHub" />
+  </a>
+</p>
+
+- **Backend API Repository:** [https://github.com/Farhadmu/shopnest-backend](https://github.com/Farhadmu/shopnest-backend)
+- **Frontend Repository:** [https://github.com/Farhadmu/shopnest-frontend](https://github.com/Farhadmu/shopnest-frontend)
+- **Lead Developer:** Farhad ([@Farhadmu](https://github.com/Farhadmu))
 
 ---
 
-*Last updated: 2026-09-15*
+<p align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=1,12,24&height=120&section=footer" alt="ShopNest Footer" width="100%" />
+</p>

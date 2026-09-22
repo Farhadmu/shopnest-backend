@@ -610,6 +610,23 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
     };
   });
 
+  // Sort by rating, reviews count, sales, and trust score
+  resultStores.sort((a, b) => {
+    const ratingA = Number(a.rating || 0);
+    const ratingB = Number(b.rating || 0);
+    const countA = Number(a.ratingCount || 0);
+    const countB = Number(b.ratingCount || 0);
+    const salesA = Number(a.salesNumber || 0);
+    const salesB = Number(b.salesNumber || 0);
+    const trustA = Number(a.trustScore || 0);
+    const trustB = Number(b.trustScore || 0);
+
+    if (ratingB !== ratingA) return ratingB - ratingA;
+    if (countB !== countA) return countB - countA;
+    if (salesB !== salesA) return salesB - salesA;
+    return trustB - trustA;
+  });
+
   // Return server-side pagination metadata with global category counts
   res.status(200).json({
     data: resultStores,

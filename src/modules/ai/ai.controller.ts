@@ -500,6 +500,11 @@ Respond ONLY with valid JSON (strictly no markdown, no explanation, no backticks
 
 /**
  * Controller: AI Visual Search (Image & optional name to products)
+ * Evaluates catalog products through a multi-tiered matching engine:
+ * - Direct Match (Score >= 70): Exact title, brand, or query match
+ * - Similar Type (Score >= 30 or subcategory match): Same product category/type
+ * - Related Product (Score >= 15): Broad category or visual cue correlation
+ * Guarantees real catalog inventory only with persistent seller demand insights.
  */
 export const visualSearch = asyncHandler(async (req: Request, res: Response) => {
   const startTime = Date.now();

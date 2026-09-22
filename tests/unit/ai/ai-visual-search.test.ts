@@ -295,4 +295,40 @@ describe("AI Visual Search & Seller Demand Insights", () => {
     expect(responseData._id).toBe("demand_view_123");
     expect(demandMocks.findById).toHaveBeenCalledWith("demand_view_123");
   });
+
+  it("should update a demand record status to stocked", async () => {
+    const updatedDemand = {
+      _id: "demand_update_123",
+      status: "stocked",
+    };
+
+    demandMocks.findByIdAndUpdate.mockResolvedValue(updatedDemand);
+
+    const { updateVisualSearchDemandStatus } = await import("../../../src/modules/ai/ai.controller");
+
+    const req: any = {
+      params: { id: "demand_update_123" },
+      body: { status: "stocked" },
+    };
+
+    let responseData: any = null;
+    const res: any = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockImplementation((data) => {
+        responseData = data;
+        return res;
+      }),
+    };
+
+    await updateVisualSearchDemandStatus(req, res, () => {});
+
+    expect(responseData).toBeDefined();
+    expect(responseData.success).toBe(true);
+    expect(responseData.status).toBe("stocked");
+    expect(demandMocks.findByIdAndUpdate).toHaveBeenCalledWith(
+      "demand_update_123",
+      { status: "stocked" },
+      { new: true }
+    );
+  });
 });

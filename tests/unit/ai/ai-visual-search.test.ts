@@ -8,6 +8,7 @@ const productMocks = vi.hoisted(() => ({
 const demandMocks = vi.hoisted(() => ({
   create: vi.fn(),
   find: vi.fn(),
+  findById: vi.fn(),
   countDocuments: vi.fn(),
   aggregate: vi.fn(),
   findByIdAndUpdate: vi.fn(),
@@ -48,6 +49,7 @@ describe("AI Visual Search & Seller Demand Insights", () => {
     ];
 
     const chainableFind = {
+      select: vi.fn().mockReturnThis(),
       populate: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       lean: vi.fn().mockResolvedValue(mockProducts),
@@ -91,6 +93,7 @@ describe("AI Visual Search & Seller Demand Insights", () => {
 
   it("should mark isUnmetDemand as true when 0 catalog matches are found", async () => {
     const chainableEmptyFind = {
+      select: vi.fn().mockReturnThis(),
       populate: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       lean: vi.fn().mockResolvedValue([]),
@@ -197,6 +200,7 @@ describe("AI Visual Search & Seller Demand Insights", () => {
     ];
 
     const chainableFind = {
+      select: vi.fn().mockReturnThis(),
       populate: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       lean: vi.fn().mockResolvedValue(mockProducts),
@@ -256,5 +260,75 @@ describe("AI Visual Search & Seller Demand Insights", () => {
     expect(responseData.success).toBe(true);
     expect(responseData.id).toBe("demand_del_123");
     expect(demandMocks.findByIdAndDelete).toHaveBeenCalledWith("demand_del_123");
+  });
+
+  it("should retrieve a single visual search demand by id", async () => {
+    const mockDemand = {
+      _id: "demand_view_123",
+      detectedTitle: "Sony Wireless Headphone",
+      detectedCategory: "Electronics",
+    };
+
+    demandMocks.findById.mockReturnValue({
+      lean: vi.fn().mockResolvedValue(mockDemand),
+    });
+
+    const { getVisualSearchDemandById } = await import("../../../src/modules/ai/ai.controller");
+
+    const req: any = {
+      params: { id: "demand_view_123" },
+    };
+
+    let responseData: any = null;
+    const res: any = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockImplementation((data) => {
+        responseData = data;
+        return res;
+      }),
+    };
+
+    await getVisualSearchDemandById(req, res, () => {});
+
+    expect(responseData).toBeDefined();
+    expect(responseData.success).toBe(true);
+    expect(responseData._id).toBe("demand_view_123");
+    expect(demandMocks.findById).toHaveBeenCalledWith("demand_view_123");
+  });
+
+  it("should update a demand record status to stocked", async () => {
+    const updatedDemand = {
+      _id: "demand_update_123",
+      status: "stocked",
+    };
+
+    demandMocks.findByIdAndUpdate.mockResolvedValue(updatedDemand);
+
+    const { updateVisualSearchDemandStatus } = await import("../../../src/modules/ai/ai.controller");
+
+    const req: any = {
+      params: { id: "demand_update_123" },
+      body: { status: "stocked" },
+    };
+
+    let responseData: any = null;
+    const res: any = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockImplementation((data) => {
+        responseData = data;
+        return res;
+      }),
+    };
+
+    await updateVisualSearchDemandStatus(req, res, () => {});
+
+    expect(responseData).toBeDefined();
+    expect(responseData.success).toBe(true);
+    expect(responseData.status).toBe("stocked");
+    expect(demandMocks.findByIdAndUpdate).toHaveBeenCalledWith(
+      "demand_update_123",
+      { status: "stocked" },
+      { new: true }
+    );
   });
 });

@@ -500,8 +500,14 @@ Respond ONLY with valid JSON (strictly no markdown, no explanation, no backticks
 
 /**
  * Controller: AI Visual Search (Image & optional name to products)
+ * Evaluates catalog products through a multi-tiered matching engine:
+ * - Direct Match (Score >= 70): Exact title, brand, or query match
+ * - Similar Type (Score >= 30 or subcategory match): Same product category/type
+ * - Related Product (Score >= 15): Broad category or visual cue correlation
+ * Guarantees real catalog inventory only with persistent seller demand insights.
  */
 export const visualSearch = asyncHandler(async (req: Request, res: Response) => {
+  const startTime = Date.now();
   const { imageUrl, searchQuery } = req.body as { imageUrl: string; searchQuery?: string };
 
   if (!imageUrl) {
@@ -577,6 +583,7 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
   };
 
   const candidateProducts = await Product.find(queryFilter)
+    .select("_id title description price discountPrice category tags images ratingAvg ratingCount stock sold sellerId")
     .populate("sellerId", "name storeName")
     .limit(40)
     .lean();
@@ -739,6 +746,7 @@ export const visualSearch = asyncHandler(async (req: Request, res: Response) => 
     products: finalProducts,
     isUnmetDemand: isUnmet,
     demandId: demandRecordId,
+    latencyMs: Date.now() - startTime,
   });
 });
 
@@ -832,6 +840,18 @@ export const getVisualSearchDemands = asyncHandler(async (req: Request, res: Res
 });
 
 /**
+ * Controller: Get Single Visual Search Demand by ID
+ */
+export const getVisualSearchDemandById = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const demand = await VisualSearchDemand.findById(id).lean();
+  if (!demand) {
+    throw ApiError.notFound("Demand record not found");
+  }
+  sendSuccess(res, demand);
+});
+
+/**
  * Controller: Update Demand Status
  */
 export const updateVisualSearchDemandStatus = asyncHandler(async (req: Request, res: Response) => {
@@ -858,6 +878,19 @@ export const deleteVisualSearchDemand = asyncHandler(async (req: Request, res: R
   const demand = await VisualSearchDemand.findByIdAndDelete(id);
   if (!demand) {
     throw ApiError.notFound("Demand record not found");
+  }
+
+  // Clean up local uploaded file if present
+  if (demand.imageUrl && demand.imageUrl.startsWith("/uploads/visual-search/")) {
+    const relPath = demand.imageUrl.replace(/^\/uploads\//, "");
+    const fullPath = path.resolve(env.UPLOAD_DIR, relPath);
+    if (fs.existsSync(fullPath)) {
+      try {
+        await fs.promises.unlink(fullPath);
+      } catch (e) {
+        logger.warn("Failed to unlink deleted demand image", { err: e, path: fullPath });
+      }
+    }
   }
 
   sendSuccess(res, { id }, "Demand record deleted successfully");

@@ -11,7 +11,8 @@
     "seed": "tsx src/seed.ts",
     "set-role": "tsx src/scripts/set-role.ts",
     "migrate-hero-banners": "tsx src/scripts/migrate-hero-banners.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:visual-search": "vitest run tests/unit/ai/ai-visual-search.test.ts"
   },
   "dependencies": {
     "axios": "^1.20.0",

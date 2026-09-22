@@ -21,6 +21,7 @@ import {
   aiRecommendSchema,
   aiReviewSummarySchema,
   aiVisualSearchSchema,
+  aiDemandStatusSchema,
   aiAnalyzeImagesSchema,
   aiGenerateProductSchema,
   aiTranslateSchema,
@@ -96,6 +97,7 @@ router.patch(
   "/visual-search/demands/:id/status",
   ...requireAuth,
   requireRole("seller", "admin"),
+  validate({ body: aiDemandStatusSchema }),
   ctrl.updateVisualSearchDemandStatus
 );
 router.delete(

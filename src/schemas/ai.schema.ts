@@ -34,7 +34,11 @@ export const aiPricingSchema = z.object({
 
 export const aiVisualSearchSchema = z.object({
   imageUrl: z.string().min(1, "Image URL or path is required"),
-  searchQuery: z.string().optional(),
+  searchQuery: z.string().max(250).optional(),
+});
+
+export const aiDemandStatusSchema = z.object({
+  status: z.enum(["new", "reviewed", "stocked"]),
 });
 
 export const aiAnalyzeImagesSchema = z.object({

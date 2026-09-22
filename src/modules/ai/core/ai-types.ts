@@ -132,7 +132,12 @@ export interface AICoreResponse {
       pickupStore?: string;
       destinationAddress?: string;
     }>;
+    sellers?: Array<any>;
+    incidents?: Array<any>;
   };
   handoffAvailable?: boolean;
   handoffContext?: AIHandoffContext;
+  auditReceipt?: any;
+  navigationUrl?: string;
+  riskLevel?: RiskLevel;
 }

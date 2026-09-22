@@ -50,6 +50,9 @@ export interface IOrder {
   deliveryProofImage?: string;
   deliveryFailedReason?: string;
   deliveryFailedAt?: Date;
+  cancellationReason?: string;
+  cancelledAt?: Date;
+  cancelledBy?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -113,6 +116,9 @@ const orderSchema = new Schema<IOrder>(
     deliveryProofImage: { type: String },
     deliveryFailedReason: { type: String },
     deliveryFailedAt: { type: Date },
+    cancellationReason: { type: String },
+    cancelledAt: { type: Date },
+    cancelledBy: { type: String },
   },
   { timestamps: true }
 );

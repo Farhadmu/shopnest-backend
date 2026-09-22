@@ -138,9 +138,58 @@ export class AiCoreService {
         if (salesRes.success) evidence.push(...salesRes.evidence);
       }
     } else if (aiType === "ADMIN_COPILOT") {
-      detectedTopic = "marketplace_intelligence";
-      const adminRes = await AiToolService.getMarketplaceMetrics(context);
-      if (adminRes.success) evidence.push(...adminRes.evidence);
+      const { AdminAiOrchestrator } = await import("../../admin-ai/admin-ai.orchestrator");
+      const adminRes = await AdminAiOrchestrator.processTurn({
+        query: prompt,
+        adminId: userId || "admin-system",
+        adminName: "ShopNest Administrator",
+        conversationId: conversationId || String(conversation._id),
+        pageContext: input.currentPage ? { route: input.currentPage } : undefined,
+      });
+
+      return {
+        answer: adminRes.answer,
+        aiType: "ADMIN_COPILOT",
+        conversationId: adminRes.conversationId,
+        confidence: adminRes.confidence,
+        provider: adminRes.isFallback ? "deterministic-engine" : "claude-3-7-sonnet",
+        isFallback: !!adminRes.isFallback,
+        evidence: adminRes.evidence.map((e) => ({
+          type: "DATABASE" as const,
+          source: e.source,
+          fact: e.fact,
+          value: e.value,
+          timestamp: new Date(e.timestamp),
+        })),
+        actions: adminRes.actions.map((a) => ({
+          id: a.id,
+          riskLevel: (a.riskLevel === "CRITICAL_WRITE" ? "HIGH_RISK_WRITE" : a.riskLevel) as any,
+          requiresConfirmation: a.requiresConfirmation,
+          action: a.action,
+          label: a.label,
+          description: a.description,
+          payload: a.payload,
+        })),
+        metrics: adminRes.metrics?.map((m) => ({
+          label: m.label,
+          value: m.value,
+          changePercent: m.changePercent,
+          trend: m.trend,
+        })),
+        referencedEntities: {
+          sellers: adminRes.referencedEntities?.sellers,
+          products: adminRes.referencedEntities?.products,
+          orders: adminRes.referencedEntities?.orders?.map((o) => ({
+            id: o.id,
+            status: o.status,
+            totalAmount: o.totalAmount,
+            createdAt: o.createdAt ? new Date(o.createdAt) : undefined,
+          })),
+          deliveries: adminRes.referencedEntities?.deliveries,
+          incidents: adminRes.referencedEntities?.incidents,
+        },
+        auditReceipt: adminRes.receipts?.[0],
+      };
     } else if (aiType === "DELIVERY_COPILOT") {
       detectedTopic = "logistics_operations";
       const delivRes = await AiToolService.getActiveDeliveries(context);

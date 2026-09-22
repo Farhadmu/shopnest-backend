@@ -17,6 +17,8 @@ router.use(...requireAuth, requireRole("admin"));
 
 // Sub-routes for Admin Intelligence & Marketplace Hub
 router.use("/", adminIntelligenceRoutes);
+import adminAiRoutes from "../admin-ai/admin-ai.routes";
+router.use("/ai", adminAiRoutes);
 
 // Security Center routes
 router.use("/security-center", securityCenterRoutes);

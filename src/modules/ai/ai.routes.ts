@@ -153,6 +153,8 @@ router.post(
 
 // 40. Admin Copilot - AI-powered marketplace intelligence (ADMIN ONLY)
 router.use("/admin-copilot", adminCopilotRoutes);
+import adminAiRoutes from "../admin-ai/admin-ai.routes";
+router.use("/admin-os", adminAiRoutes);
 
 // Seller Copilot - AI-powered seller business intelligence (SELLER ONLY)
 router.use("/seller-copilot", sellerCopilotRoutes);

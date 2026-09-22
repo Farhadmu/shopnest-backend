@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=1,12,24&height=280&section=header&text=ShopNest%20Backend&fontSize=56&fontAlignY=36&desc=%E2%9A%A1%20Express%20%2B%20TypeScript%20REST%20%26%20Socket.io%20API%20Gateway&descAlignY=60&descAlign=50" alt="ShopNest Backend Header" width="100%" />
+  <img src="docs/assets/shopnest-banner.png" alt="ShopNest Header Banner" width="100%" style="border-radius: 12px; box-shadow: 0 16px 40px -12px rgba(168, 85, 247, 0.35);" />
 </p>
 
 <p align="center">
@@ -1905,7 +1905,3 @@ Debug logs are only emitted when `NODE_ENV !== "production"`.
 - **Lead Developer:** Farhad ([@Farhadmu](https://github.com/Farhadmu))
 
 ---
-
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=1,12,24&height=120&section=footer" alt="ShopNest Footer" width="100%" />
-</p>

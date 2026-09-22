@@ -8,6 +8,7 @@ const productMocks = vi.hoisted(() => ({
 const demandMocks = vi.hoisted(() => ({
   create: vi.fn(),
   find: vi.fn(),
+  findById: vi.fn(),
   countDocuments: vi.fn(),
   aggregate: vi.fn(),
   findByIdAndUpdate: vi.fn(),
@@ -259,5 +260,39 @@ describe("AI Visual Search & Seller Demand Insights", () => {
     expect(responseData.success).toBe(true);
     expect(responseData.id).toBe("demand_del_123");
     expect(demandMocks.findByIdAndDelete).toHaveBeenCalledWith("demand_del_123");
+  });
+
+  it("should retrieve a single visual search demand by id", async () => {
+    const mockDemand = {
+      _id: "demand_view_123",
+      detectedTitle: "Sony Wireless Headphone",
+      detectedCategory: "Electronics",
+    };
+
+    demandMocks.findById.mockReturnValue({
+      lean: vi.fn().mockResolvedValue(mockDemand),
+    });
+
+    const { getVisualSearchDemandById } = await import("../../../src/modules/ai/ai.controller");
+
+    const req: any = {
+      params: { id: "demand_view_123" },
+    };
+
+    let responseData: any = null;
+    const res: any = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockImplementation((data) => {
+        responseData = data;
+        return res;
+      }),
+    };
+
+    await getVisualSearchDemandById(req, res, () => {});
+
+    expect(responseData).toBeDefined();
+    expect(responseData.success).toBe(true);
+    expect(responseData._id).toBe("demand_view_123");
+    expect(demandMocks.findById).toHaveBeenCalledWith("demand_view_123");
   });
 });

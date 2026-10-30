@@ -4,6 +4,7 @@ import { Product } from "../../products/product.model";
 import { Order } from "../../orders/order.model";
 import { Review } from "../../reviews/review.model";
 import { Coupon } from "../../coupons/coupon.model";
+import { VisualSearchDemand } from "../visual-search-demand.model";
 import { getSellerContext, getSellerStore } from "../../sellers/seller-store.util";
 
 const db = () => mongoose.connection.db;
@@ -676,3 +677,59 @@ export async function getTodaysBusinessBrief(userId: string) {
     storeName: overview.storeName,
   };
 }
+
+/**
+ * Tool: Customer Demand Intelligence from AI Visual Searches
+ * Returns aggregated buyer search demand and unmet product requests
+ */
+export async function getCustomerDemandIntelligence(): Promise<{
+  totalSearches: number;
+  unmetDemandCount: number;
+  topCategories: Array<{ category: string; count: number }>;
+  topKeywords: Array<{ keyword: string; count: number }>;
+  recentUnmetDemands: Array<{ title: string; category: string; count: number }>;
+}> {
+  try {
+    const [totalSearches, unmetDemandCount, topCats, topTags, recentUnmet] = await Promise.all([
+      VisualSearchDemand.countDocuments({}),
+      VisualSearchDemand.countDocuments({ isUnmetDemand: true }),
+      VisualSearchDemand.aggregate([
+        { $group: { _id: "$detectedCategory", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 5 },
+      ]),
+      VisualSearchDemand.aggregate([
+        { $unwind: "$detectedTags" },
+        { $group: { _id: "$detectedTags", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 8 },
+      ]),
+      VisualSearchDemand.find({ isUnmetDemand: true })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .select("detectedTitle detectedCategory searchCount")
+        .lean(),
+    ]);
+
+    return {
+      totalSearches,
+      unmetDemandCount,
+      topCategories: topCats.map((c) => ({ category: c._id || "Other", count: c.count })),
+      topKeywords: topTags.map((t) => ({ keyword: t._id, count: t.count })),
+      recentUnmetDemands: recentUnmet.map((d: any) => ({
+        title: d.detectedTitle,
+        category: d.detectedCategory,
+        count: d.searchCount || 1,
+      })),
+    };
+  } catch {
+    return {
+      totalSearches: 0,
+      unmetDemandCount: 0,
+      topCategories: [],
+      topKeywords: [],
+      recentUnmetDemands: [],
+    };
+  }
+}
+

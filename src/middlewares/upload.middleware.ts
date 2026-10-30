@@ -147,7 +147,7 @@ const visualSearchStorage = multer.diskStorage({
 
 export const visualSearchImageUpload = multer({
   storage: visualSearchStorage,
-  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
+  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
   fileFilter: (_request, file, callback) => {
     if (!file.mimetype.startsWith("image/")) {
       callback(ApiError.badRequest("Only image files can be uploaded for visual search"));

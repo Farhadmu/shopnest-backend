@@ -46,6 +46,19 @@ export interface IProduct {
   warrantyMonths?: number;
   warrantyProvider?: string;
   sentiment?: { positive: number; neutral: number; negative: number };
+  visualEmbedding?: {
+    vector: number[];
+    model: string;
+    generatedAt: Date;
+    status: "pending" | "indexed" | "failed";
+  };
+  visualAttributes?: {
+    dominantColors: string[];
+    style: string[];
+    productType: string;
+    material?: string;
+    pattern?: string;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -102,6 +115,19 @@ const productSchema = new Schema<IProduct>(
       positive: { type: Number, default: 0 },
       neutral: { type: Number, default: 0 },
       negative: { type: Number, default: 0 },
+    },
+    visualEmbedding: {
+      vector: { type: [Number], default: undefined },
+      model: { type: String, default: "multimodal-sim-v1" },
+      generatedAt: { type: Date },
+      status: { type: String, enum: ["pending", "indexed", "failed"], default: "pending", index: true },
+    },
+    visualAttributes: {
+      dominantColors: { type: [String], default: [] },
+      style: { type: [String], default: [] },
+      productType: { type: String, default: "" },
+      material: { type: String, default: "" },
+      pattern: { type: String, default: "" },
     },
   },
   { timestamps: true }

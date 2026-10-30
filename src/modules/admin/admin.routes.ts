@@ -26,6 +26,10 @@ router.use("/security-center", securityCenterRoutes);
 // Order Risk Assessment routes
 router.use("/order-risk", orderRiskRoutes);
 
+// Customer Fraud Intelligence & Radar routes
+import customerFraudRoutes from "../fraud/customer-fraud.routes";
+router.use("/fraud", customerFraudRoutes);
+
 // Admin notifications
 router.use("/notifications", adminNotificationRouter);
 

@@ -12,6 +12,7 @@ import { ACTIVE_PRODUCT_FILTER, buildPublicProductFilter, EXCLUDED_STORE_STATUSE
 import { getSellerStore } from "../sellers/seller-store.util";
 import { resolveCategoryNames } from "../../utils/category.utils";
 import { normalizeLeanArray, normalizeLean } from "../../utils/model-plugins";
+import { indexProductVisualEmbedding } from "../ai/visual-embedding.service";
 
 const LIST_CACHE_TTL_MS = 2 * 60 * 1000;
 const listCache = new Map<string, { value: { products: Record<string, unknown>[]; total: number; hasMore: boolean }; expiresAt: number }>();
@@ -831,6 +832,9 @@ export const createProduct = asyncHandler(async (req: Request, res: Response) =>
     status: "approved",
   });
 
+  // Non-blocking background visual embedding indexing
+  indexProductVisualEmbedding(product._id.toString()).catch(() => {});
+
   sendSuccess(res, product.toJSON(), "Product created", 201);
 });
 
@@ -863,6 +867,9 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response) =>
   Object.assign(product, updateData, storeUpdates);
   await product.save();
   clearListCache();
+
+  // Refresh visual embedding if images, title, or category changed
+  indexProductVisualEmbedding(product._id.toString()).catch(() => {});
 
   sendSuccess(res, product.toJSON(), "Product updated");
 });

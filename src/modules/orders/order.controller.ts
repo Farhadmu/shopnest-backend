@@ -13,6 +13,7 @@ import { createNotification } from "../notifications/notification.service";
 import { Store } from "../sellers/store.model";
 import { DeliveryRequest } from "../delivery/delivery-request.model";
 import mongoose from "mongoose";
+import { CustomerFraudService } from "../fraud/customer-fraud.service";
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const { shippingAddress, division, paymentMethod, couponCode } = req.body as {
@@ -130,6 +131,9 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const deliveryFee = freeShipping ? 0 : division === "Dhaka" ? 60 : 120;
   const totalAmount = Math.round((subtotal - discount + deliveryFee) * 100) / 100;
 
+  // Pre-checkout fraud verification (blocks blacklisted users & restricted COD)
+  await CustomerFraudService.checkCheckoutEligibility(req.user!.id, paymentMethod, totalAmount);
+
   const order = await Order.create({
     userId: req.user!.id,
     items: orderItems,
@@ -164,8 +168,9 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   cart.items = [];
   await cart.save();
 
-  // Fire-and-forget fraud heuristics; never block the checkout flow on this.
+  // Fire-and-forget fraud heuristics & customer fraud profile evaluation
   flagSuspiciousOrder(order).catch(() => undefined);
+  CustomerFraudService.evaluateCustomer(req.user!.id, { totalAmount, paymentMethod, shippingAddress }).catch(() => undefined);
   const storeIds = [...new Set(orderItems.map((i) => i.storeId))];
   Promise.all(storeIds.map((id) => recomputeStoreTrustScore(id))).catch(() => undefined);
 
@@ -562,6 +567,9 @@ export const cancelOrderAdmin = asyncHandler(async (req: Request, res: Response)
   order.status = "cancelled";
   order.statusHistory.push({ status: "cancelled", at: new Date() });
   await order.save();
+
+  // Re-evaluate customer cancellation rate and fraud risk
+  CustomerFraudService.evaluateCustomer(order.userId).catch(() => undefined);
 
   sendSuccess(res, order.toJSON(), `Order cancelled${reason ? `: ${reason}` : ""}`);
 });

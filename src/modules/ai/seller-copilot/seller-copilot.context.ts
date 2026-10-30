@@ -22,6 +22,7 @@ import {
   getSellerSalesDropAnalysis,
   getSellerForecast,
   getTodaysBusinessBrief,
+  getCustomerDemandIntelligence,
 } from "./seller-copilot.tools";
 
 export interface BuiltContext {
@@ -421,16 +422,33 @@ export async function buildCopilotContext(intent: SellerCopilotIntent, timeRange
     }
 
     case SellerCopilotIntent.TREND_ANALYSIS: {
-      const sales = await getStoreAnalytics(userId, timeRange.start, timeRange.end);
+      const [sales, demandIntelligence] = await Promise.all([
+        getStoreAnalytics(userId, timeRange.start, timeRange.end),
+        getCustomerDemandIntelligence(),
+      ]);
       sources.push({ name: "Trend Analytics", type: "database" });
+      sources.push({ name: "Buyer Demand Insights", type: "analytics" });
       sections.push({
-        title: "Trend Analysis",
+        title: "Trend Analysis & Buyer Demand",
         metrics: [
           { label: "Period Revenue", value: sales.totalRevenue, formatted: `৳${sales.totalRevenue.toLocaleString()}` },
           { label: "Orders", value: sales.orderCount, formatted: sales.orderCount.toLocaleString() },
+          { label: "Buyer Visual Searches", value: demandIntelligence.totalSearches, formatted: demandIntelligence.totalSearches.toLocaleString() },
+          { label: "Unmet Demand (Zero Stock)", value: demandIntelligence.unmetDemandCount, formatted: demandIntelligence.unmetDemandCount.toLocaleString() },
         ],
-        data: sales,
+        data: { sales, demandIntelligence },
       });
+      if (demandIntelligence.recentUnmetDemands.length > 0) {
+        sections.push({
+          title: "High Buyer Demand Products (Unmet Gap)",
+          insights: demandIntelligence.recentUnmetDemands.map((d) => ({
+            severity: "high" as const,
+            title: `Demand: ${d.title}`,
+            description: `Customers are actively uploading images searching for ${d.title} in ${d.category}, but no matching inventory was found in store.`,
+            evidence: [{ fact: "Category", value: d.category }, { fact: "Searches", value: `${d.count} requests` }],
+          })),
+        });
+      }
       break;
     }
 

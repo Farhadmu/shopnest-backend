@@ -77,9 +77,25 @@ function toContextReference(value: unknown): ContextReference | null {
 }
 
 export const conversationalChat = asyncHandler(async (req: Request, res: Response) => {
-  const { message, conversationId } = req.body as {
+  const { message, conversationId, visualSearchContext } = req.body as {
     message: string;
     conversationId?: string;
+    visualSearchContext?: {
+      query?: string;
+      category?: string;
+      subcategory?: string;
+      products?: Array<{
+        id: string;
+        title: string;
+        price: number;
+        discountPrice?: number;
+        category: string;
+        ratingAvg?: number;
+        storeName?: string;
+        stock?: number;
+        matchBadge?: string;
+      }>;
+    };
   };
 
   if (!message || typeof message !== "string") {
@@ -268,10 +284,70 @@ export const conversationalChat = asyncHandler(async (req: Request, res: Respons
       }
     }
   }
-  
+
+  // Visual Search Context Seeding: Connects AI Advisor directly with Visual Search results
+  if (visualSearchContext?.products && visualSearchContext.products.length > 0) {
+    const vProducts = visualSearchContext.products;
+    state.referencedProducts = vProducts.map((p, idx) => ({
+      id: p.id,
+      title: p.title,
+      price: p.discountPrice ?? p.price,
+      category: p.category,
+      position: idx + 1,
+      mentionedInTurn: turnNumber,
+      contextLabel: p.title,
+    }));
+
+    const lowerMsg = message.toLowerCase();
+    const isVisualFollowup =
+      lowerMsg.includes("which") ||
+      lowerMsg.includes("better") ||
+      lowerMsg.includes("cheaper") ||
+      lowerMsg.includes("cheap") ||
+      lowerMsg.includes("compare") ||
+      lowerMsg.includes("gaming") ||
+      lowerMsg.includes("review") ||
+      lowerMsg.includes("available") ||
+      lowerMsg.includes("stock") ||
+      lowerMsg.includes("under") ||
+      lowerMsg.includes("first two") ||
+      lowerMsg.includes("first") ||
+      lowerMsg.includes("second") ||
+      lowerMsg.includes("recommend") ||
+      lowerMsg.includes("show me");
+
+    if (isVisualFollowup || !structuredData.products || structuredData.products.length === 0) {
+      structuredData.products = vProducts.map((p) => ({
+        id: p.id,
+        title: p.title,
+        price: p.discountPrice ?? p.price,
+        originalPrice: p.price,
+        category: p.category,
+        ratingAvg: p.ratingAvg || 4.5,
+        storeName: p.storeName || "ShopNest Store",
+        stock: p.stock ?? 5,
+        matchBadge: p.matchBadge,
+      }));
+
+      toolResults.push(`AI Visual Search Catalog Grounding (${vProducts.length} real products matched):`);
+      vProducts.forEach((p, idx) => {
+        const pr = p.discountPrice ?? p.price;
+        toolResults.push(
+          `${idx + 1}. [${p.id}] ${p.title} | Price: ৳${pr.toLocaleString()} | Category: ${p.category} | Rating: ${p.ratingAvg || 4.5}/5 | Seller: ${p.storeName || "ShopNest Store"} | Stock: ${p.stock ?? "Available"} | Match: ${p.matchBadge || "Direct Match"}`
+        );
+      });
+
+      if (lowerMsg.includes("cheaper") || lowerMsg.includes("cheapest")) {
+        const sorted = [...vProducts].sort((a, b) => (a.discountPrice ?? a.price) - (b.discountPrice ?? b.price));
+        const cheapest = sorted[0];
+        toolResults.push(`\nLowest priced option: "${cheapest.title}" at ৳${(cheapest.discountPrice ?? cheapest.price).toLocaleString()}.`);
+      }
+    }
+  }
+
   // Execute tools based on intent
   try {
-    if (intent.intent === "recommend" && state.productContext && !intent.requiresClarification) {
+    if (intent.intent === "recommend" && state.productContext && !intent.requiresClarification && (!visualSearchContext?.products || visualSearchContext.products.length === 0)) {
       thinking = "Searching ShopNest catalog...";
 
       const searchQueryParts = [

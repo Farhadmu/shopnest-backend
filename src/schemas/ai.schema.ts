@@ -3,6 +3,28 @@ import { z } from "zod";
 export const aiChatSchema = z.object({
   message: z.string().min(1).max(2000),
   conversationId: z.string().optional(),
+  visualSearchContext: z
+    .object({
+      query: z.string().optional(),
+      category: z.string().optional(),
+      subcategory: z.string().optional(),
+      products: z
+        .array(
+          z.object({
+            id: z.string(),
+            title: z.string(),
+            price: z.number(),
+            discountPrice: z.number().optional(),
+            category: z.string(),
+            ratingAvg: z.number().optional(),
+            storeName: z.string().optional(),
+            stock: z.number().optional(),
+            matchBadge: z.string().optional(),
+          })
+        )
+        .optional(),
+    })
+    .optional(),
 });
 
 export const aiRecommendSchema = z.object({
@@ -35,6 +57,14 @@ export const aiPricingSchema = z.object({
 export const aiVisualSearchSchema = z.object({
   imageUrl: z.string().min(1, "Image URL or path is required"),
   searchQuery: z.string().max(250).optional(),
+  cropBox: z
+    .object({
+      x: z.number().nonnegative(),
+      y: z.number().nonnegative(),
+      width: z.number().positive(),
+      height: z.number().positive(),
+    })
+    .optional(),
 });
 
 export const aiDemandStatusSchema = z.object({

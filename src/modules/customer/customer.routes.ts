@@ -1,4 +1,4 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import * as ctrl from "./ai-features.controller";
 import * as productIntelligence from "./features/product-intelligence.controller";
 import * as deliveryTracking from "./features/delivery-tracking.controller";
@@ -277,5 +277,7 @@ router.get("/delivery-feedback/:orderId", ...requireAuth, deliveryTracking.getDe
 router.post("/reports", ...requireAuth, productReportsCtrl.submitProductReport);
 router.get("/reports", ...requireAuth, productReportsCtrl.getUserProductReports);
 router.post("/commerce-assistant", ...requireAuth, aiLimiter, commerceAssistantCtrl.askPersonalCommerceAssistant);
+import { getMySecurityTrustBadge } from "../fraud/customer-fraud.controller";
+router.get("/security/trust-badge", ...requireAuth, getMySecurityTrustBadge);
 
 export default router;

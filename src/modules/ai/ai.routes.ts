@@ -82,6 +82,22 @@ router.post(
   ctrl.visualSearch
 );
 router.get(
+  "/visual-search/history",
+  ...requireAuth,
+  ctrl.getVisualSearchHistory
+);
+router.delete(
+  "/visual-search/history",
+  ...requireAuth,
+  ctrl.clearVisualSearchHistory
+);
+router.get(
+  "/visual-search/trends",
+  ...requireAuth,
+  requireRole("seller", "admin"),
+  ctrl.getVisualSearchTrends
+);
+router.get(
   "/visual-search/demands",
   ...requireAuth,
   requireRole("seller", "admin"),

@@ -6,7 +6,13 @@ export interface IVisualSearchDemand extends Document {
   detectedTitle: string;
   detectedCategory: string;
   detectedBrand?: string;
+  detectedModel?: string;
+  marketPriceEstimate?: string;
   detectedColor?: string;
+  detectedColors?: string[];
+  detectedProductType?: string;
+  detectedStyle?: string[];
+  detectedAttributes?: string[];
   detectedFeatures: string[];
   detectedTags: string[];
   confidence: "high" | "medium" | "low";
@@ -28,7 +34,13 @@ const visualSearchDemandSchema = new Schema<IVisualSearchDemand>(
     detectedTitle: { type: String, required: true, trim: true, index: true },
     detectedCategory: { type: String, required: true, trim: true, index: true },
     detectedBrand: { type: String, trim: true, default: "" },
+    detectedModel: { type: String, trim: true, default: "" },
+    marketPriceEstimate: { type: String, trim: true, default: "" },
     detectedColor: { type: String, trim: true, default: "" },
+    detectedColors: { type: [String], default: [] },
+    detectedProductType: { type: String, trim: true, default: "", index: true },
+    detectedStyle: { type: [String], default: [] },
+    detectedAttributes: { type: [String], default: [] },
     detectedFeatures: { type: [String], default: [] },
     detectedTags: { type: [String], default: [], index: true },
     confidence: { type: String, enum: ["high", "medium", "low"], default: "medium" },

@@ -6,7 +6,7 @@ import {
   SentimentAdaptiveResponse,
   CulturalContextualizedProduct,
 } from "./hyperpersonal.types";
-import { completeWithContext } from "../providers/claude.provider";
+import { complete } from "../providers/claude.provider";
 import { logger } from "../../../utils/logger";
 
 export class HyperPersonalService {
@@ -254,11 +254,14 @@ GUIDELINES:
 3. Keep the response concise, caring, and actionable.`;
 
     try {
-      const result = await completeWithContext({
-        system: systemPrompt,
-        userPrompt: userMessage,
-        maxTokens: 500,
-      });
+      const result = await complete(
+        [{ role: "user", content: userMessage }],
+        {
+          system: systemPrompt,
+          maxTokens: 500,
+          role: "customer",
+        }
+      );
 
       return {
         detectedSentiment,

@@ -47,6 +47,7 @@ export interface DemandIQOverview {
   totalInventoryValue: number;
   totalRevenueAtRisk30d: number;
   averageDaysOfSupply: number;
+  allProducts: ProductDemandMetrics[];
   topStockoutRisks: ProductDemandMetrics[];
   topRevenueGenerators: ProductDemandMetrics[];
   categoryBreakdown: Array<{

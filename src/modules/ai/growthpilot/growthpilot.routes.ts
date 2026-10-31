@@ -7,6 +7,7 @@ const router = Router();
 
 // Public / storefront dynamic value propositions (can be called by any visitor on a product page)
 router.get("/dynamic-value-props/:productId", ctrl.getDynamicValueProps);
+router.get("/dynamic-value-prop/:productId", ctrl.getDynamicValueProps);
 
 // Protected Seller / Admin Growth Engine
 router.use(...requireAuth);

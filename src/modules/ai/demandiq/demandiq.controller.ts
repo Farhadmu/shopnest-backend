@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { DemandIQService } from "./demandiq.service";
-import { sendSuccess } from "../../../utils/response";
+import { sendSuccess } from "../../../utils/api-response";
 import { ApiError } from "../../../utils/api-error";
 
 export async function getOverview(req: Request, res: Response) {

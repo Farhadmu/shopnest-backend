@@ -324,7 +324,7 @@ async function completeWithOpenAICompatible(
 
 async function completeWithGroq(messages: ChatMessage[], opts: CompleteOptions): Promise<string> {
   if (!env.GROQ_API_KEY) throw new Error("Groq is not configured");
-  const candidateModels = Array.from(new Set([env.GROQ_MODEL, "openai/gpt-oss-20b", "qwen/qwen3.8-27b"])).filter(Boolean);
+  const candidateModels = Array.from(new Set([env.GROQ_MODEL, "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"])).filter(Boolean);
   let lastError: Error | null = null;
 
   for (const model of candidateModels) {
@@ -762,8 +762,8 @@ async function runProviders(
   context?: AiContext
 ): Promise<CompleteResult> {
   const providers = [
-    { name: "gemini", fn: () => completeWithGemini(messages, opts), guard: () => Boolean(env.GEMINI_API_KEY) },
     { name: "groq", fn: () => completeWithGroq(messages, opts), guard: () => Boolean(env.GROQ_API_KEY) },
+    { name: "gemini", fn: () => completeWithGemini(messages, opts), guard: () => Boolean(env.GEMINI_API_KEY) },
     { name: "openrouter", fn: () => completeWithOpenRouter(messages, opts), guard: () => Boolean(env.OPENROUTER_API_KEY) },
     { name: "mistral", fn: () => completeWithMistral(messages, opts), guard: () => Boolean(env.MISTRAL_API_KEY) },
   ] as const;

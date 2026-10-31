@@ -122,7 +122,7 @@ export class HyperPersonalService {
   /**
    * Generates a 360-degree privacy-preserving Customer Genome Profile.
    */
-  public static async getCustomerGenome(userId: string): Promise<CustomerGenomeProfile> {
+  public static async getCustomerGenome(userId: string, userName?: string): Promise<CustomerGenomeProfile> {
     const userOrders = await Order.find({ userId }).sort({ createdAt: -1 });
 
     const totalSpent = userOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
@@ -166,7 +166,7 @@ export class HyperPersonalService {
 
     return {
       userId,
-      customerName: "Md. Moynul Islam",
+      customerName: userName || "Valued Shopper",
       archetype,
       aestheticStyles: ["Nordic Minimalism", "Matte Ergonomics", "Eco-Friendly Sustainable", "High-Fidelity Audio"],
       topCategoryAffinities,
@@ -190,32 +190,77 @@ export class HyperPersonalService {
   ): Promise<SentimentAdaptiveResponse> {
     const lower = userMessage.toLowerCase();
 
-    // Sentiment detection heuristics + AI
+    // Comprehensive sentiment detection heuristics
     const frustrationTriggers = [
-      "too expensive",
-      "shipping is high",
+      "frustrat",
+      "angry",
+      "annoy",
+      "terrible",
+      "horrible",
+      "worst",
       "broken",
       "delayed",
-      "discount didn't work",
+      "late",
+      "not arrived",
+      "has not arrived",
+      "didn't work",
+      "did not work",
+      "not working",
+      "too expensive",
+      "why so high",
+      "why so expensive",
+      "why are these",
+      "shipping is high",
+      "shipping is too",
       "cheat",
       "scam",
-      "angry",
       "bad service",
       "cancel",
       "confused",
-      "not working",
-      "why so high",
       "waste",
+      "disappointed",
+      "upset",
+      "refund",
+      "defect",
+      "damaged",
     ];
 
     const hesitationTriggers = [
+      "hesitat",
       "not sure",
-      "is it worth it",
+      "is it worth",
+      "worth it",
       "maybe later",
-      "thinking about it",
+      "thinking about",
+      "thinking of",
       "budget",
       "alternative",
       "cheaper",
+      "pricey",
+      "expensive",
+      "high price",
+      "discount",
+      "coupon",
+      "savings",
+      "doubt",
+    ];
+
+    const delightTriggers = [
+      "love",
+      "great",
+      "awesome",
+      "good",
+      "perfect",
+      "thanks",
+      "thank you",
+      "nice",
+      "excellent",
+      "fast",
+      "happy",
+      "delight",
+      "wonderful",
+      "recommend",
+      "helpful",
     ];
 
     let detectedSentiment: SentimentAdaptiveResponse["detectedSentiment"] = "neutral";
@@ -238,20 +283,21 @@ export class HyperPersonalService {
         discountPercent: 10,
         message: "To make your decision easier, we have unlocked an instant 10% reassurance coupon valid for today.",
       };
-    } else if (lower.includes("love") || lower.includes("great") || lower.includes("awesome") || lower.includes("thanks")) {
+    } else if (delightTriggers.some((t) => lower.includes(t))) {
       detectedSentiment = "delighted";
       adaptedTone = "enthusiastic_guiding";
     }
 
-    const systemPrompt = `You are HyperPersonal, the AI Commerce Companion for ShopNest shoppers.
+    const systemPrompt = `You are HyperPersonal, the Emotion & Sentiment-Adaptive AI Shopping Companion for ShopNest shoppers.
 DETECTED SHOPPER SENTIMENT: ${detectedSentiment.toUpperCase()}
 ADAPTED INTERACTION TONE: ${adaptedTone}
 ${specialIncentiveOffered ? `ACTIVE INCENTIVE TO GRANT: Code ${specialIncentiveOffered.code} (${specialIncentiveOffered.discountPercent}% off)` : ""}
 
 GUIDELINES:
-1. If the shopper is FRUSTRATED or HESITANT, immediately de-escalate with genuine empathy and professional reassurance. Do not use generic corporate language.
-2. If an incentive is granted, highlight it warmly as a personal courtesy.
-3. Keep the response concise, caring, and actionable.`;
+1. Speak warmly and directly to the customer, acknowledging their emotional state and situation.
+2. If the shopper is FRUSTRATED or HESITANT, immediately de-escalate with genuine empathy and professional reassurance. Mention their exclusive courtesy discount code (${specialIncentiveOffered?.code || "EMPATHY15"}) warmly as a personal apology or bonus.
+3. If hesitant, provide reassurance, highlighting our 30-Day Money-Back Guarantee and verified merchant quality.
+4. Keep the response natural, highly engaging, helpful, and concise (under 3-4 sentences).`;
 
     try {
       const result = await complete(

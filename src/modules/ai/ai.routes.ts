@@ -8,6 +8,9 @@ import customerCopilotRoutes from "./customer-copilot/customer-copilot.routes";
 import deliveryCopilotRoutes from "./delivery-copilot/delivery-copilot.routes";
 import commerceCompanionRoutes from "./commerce-companion.routes";
 import aiCoreRoutes from "./core/ai-core.routes";
+import demandiqRoutes from "./demandiq/demandiq.routes";
+import growthpilotRoutes from "./growthpilot/growthpilot.routes";
+import hyperpersonalRoutes from "./hyperpersonal/hyperpersonal.routes";
 import { attachUserIfPresent, requireAuth } from "../../middlewares/auth.middleware";
 
 import { requireRole } from "../../middlewares/role.middleware";
@@ -38,6 +41,15 @@ router.use("/core", attachUserIfPresent, aiCoreRoutes);
 
 // ShopNest AI Commerce Companion - unified customer assistant
 router.use("/commerce-companion", commerceCompanionRoutes);
+
+// ShopNest DemandIQ - Demand Forecasting & Inventory Intelligence
+router.use("/demandiq", demandiqRoutes);
+
+// CommerceSphere GrowthPilot - Autonomous Growth & Multi-Channel Marketing
+router.use("/growthpilot", growthpilotRoutes);
+
+// CommerceSphere HyperPersonal - 1:1 Personalization, Next Best Action & Genome
+router.use("/hyperpersonal", hyperpersonalRoutes);
 
 // POST /api/v1/ai/advisor (conversational endpoint)
 router.use("/advisor", advisorRoutes);

@@ -20,7 +20,7 @@ export function sendSuccess<T>(
     return res.status(statusCode).json(data);
   }
   if (data && typeof data === "object") {
-    return res.status(statusCode).json({ success: true, message, ...(data as object) });
+    return res.status(statusCode).json({ success: true, message, data, ...(data as object) });
   }
   return res.status(statusCode).json({ success: true, message, data });
 }

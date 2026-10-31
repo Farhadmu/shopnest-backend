@@ -15,7 +15,7 @@ export async function getCustomerGenome(req: Request, res: Response) {
     throw ApiError.unauthorized("Authentication required to view Customer Genome");
   }
 
-  const genome = await HyperPersonalService.getCustomerGenome(userId);
+  const genome = await HyperPersonalService.getCustomerGenome(userId, req.user?.name);
   return sendSuccess(res, genome, "Customer Genome Profile retrieved successfully");
 }
 

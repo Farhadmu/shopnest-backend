@@ -8,7 +8,7 @@ import {
   DynamicValueProp,
   MarketingChannel,
 } from "./growthpilot.types";
-import { completeWithContext } from "../providers/claude.provider";
+import { complete } from "../providers/claude.provider";
 import { logger } from "../../../utils/logger";
 
 export class GrowthPilotService {
@@ -17,7 +17,7 @@ export class GrowthPilotService {
    */
   public static async getOverview(sellerUserId: string): Promise<GrowthPilotOverview> {
     const context = await getSellerContext(sellerUserId);
-    const storeName = context.store?.name || "Official Merchant Store";
+    const storeName = (context.store as any)?.storeName || (context.store as any)?.name || "Official Merchant Store";
 
     // 1. Analyze real buyer orders to construct RFM (Recency, Frequency, Monetary) Profiles
     const buyerMap = new Map<
@@ -289,11 +289,14 @@ Deliver five distinct formats:
 }`;
 
     try {
-      const response = await completeWithContext({
-        system: systemPrompt,
-        userPrompt,
-        maxTokens: 1800,
-      });
+      const response = await complete(
+        [{ role: "user", content: userPrompt }],
+        {
+          system: systemPrompt,
+          maxTokens: 1800,
+          role: "seller",
+        }
+      );
 
       // Attempt to extract JSON from response
       const jsonMatch = response.content.match(/\{[\s\S]*\}/);

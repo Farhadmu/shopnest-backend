@@ -10,7 +10,7 @@ import {
   PurchaseOrderItem,
   StockoutRiskLevel,
 } from "./demandiq.types";
-import { completeWithContext } from "../providers/claude.provider";
+import { complete } from "../providers/claude.provider";
 import { logger } from "../../../utils/logger";
 
 export class DemandIQService {
@@ -218,7 +218,7 @@ export class DemandIQService {
    */
   public static async getStoreDemandIQOverview(userId: string): Promise<DemandIQOverview> {
     const context = await getSellerContext(userId);
-    const storeName = context.store?.name || "Official Merchant Store";
+    const storeName = (context.store as any)?.storeName || (context.store as any)?.name || "Official Merchant Store";
 
     const metricsList: ProductDemandMetrics[] = (context.products || []).map((prod) =>
       this.computeProductMetrics(prod, context.sellerOrders || [])
@@ -482,11 +482,14 @@ GUIDELINES:
     }));
 
     try {
-      const aiResponse = await completeWithContext({
-        userPrompt: query,
-        system: systemPrompt,
-        maxTokens: 800,
-      });
+      const aiResponse = await complete(
+        [{ role: "user", content: query }],
+        {
+          system: systemPrompt,
+          maxTokens: 800,
+          role: "seller",
+        }
+      );
 
       return {
         answer: aiResponse.content,

@@ -269,10 +269,17 @@ export class DemandIQService {
       totalTrackedProducts > 0 ? Math.round((totalDaysSupplySum / totalTrackedProducts) * 10) / 10 : 0;
 
     // Sort top stockout risks (critical first, then by daysOfSupply ascending)
-    const topStockoutRisks = [...metricsList]
+    let topStockoutRisks = [...metricsList]
       .filter((m) => m.stockoutRisk === "critical" || m.stockoutRisk === "warning")
       .sort((a, b) => a.daysOfSupply - b.daysOfSupply)
       .slice(0, 8);
+
+    // If no SKUs are strictly critical, pick products with lowest days of supply so insights always show actionable priorities
+    if (topStockoutRisks.length === 0 && metricsList.length > 0) {
+      topStockoutRisks = [...metricsList]
+        .sort((a, b) => a.daysOfSupply - b.daysOfSupply)
+        .slice(0, 4);
+    }
 
     // Top revenue generators
     const topRevenueGenerators = [...metricsList]
@@ -298,6 +305,7 @@ export class DemandIQService {
       totalInventoryValue: Math.round(totalInventoryValue),
       totalRevenueAtRisk30d: Math.round(totalRevenueAtRisk30d),
       averageDaysOfSupply,
+      allProducts: metricsList,
       topStockoutRisks,
       topRevenueGenerators,
       categoryBreakdown,
@@ -335,7 +343,9 @@ export class DemandIQService {
       description = `Simulating factory backorders with +${delayDays} days extended manufacturing lead time.`;
     }
 
-    const allMetrics = [...overview.topStockoutRisks, ...overview.topRevenueGenerators];
+    const allMetrics = (overview.allProducts && overview.allProducts.length > 0)
+      ? overview.allProducts
+      : [...overview.topStockoutRisks, ...overview.topRevenueGenerators];
     const uniqueMap = new Map<string, ProductDemandMetrics>();
     for (const m of allMetrics) {
       if (!uniqueMap.has(m.productId)) uniqueMap.set(m.productId, m);
@@ -582,8 +592,10 @@ To maintain a **98% service level** considering a standard 6-day lead time, you 
     const now = new Date();
     const validUntil = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 
-    // Select items that are Critical, Warning, or near Reorder Point
-    const itemsToReorder = overview.topStockoutRisks;
+    // Select items that are Critical, Warning, or near Reorder Point (or lowest days of supply)
+    const itemsToReorder = overview.topStockoutRisks.length > 0
+      ? overview.topStockoutRisks
+      : [...(overview.allProducts || [])].sort((a, b) => a.daysOfSupply - b.daysOfSupply).slice(0, 4);
 
     const poItems: PurchaseOrderItem[] = itemsToReorder.map((item) => {
       const suggestedReorderQty = Math.max(10, item.recommendedReorderQty);
